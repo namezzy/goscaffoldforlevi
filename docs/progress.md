@@ -498,3 +498,33 @@ make test-integration
 
 后续阶段：Phase 5 可观测性 → Phase 6 基础设施（Docker / K8s / CI）
 → Phase 7 消息与 outbox → Phase 8 文档与审计。
+
+## 补齐引导路径与响应体 schema 校验
+
+跑起来之后剩下的 Known Limitations 分两类处理。ADR 里论证过的取舍不动：
+family 撤销会误伤合法客户端、`POST /users` 的 409 泄漏邮箱已注册、
+Guard 降级时配额按副本放大、通用限流 fail-open、`make openapi-lint` 不进
+`make check`。改掉这些是推翻已记录的判断，不是修 bug。
+
+真正的缺口有两个。
+
+**首个管理员没有引导路径。** 之前要人工算 Argon2id 哈希再写裸 SQL——
+敲错哈希得到登不进去的账号，粘来的哈希得到密码在别处已知的账号。
+新增 `cmd/adminctl`：已存在管理员时拒绝运行（否则它就是一条常设的
+特权账号旁路，同时绕开授权和审计），默认生成密码而不是从命令行接收
+（命令行密码会进 shell 历史和进程列表），并且走 `user.Service.Create`
+而不是 INSERT，让校验、邮箱归一化和哈希参数全部复用生产路径。
+授权用合成 principal 过——能跑这个命令的人已握有数据库凭据，
+严格强于 `user:create`；把例外留在命令里，而不是给 Service 加一个
+对所有调用方生效的开关。
+
+**响应体没有防漂移。** 路由测试只管路径和方法。DTO 里改个字段名，
+所有 Go 测试照旧通过（断言的是结构体），文档却继续承诺旧名字。
+`internal/openapitest` 拿处理器真实写出的字节双向比对：响应里的字段必须
+有文档，文档标 required 的必须出现在响应里。做了变异验证——
+给 `User.required` 加 `last_login_at`、把 DTO 的 `created_at` 改成
+`createdAt`，两个方向都被抓到。
+
+`make check` 与 `make test-integration` 全绿后，起真容器跑通了完整链路：
+bootstrap 建号、登录、创建用户（邮箱被归一化）、RBAC 403、
+refresh 轮转 + 重放导致整条链失效、登录第 5 次起 429。

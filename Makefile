@@ -121,6 +121,13 @@ migrate-create: ## Create a migration: make migrate-create name=add_users
 	@test -n "$(name)" || { echo "usage: make migrate-create name=<snake_case_name>"; exit 1; }
 	$(GOBIN)/migrate create -ext sql -dir $(MIGRATIONS) -seq $(name)
 
+# ----------------------------------------------------------------------- admin
+
+.PHONY: bootstrap-admin
+bootstrap-admin: ## Create the first administrator: make bootstrap-admin email=you@example.com
+	@test -n "$(email)" || { echo "usage: make bootstrap-admin email=<address> [name=<name>]"; exit 1; }
+	go run ./cmd/adminctl -email "$(email)" $(if $(name),-name "$(name)",)
+
 # ----------------------------------------------------------------------- tools
 
 .PHONY: tools

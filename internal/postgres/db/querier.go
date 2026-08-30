@@ -12,6 +12,11 @@ import (
 
 type Querier interface {
 	CountUsers(ctx context.Context) (int64, error)
+	// CountUsersByRole exists for the bootstrap command, which refuses to run once
+	// an administrator already exists. Without that check the command would be a
+	// permanent way to mint privileged accounts outside the API, bypassing both
+	// authorization and the audit trail.
+	CountUsersByRole(ctx context.Context, role string) (int64, error)
 	CreateRefreshSession(ctx context.Context, arg CreateRefreshSessionParams) (RefreshSession, error)
 	// Columns are listed explicitly everywhere. SELECT * makes the generated
 	// struct change shape whenever a migration adds a column, which turns an

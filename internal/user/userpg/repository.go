@@ -100,6 +100,20 @@ func (r *Repository) Count(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
+// CountByRole reports how many users hold a role.
+//
+// It is deliberately not part of user.Repository: the service has no use for
+// it, and widening that interface would oblige every implementation to support
+// a query that exists for one command. The bootstrap command depends on this
+// concrete type, so it can simply call it.
+func (r *Repository) CountByRole(ctx context.Context, role auth.Role) (int64, error) {
+	n, err := r.q(ctx).CountUsersByRole(ctx, string(role))
+	if err != nil {
+		return 0, translate(err, "count users by role")
+	}
+	return n, nil
+}
+
 // Update applies a partial update and returns the stored row.
 func (r *Repository) Update(ctx context.Context, id user.ID, p user.Patch) (user.User, error) {
 	params := db.UpdateUserParams{ID: id.UUID(), Name: p.Name, PasswordHash: p.PasswordHash}

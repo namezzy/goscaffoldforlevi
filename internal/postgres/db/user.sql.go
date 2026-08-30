@@ -22,6 +22,21 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countUsersByRole = `-- name: CountUsersByRole :one
+SELECT count(*) FROM users WHERE role = $1
+`
+
+// CountUsersByRole exists for the bootstrap command, which refuses to run once
+// an administrator already exists. Without that check the command would be a
+// permanent way to mint privileged accounts outside the API, bypassing both
+// authorization and the audit trail.
+func (q *Queries) CountUsersByRole(ctx context.Context, role string) (int64, error) {
+	row := q.db.QueryRow(ctx, countUsersByRole, role)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createUser = `-- name: CreateUser :one
 
 INSERT INTO users (id, email, password_hash, name, status, role)

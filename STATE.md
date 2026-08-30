@@ -169,11 +169,11 @@ Phase 3 引入的新妥协：
 
 | 妥协 | 理由 |
 |------|------|
-| 没有 seed 的第一个管理员账号；首个 admin 需人工插库或后续 Phase 提供 CLI | 引导路径未在本阶段定义，硬编码一个默认 admin 是常见的后门来源 |
+| ~~没有 seed 的第一个管理员账号~~ **已解决**，见 `cmd/adminctl` | 见下文「引导与 schema 漂移」一节 |
 | `Guard` 降级到本地限流器时，配额按副本数放大（`fallbackFactor=2`） | 每副本独立计数无法得到全局配额；放大系数是"别把配额收得比预期紧"的取舍 |
 | refresh 家族撤销会把合法客户端一并登出 | 无法区分"被盗用"与"客户端重试"，从安全侧取严 |
 | `POST /users` 的 409 会泄漏"该邮箱已注册" | 沿用 ADR-0007 的判断：该端点需要 `user:create`，调用方已是可信管理员 |
-| OpenAPI 由手写维护，只有路径/方法/路径参数被自动校验，schema 与实现之间仍可能漂移 | 全量 schema 校验需要引入运行时校验中间件，成本与收益不匹配 |
+| OpenAPI 的**请求体** schema 仍无自动校验（响应体已有，见下文） | 请求体的权威定义在 `validate` 规则里，比对需要另一套映射；响应体是客户端实际消费的一侧，先覆盖它 |
 | `make openapi-lint` 需要 npx，未纳入 `make check` | `check` 必须在离线环境可跑 |
 
 工程层面：
@@ -234,3 +234,64 @@ Phase 4 必须遵守且最容易被违反的点：
 （`prompts/03-user-auth.md`）把两者都并入 Phase 3，理由已写在 ADR-0007 / 0008：
 Argon2id 单独上线会引入内存 DoS 入口，而 OpenAPI 越晚写越接近于事后补文档。
 本文件的 Phase 2 章节仍保留当时的措辞，作为决策变更的记录。
+
+## 引导与 schema 漂移（2026-08-31）
+
+Known Limitations 里的条目分两类。**ADR 论证过的取舍不动**——family 撤销误伤
+合法客户端、`POST /users` 的 409 泄漏、Guard 降级配额放大、通用限流 fail-open、
+`make openapi-lint` 不进 `make check`——改掉它们等于推翻已记录的判断，
+而不是修复缺陷。剩下两条是真缺口，本次补上：
+
+### 1. 首个管理员的引导路径（`cmd/adminctl`）
+
+在此之前，让系统可用需要人工算一个 Argon2id 哈希再写裸 SQL。这不只是麻烦：
+哈希敲错了得到一个谁也登不进去的账号，哈希是从别处粘来的则得到一个
+密码在别处已知的账号。
+
+命令做三件事，每一件都是有意的：
+
+- **拒绝在已有管理员时运行**。一个能在 API 之外铸造特权账号的命令，
+  就是一条常设的旁路，同时绕开授权和审计。第一个之后必须走
+  `POST /api/v1/users`。
+- **默认生成密码而不是接受参数**。命令行上敲的密码会进 shell 历史和进程列表；
+  生成的密码只显示一次。需要指定时用 `-password-stdin`。
+- **走 `user.Service.Create` 而不是 INSERT**。校验、邮箱归一化、哈希参数
+  全部复用生产路径。自己写行的引导路径就是会和真实路径漂移的引导路径——
+  测试里 `Admin@Example.com ` 被规范成 `admin@example.com` 正是在钉这一点。
+
+授权那一关用合成 principal 过（`bootstrapContext`）。这不是把提权伪装成管道：
+能跑这个命令的人已经握有数据库凭据，那严格强于 `user:create`。选择走正常
+授权路径而不是给 Service 加一个「跳过检查」开关，是为了让这个例外留在
+命令里可见，而不是嵌进 Service 里对所有调用方生效。
+
+用法：`make bootstrap-admin email=you@example.com [name="Your Name"]`
+
+### 2. 响应体 schema 漂移（`internal/openapitest`）
+
+`cmd/api/openapi_test.go` 只保证路径与方法两边一致，对响应体一无所知——
+而这正是文档悄悄腐烂的地方：DTO 里改个字段名，所有 Go 测试照样通过
+（它们断言的是结构体），文档却继续向每个生成的客户端承诺旧名字。
+
+`internal/openapitest` 拿**处理器真实写出的字节**和文档比对，双向：
+
+- 响应里出现的字段必须有文档 → 抓「加了字段忘了写文档」
+- 文档标 required 的字段必须出现在响应里 → 抓「字段改名/删了文档还留着」
+
+文档里的可选字段可以缺席，所以一个不带 `details` 的错误响应不算失败。
+`$ref` 会递归解析，因此 `UserPage` 的检查连带覆盖嵌套的 `User`——
+列表客户端真正读到的那一份。
+
+已做变异验证确认两个方向都真的会失败：给 `User.required` 加一个
+`last_login_at`，和把 DTO 的 `created_at` 改成 `createdAt`，都被抓到。
+
+覆盖 `User` / `UserPage` / `TokenPair` / `Error`（含 `details` 分支）。
+`TokenPair` 的检查放在 `internal/auth/authpg` 的集成测试里而不是 `authhttp`：
+处理器接的是具体的 `*auth.Service`，由别的东西造出来的 token pair，
+其形状是测试作者选的，不是程序的。
+
+### 运行验证
+
+PostgreSQL 17 + Redis 7 + 3 条迁移 + `make bootstrap-admin`，`/ready` 报告
+两个组件均 ok。实测：登录 200、创建用户 201 且邮箱被归一化、
+member 列用户 403、refresh 轮转后旧 token 401 **且新 token 一并失效**
+（上面那个 bug 在真实系统里保持修复状态）、登录失败第 5 次起 429。

@@ -4,16 +4,24 @@ package authpg_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/auth"
+	"github.com/example/go-enterprise/internal/auth/authhttp"
 	"github.com/example/go-enterprise/internal/auth/authjwt"
 	"github.com/example/go-enterprise/internal/auth/authpg"
+	"github.com/example/go-enterprise/internal/openapitest"
 	"github.com/example/go-enterprise/internal/postgres"
 	"github.com/example/go-enterprise/internal/postgres/pgtest"
 	"github.com/example/go-enterprise/internal/user"
@@ -197,4 +205,56 @@ func TestLogoutRevokesTheFamilyAndIsIdempotent(t *testing.T) {
 	if err := svc.Logout(ctx, "a-token-that-never-existed"); err != nil {
 		t.Errorf("logout of an unknown token failed: %v", err)
 	}
+}
+
+// TestTokenResponsesMatchTheDocumentedSchema checks the authentication
+// endpoints' bodies against api/openapi.yaml.
+//
+// It lives here rather than in authhttp because the handler takes the concrete
+// service, and a token pair produced by anything other than the real service is
+// a token pair whose shape the test authors chose. Login and refresh are both
+// exercised: they share a response type today, and this is what would notice if
+// one of them stopped doing so.
+func TestTokenResponsesMatchTheDocumentedSchema(t *testing.T) {
+	pg := pgtest.Start(t)
+	svc, _ := newRotationService(t, pg)
+	spec := openapitest.Load(t)
+
+	handler := authhttp.NewHandler(svc, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	router := chi.NewRouter()
+	router.Route("/", handler.Routes(func(next http.Handler) http.Handler { return next }))
+
+	post := func(path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec
+	}
+
+	login := post("/login", `{"email":"rotation@example.com","password":"`+rotationPassword+`"}`)
+	if login.Code != http.StatusOK {
+		t.Fatalf("login: status = %d: %s", login.Code, login.Body)
+	}
+	spec.AssertMatches(t, "TokenPair", login.Body.Bytes())
+
+	var pair struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(login.Body.Bytes(), &pair); err != nil {
+		t.Fatalf("decode the token pair: %v", err)
+	}
+
+	refreshed := post("/refresh", `{"refresh_token":"`+pair.RefreshToken+`"}`)
+	if refreshed.Code != http.StatusOK {
+		t.Fatalf("refresh: status = %d: %s", refreshed.Code, refreshed.Body)
+	}
+	spec.AssertMatches(t, "TokenPair", refreshed.Body.Bytes())
+
+	rejected := post("/login", `{"email":"rotation@example.com","password":"wrong"}`)
+	if rejected.Code != http.StatusUnauthorized {
+		t.Fatalf("bad login: status = %d: %s", rejected.Code, rejected.Body)
+	}
+	spec.AssertMatches(t, "Error", rejected.Body.Bytes())
 }

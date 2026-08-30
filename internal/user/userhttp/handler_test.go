@@ -16,6 +16,7 @@ import (
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/auth"
 	"github.com/example/go-enterprise/internal/auth/authhttp"
+	"github.com/example/go-enterprise/internal/openapitest"
 	"github.com/example/go-enterprise/internal/user"
 	"github.com/example/go-enterprise/internal/user/userhttp"
 )
@@ -424,4 +425,54 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	}
 	decode(t, rec, &body)
 	return body.Error.Code
+}
+
+// TestResponseBodiesMatchTheDocumentedSchemas compares real handler output
+// against api/openapi.yaml.
+//
+// The route test in cmd/api proves the paths agree. Nothing proved the bodies
+// did: a field renamed in a DTO would keep every Go assertion passing, because
+// they assert on the struct, while the document went on promising the old name
+// to every generated client. This checks the bytes that actually leave the
+// handler.
+func TestResponseBodiesMatchTheDocumentedSchemas(t *testing.T) {
+	t.Parallel()
+
+	spec := openapitest.Load(t)
+	repo := newFakeRepo()
+	srv := newServer(t, repo)
+	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
+
+	created := do(t, srv, http.MethodPost, "/users", asAdmin(admin),
+		`{"email":"schema@example.com","name":"Schema","password":"correct horse battery"}`)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d: %s", created.Code, created.Body)
+	}
+	spec.AssertMatches(t, "User", created.Body.Bytes())
+
+	page := do(t, srv, http.MethodGet, "/users", asAdmin(admin), "")
+	if page.Code != http.StatusOK {
+		t.Fatalf("list: status = %d: %s", page.Code, page.Body)
+	}
+	// UserPage refers to User, so this also covers the nested representation,
+	// which is the one a list client actually reads.
+	spec.AssertMatches(t, "UserPage", page.Body.Bytes())
+
+	notFound := do(t, srv, http.MethodGet, "/users/"+user.NewID().String(), asAdmin(admin), "")
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("get missing: status = %d: %s", notFound.Code, notFound.Body)
+	}
+	spec.AssertMatches(t, "Error", notFound.Body.Bytes())
+
+	invalid := do(t, srv, http.MethodPost, "/users", asAdmin(admin),
+		`{"email":"not-an-email","name":"","password":"short"}`)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid create: status = %d: %s", invalid.Code, invalid.Body)
+	}
+	// The validation failure is the only response that carries `details`, so it
+	// is the only one that exercises that branch of the schema.
+	spec.AssertMatches(t, "Error", invalid.Body.Bytes())
+	if !strings.Contains(invalid.Body.String(), `"details"`) {
+		t.Fatalf("expected a body with details, so that the schema check covers them: %s", invalid.Body)
+	}
 }

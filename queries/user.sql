@@ -44,3 +44,10 @@ RETURNING id, email, password_hash, name, status, role, created_at, updated_at;
 
 -- name: DeleteUser :execrows
 DELETE FROM users WHERE id = $1;
+
+-- CountUsersByRole exists for the bootstrap command, which refuses to run once
+-- an administrator already exists. Without that check the command would be a
+-- permanent way to mint privileged accounts outside the API, bypassing both
+-- authorization and the audit trail.
+-- name: CountUsersByRole :one
+SELECT count(*) FROM users WHERE role = $1;
