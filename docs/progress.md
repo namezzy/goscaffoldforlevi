@@ -375,6 +375,56 @@ family 撤销不波及其他 family、用户删除级联清理 session，
 最后一条是 ADR-0005 那个"tx 藏在 context 里"决定的验收：
 只要有任何一个仓储偷偷去拿连接池，回滚后就会留下一行。
 
+### 跑起来之后发现的两个问题
+
+前面所有门禁都是绿的，服务真跑起来仍然暴露了两个问题。值得记下来的不是问题本身，
+而是为什么测试没拦住。
+
+**重放检测被事务回滚吃掉了。** 用 curl 走完整流程时：轮转拿到新 token，
+重放旧 token 得到 401（看起来对），但紧接着用**新** token 仍然能刷新成功——
+家族撤销根本没落库。
+
+原因是这段结构：
+
+```go
+err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+    if session.RevokedAt != nil {
+        s.sessions.RevokeFamily(ctx, session.FamilyID)  // 写
+        return ErrInvalidToken()                        // 然后回滚掉这次写
+    }
+    ...
+})
+```
+
+返回错误就回滚，安全响应和拒绝响应绑在同一个返回值上。
+修法是把两者拆开——闭包里只记 `rejected` 标志并返回 `nil`，
+让撤销真正提交，事务结束后才把标志翻译成错误。
+
+真正该反省的是测试。`service_test.go` 里的假 TxManager 是这样的：
+
+```go
+func (noopTx) WithTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
+```
+
+它省略了事务唯一重要的性质。这不是"简化"，是把被测代码依赖的行为删掉了——
+于是测试对着一个不会回滚的世界断言，报告成功。
+现在的假件会快照并还原，把修复改回去，测试立刻失败：
+
+```
+service_test.go:399: active sessions after reuse = 1, want 0
+service_test.go:402: the legitimate token still works after a reuse was detected
+```
+
+另外补了 `service_rotation_integration_test.go`，用真实 `TxManager` 和真实
+PostgreSQL 跑重放、禁用账号、logout 幂等三条路径。
+
+**登录响应带着 `X-RateLimit-*`。** 这三个头来自外层通用 IP 限流器（limit 100），
+不是登录尝试计数器，所以没泄漏"还剩几次"。但一个 429 旁边写着 `Remaining: 199`
+自相矛盾，而且 OpenAPI 里写的是"登录只带 Retry-After"——文档与实现不符。
+登录中间件现在主动清掉上游设置的这三个头，让那句话成立。
+
+第一个问题是真实的安全缺陷，第二个只是难堪。两个都只有在把进程跑起来时才会出现。
+
 ---
 
 ## 当前仓库结构

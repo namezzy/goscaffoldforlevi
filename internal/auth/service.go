@@ -145,13 +145,23 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, meta Request
 		return TokenPair{}, ErrInvalidToken()
 	}
 
-	var pair TokenPair
+	// rejected separates "this token is not usable" from "this operation
+	// failed". The distinction matters because returning an error from inside
+	// WithTx rolls the transaction back — which would discard the very
+	// revocations performed below. The rejection is therefore carried out of
+	// the closure as a value, and turned into an error only after the
+	// transaction has committed.
+	var (
+		pair     TokenPair
+		rejected bool
+	)
 	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
 		session, err := s.sessions.GetByTokenHash(ctx, HashRefreshToken(refreshToken))
 		switch {
 		case err == nil:
 		case apperr.Is(err, apperr.KindNotFound):
-			return ErrInvalidToken()
+			rejected = true
+			return nil
 		default:
 			return err
 		}
@@ -172,11 +182,13 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, meta Request
 				slog.String("family_id", session.FamilyID.String()),
 				slog.Int64("sessions_revoked", revoked),
 			)
-			return ErrInvalidToken()
+			rejected = true
+			return nil
 		}
 
 		if !now.Before(session.ExpiresAt) {
-			return ErrInvalidToken()
+			rejected = true
+			return nil
 		}
 
 		// The account is re-read on every rotation. The role or the account's
@@ -187,7 +199,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, meta Request
 		switch {
 		case err == nil:
 		case apperr.Is(err, apperr.KindNotFound):
-			return ErrInvalidToken()
+			rejected = true
+			return nil
 		default:
 			return err
 		}
@@ -195,7 +208,8 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, meta Request
 			if _, revokeErr := s.sessions.RevokeFamily(ctx, session.FamilyID); revokeErr != nil {
 				return revokeErr
 			}
-			return ErrInvalidToken()
+			rejected = true
+			return nil
 		}
 
 		// Revoke before issuing. If the process dies between the two, the user
@@ -212,6 +226,9 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string, meta Request
 	})
 	if err != nil {
 		return TokenPair{}, err
+	}
+	if rejected {
+		return TokenPair{}, ErrInvalidToken()
 	}
 	return pair, nil
 }

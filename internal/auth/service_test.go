@@ -128,11 +128,25 @@ func (f *fakeSessions) activeCount() int {
 	return n
 }
 
-// noopTx runs the function without a transaction. The tests that care about
-// atomicity are the integration tests; here the point is the control flow.
-type noopTx struct{}
+// rollbackTx models the one property of a real transaction that changes the
+// meaning of the code under test: an error discards every write made inside it.
+//
+// An earlier version of this fake simply called fn and returned its error. That
+// looks harmless and is not: reuse detection revokes the token family and then
+// returns an error to the caller, so under a real transaction the revocation
+// was rolled back and the stolen family stayed live. The fake passed, the
+// database did not. A fake that omits the behaviour a caller depends on is
+// worse than no test, because it reports success.
+type rollbackTx struct{ sessions *fakeSessions }
 
-func (noopTx) WithTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
+func (t rollbackTx) WithTx(ctx context.Context, fn func(context.Context) error) error {
+	snapshot := append([]auth.Session(nil), t.sessions.rows...)
+	if err := fn(ctx); err != nil {
+		t.sessions.rows = snapshot
+		return err
+	}
+	return nil
+}
 
 // staticIssuer produces a predictable token so tests can assert on the claims
 // the service passes in rather than on a signed blob.
@@ -172,7 +186,7 @@ func newServiceFixture(t *testing.T, accounts *fakeAccounts) *serviceFixture {
 		f.sessions,
 		newTestHasher(t),
 		f.issuer,
-		noopTx{},
+		rollbackTx{sessions: f.sessions},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 	f.svc.SetClock(func() time.Time { return f.now })
@@ -301,13 +315,14 @@ func TestLoginRehashesWeakStoredPasswords(t *testing.T) {
 		t.Fatalf("NewArgon2Hasher() = %v", err)
 	}
 
+	sessions := &fakeSessions{now: time.Now}
 	svc := auth.NewService(
 		auth.ServiceConfig{Issuer: "i", Audience: "a", AccessTTL: time.Minute, RefreshTTL: time.Hour},
 		accounts,
-		&fakeSessions{now: time.Now},
+		sessions,
 		strong,
 		&staticIssuer{},
-		noopTx{},
+		rollbackTx{sessions: sessions},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 

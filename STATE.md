@@ -207,6 +207,27 @@ Phase 4 必须遵守且最容易被违反的点：
 4. 任何"为了测试"而放宽的生产代码（导出内部符号、加 test-only 分支）
    都必须先在 ADR 或本文件里说明理由。
 
+## 手动验证发现并修复的问题（2026-08-31）
+
+把服务真正跑起来（PostgreSQL 17 + Redis 7 + curl 走完整流程）后暴露了两个问题，
+都已修复并补了回归测试：
+
+1. **refresh 重放检测形同虚设**。家族撤销写在事务里，紧接着
+   `return ErrInvalidToken()` 让整个事务回滚，把撤销一并抹掉——
+   被盗的那条链继续有效。修法是把"这个 token 不可用"与"这次操作失败"分开：
+   闭包里只置 `rejected` 标志并返回 `nil` 让撤销提交，事务提交之后才生成错误。
+   同一条 bug 也影响"账号被禁用"路径。
+
+   **根因是测试假件而不是代码**：`service_test.go` 的 TxManager 只是调用 fn，
+   不模拟回滚，所以断言全绿。已改成快照/还原的 `rollbackTx`，
+   并用变异验证确认它现在能抓到这个 bug；另加
+   `internal/auth/authpg/service_rotation_integration_test.go`
+   用真实事务把这条路径钉死。
+
+2. **登录响应带着 `X-RateLimit-*`**。它们来自外层通用 IP 限流器（limit 100），
+   不是登录计数器，所以没泄漏剩余尝试次数；但一个 429 旁边写着
+   "Remaining: 199" 是自相矛盾的。登录中间件现在主动清掉上游设置的这三个头。
+
 ## 与原始阶段划分的偏差
 
 原 Prompt 把限流排在 Phase 6、OpenAPI 排在 Phase 8。重构后的 Prompt

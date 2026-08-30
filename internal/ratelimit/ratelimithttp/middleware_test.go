@@ -176,7 +176,12 @@ func TestByUserBucketsPerPrincipalAndSkipsAnonymousRequests(t *testing.T) {
 func TestLoginHidesTheRemainingAttemptCount(t *testing.T) {
 	t.Parallel()
 
-	h := ratelimithttp.Login(newGuard(t, ratelimit.NewLocalLimiter(1000)), 0, discardLogger())(okHandler())
+	guard := newGuard(t, ratelimit.NewLocalLimiter(1000))
+	// The IP limiter is mounted above login in the real router and sets its own
+	// headers, so the login middleware has to clear them rather than merely
+	// decline to add any.
+	h := ratelimithttp.ByIP(guard, 0, discardLogger())(
+		ratelimithttp.Login(guard, 0, discardLogger())(okHandler()))
 
 	send := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/auth/login",

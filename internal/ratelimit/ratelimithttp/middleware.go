@@ -84,6 +84,14 @@ const maxLoginBody = 4 << 10
 func Login(g *ratelimit.Guard, trustedProxies int, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The IP limiter upstream has already advertised its own quota on
+			// this response. Those numbers describe general traffic, not login
+			// attempts, so they do not leak the attempt counter — but leaving
+			// them produces a 429 that also says "199 remaining", which is
+			// self-contradictory to anyone reading it. Clearing them here is
+			// what makes "login responses carry only Retry-After" true.
+			clearRateLimitHeaders(w)
+
 			// The body has to be read here to learn which account is being
 			// targeted, and then handed back intact so the handler can decode
 			// it normally.
@@ -177,6 +185,13 @@ func proceed(
 	w.Header().Set("Retry-After", strconv.Itoa(int(decision.RetryAfter/time.Second)))
 	httpx.WriteError(r.Context(), w, log, ratelimit.ErrRateLimited())
 	return false
+}
+
+// clearRateLimitHeaders removes quota advertisements set further up the chain.
+func clearRateLimitHeaders(w http.ResponseWriter) {
+	for _, h := range [...]string{"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"} {
+		w.Header().Del(h)
+	}
 }
 
 // setRateLimitHeaders advertises the quota on every response, not only on

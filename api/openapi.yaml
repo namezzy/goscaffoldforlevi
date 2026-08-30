@@ -16,8 +16,10 @@ info:
     - Updates use PATCH. There is no PUT for resources, because a full
       replacement makes every omitted field a deletion.
     - Rate limit state is advertised on every response through `X-RateLimit-*`,
-      except on the login endpoint, where exposing the remaining attempt count
-      would hand an attacker a progress meter.
+      except on the login endpoint. There, the headers are stripped: exposing a
+      remaining count next to a refused login is both a progress meter for an
+      attacker and a contradiction for everyone else. Login carries only
+      `Retry-After`.
 
 servers:
   - url: http://localhost:8080
