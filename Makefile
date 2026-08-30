@@ -79,6 +79,12 @@ lint: ## Run golangci-lint
 vuln: ## Check dependencies for known vulnerabilities
 	$(GOBIN)/govulncheck ./...
 
+.PHONY: openapi-lint
+openapi-lint: ## Validate api/openapi.yaml (requires npx)
+	@command -v npx >/dev/null 2>&1 \
+		|| { echo "SKIPPED: npx is not installed"; exit 0; }
+	npx --yes @redocly/cli@latest lint api/openapi.yaml
+
 .PHONY: check
 check: fmt vet lint test-race vuln sqlc-check ## Run every gate that CI runs
 

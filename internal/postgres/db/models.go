@@ -3,3 +3,35 @@
 //   sqlc v1.31.1
 
 package db
+
+import (
+	"net/netip"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+type RefreshSession struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	FamilyID  uuid.UUID
+	ParentID  *uuid.UUID
+	ExpiresAt time.Time
+	RevokedAt *time.Time
+	CreatedAt time.Time
+	UserAgent *string
+	Ip        *netip.Addr
+}
+
+type User struct {
+	ID    uuid.UUID
+	Email string
+	// Argon2id PHC string. Parameters travel with the hash so they can be upgraded per user.
+	PasswordHash string
+	Name         string
+	Status       string
+	Role         string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}

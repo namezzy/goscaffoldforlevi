@@ -27,6 +27,15 @@ type RouterDeps struct {
 	// Register is called with the /api/v1 subrouter. Feature packages attach
 	// their routes here, which keeps httpx free of any business imports.
 	Register func(r chi.Router)
+
+	// RateLimitByIP guards unauthenticated traffic. It is injected rather than
+	// constructed here so that httpx does not depend on the limiter, and so a
+	// test can mount the stack without a Redis instance.
+	//
+	// A nil value disables it. That is a real configuration — RATELIMIT_ENABLED
+	// exists — but it is the composition root's decision to make, not this
+	// function's.
+	RateLimitByIP func(http.Handler) http.Handler
 }
 
 // NewRouter assembles the middleware stack and the route tree.
@@ -39,9 +48,13 @@ type RouterDeps struct {
 //   - CORS precedes the rate limiters so a preflight never consumes quota.
 //   - Metrics (Phase 5) precede the rate limiters so that 429s are counted.
 //   - Timeout precedes the handlers so its deadline reaches the database.
+//   - RateLimitByIP precedes authentication, so a flood of forged tokens is
+//     rejected before anything verifies a signature.
 //
-// Authentication, authorization and rate limiting are mounted in later phases
-// at the marked positions.
+// Authentication, per-user limiting and authorization are mounted by the
+// feature packages on the routes that need them, because each depends on
+// something this function does not know: the token verifier, the principal, and
+// the target record respectively.
 func NewRouter(deps RouterDeps) http.Handler {
 	r := chi.NewRouter()
 
@@ -54,7 +67,9 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Use(CORS(deps.Config.HTTP))
 	r.Use(BodyLimit(deps.Config.HTTP.MaxBodyBytes))
 	r.Use(Timeout(deps.Config.HTTP.RequestTimeout, deps.Logger))
-	// Phase 6: RateLimitByIP
+	if deps.RateLimitByIP != nil {
+		r.Use(deps.RateLimitByIP)
+	}
 
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
 		WriteError(req.Context(), w, deps.Logger,

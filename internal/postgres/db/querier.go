@@ -6,9 +6,31 @@ package db
 
 import (
 	"context"
+
+	"github.com/google/uuid"
 )
 
 type Querier interface {
+	CountUsers(ctx context.Context) (int64, error)
+	CreateRefreshSession(ctx context.Context, arg CreateRefreshSessionParams) (RefreshSession, error)
+	// Columns are listed explicitly everywhere. SELECT * makes the generated
+	// struct change shape whenever a migration adds a column, which turns an
+	// additive schema change into a compile error at best and a silent behaviour
+	// change at worst.
+	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeleteExpiredRefreshSessions(ctx context.Context) (int64, error)
+	DeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
+	// GetRefreshSessionByTokenHash takes a row lock because every caller reads the
+	// session in order to immediately rotate or revoke it. Without the lock, two
+	// concurrent refreshes with the same token both read it as valid and both
+	// succeed, which is exactly the replay this table exists to detect.
+	GetRefreshSessionByTokenHash(ctx context.Context, tokenHash []byte) (RefreshSession, error)
+	GetUserByEmail(ctx context.Context, email string) (User, error)
+	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
+	// ListUsers pages with a stable order. created_at alone is not stable: rows
+	// created in the same millisecond would come back in arbitrary order and a
+	// client paging through them would see duplicates and gaps.
+	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	// System queries: infrastructure, not business data.
 	//
 	// Feature queries live in their own files (queries/user.sql, queries/auth.sql)
@@ -17,6 +39,14 @@ type Querier interface {
 	// pgxpool.Ping only proves a connection exists; it does not prove the session
 	// is usable, which is the state a failing-over database leaves behind.
 	ReadinessProbe(ctx context.Context) (int32, error)
+	RevokeRefreshFamily(ctx context.Context, familyID uuid.UUID) (int64, error)
+	// RevokeRefreshSession is idempotent: revoked_at is only set the first time,
+	// so re-revoking never moves the timestamp forward.
+	RevokeRefreshSession(ctx context.Context, id uuid.UUID) (int64, error)
+	// UpdateUser applies a partial update. A NULL argument means "leave alone",
+	// which is what lets one statement serve PATCH without the repository having
+	// to build SQL by string concatenation.
+	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
 }
 
 var _ Querier = (*Queries)(nil)

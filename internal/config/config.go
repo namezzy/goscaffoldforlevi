@@ -54,12 +54,13 @@ func (s Secret) IsEmpty() bool { return s == "" }
 
 // Config is the root configuration.
 type Config struct {
-	App      App
-	HTTP     HTTP
-	Database Database
-	Redis    Redis
-	Auth     Auth
-	OTel     OTel
+	App       App
+	HTTP      HTTP
+	Database  Database
+	Redis     Redis
+	Auth      Auth
+	RateLimit RateLimit
+	OTel      OTel
 }
 
 // App holds process-level identity used by logs, traces and metrics.
@@ -145,6 +146,43 @@ type Auth struct {
 	Audience   string
 	AccessTTL  time.Duration
 	RefreshTTL time.Duration
+
+	// Argon2 cost parameters. They are configurable because the right values
+	// depend on the hardware the service runs on, and because raising them is
+	// how the deployment responds to hardware getting cheaper. Lowering them
+	// below the floors enforced in Validate is refused rather than warned
+	// about: a weakened password hash is invisible until it matters.
+	Argon2Time    uint32
+	Argon2Memory  uint32 // KiB
+	Argon2Threads uint8
+}
+
+// RateLimit configures the token buckets described in ADR-0008.
+//
+// Each scope is expressed as "Quota requests per Period, with a bucket depth of
+// Burst" so that an operator can read the policy without knowing what a token
+// bucket is.
+type RateLimit struct {
+	// Enabled turns limiting off entirely. It exists for local development and
+	// for load testing; production must leave it on, because the login path
+	// depends on it to bound Argon2 memory use.
+	Enabled bool
+
+	IPQuota  int
+	IPPeriod time.Duration
+	IPBurst  int
+
+	UserQuota  int
+	UserPeriod time.Duration
+	UserBurst  int
+
+	LoginIPQuota  int
+	LoginIPPeriod time.Duration
+	LoginIPBurst  int
+
+	LoginIDQuota  int
+	LoginIDPeriod time.Duration
+	LoginIDBurst  int
 }
 
 // OTel configures telemetry export. Instrumentation is always compiled in;

@@ -6,11 +6,12 @@
 
 ## Current Phase
 
-**Phase 2 (Foundation) completed at 2026-08-30.**
+**Phase 3 (User / Auth / RBAC / Rate Limiting / OpenAPI) completed at 2026-08-30.**
 
-可运行的骨架服务已就绪：配置、日志、Postgres、Redis、HTTP Server、
-中间件栈、错误映射、健康探针、优雅退出、迁移与代码生成工具链。
-**尚无任何业务功能**（无 User、无认证、无限流、无消息）。
+服务现在有真实业务面：用户 CRUD、登录与令牌轮转、基于角色的授权、
+四个 scope 的限流，以及一份与路由双向校验的 OpenAPI 文档。
+**尚无**：tracing/metrics 实际接入（Phase 5）、消息与 outbox（Phase 7）、
+容器化与 CI/CD（Phase 8）。
 
 ## Locked Decisions
 
@@ -76,6 +77,23 @@ Bootstrap / 优雅退出 / 各流程图）在 [`docs/architecture.md`](docs/arch
 | sqlc 生成物不过期 | `make sqlc-check`（`sqlc diff`） | CI 失败 |
 | 迁移与代码 schema 一致 | `pgtest` 对真实库跑真实迁移 | 集成测试失败 |
 
+### Phase 3 代码
+
+| 包 | 内容 |
+|----|------|
+| `internal/user` | `ID`（具名 UUIDv7）、`User`、`Status`、`Patch`（全指针 + `ChangesPrivileges`）、`Page`；`Repository`/`PasswordHasher` 窄接口；`Service`（Create/Get/List/Update/ChangePassword/Delete，授权全部走 `auth.Authorize*`）；`AccountStore` 适配器 |
+| `internal/user/userpg` | pgx 实现。**全项目唯一翻译 SQL 错误码的地方**：23505→Conflict、23514→InvalidArgument、23503→Conflict、`pgx.ErrNoRows`→NotFound |
+| `internal/user/userhttp` | `userResponse`（结构上没有 PasswordHash 的落点）、请求 DTO、6 条路由、`intQuery` 严格解析 |
+| `internal/auth` | `policy.go`（Role/Permission/`Can`/`Authorize`/`AuthorizeSelfOrPermission`）、`principal.go`、`password.go`（Argon2id + PHC + `VerifyDummy`）、`token.go`、`account.go`（窄口 `Account`/`AccountStore`）、`service.go`（Login/Refresh/Logout） |
+| `internal/auth/authjwt` | HS256 签发与校验；`WithValidMethods`/`WithIssuer`/`WithAudience`/`WithExpirationRequired`；密钥下限 32 字节；所有失败归一到 `ErrInvalidToken` |
+| `internal/auth/authpg` | refresh session 仓储；`GetByTokenHash` 带 `FOR UPDATE` |
+| `internal/auth/authhttp` | `Authenticate` / `RequirePermission` 中间件、login/refresh/logout handler（`Cache-Control: no-store`） |
+| `internal/ratelimit` | `Scope`/`Rule`/`Decision`/`Limiter`；Redis Lua token bucket（时间由应用传入）、`LocalLimiter`（带条目上限）、`Guard`（fail-open/closed 分流 + 降级 + 日志抽样） |
+| `internal/ratelimit/ratelimithttp` | `ByIP` / `ByUser` / `Login` 三个中间件；登录路径不暴露 `X-RateLimit-*` |
+| `internal/httpx` | 新增 `clientip.go`：XFF 从右往左数 `TRUSTED_PROXY_COUNT` 跳，默认 0 完全忽略该头 |
+| `cmd/api` | 新增 `features.go`（组合根 + `registerRoutes`）与 `openapi_test.go`（路由/文档双向一致性） |
+| `api/openapi.yaml` | 12 个 operation（9 个 API + 3 个探针），Redocly 校验通过 |
+
 ### 相对 Phase 1 设计的补充决定
 
 1. **`run(ctx)` 放在 `cmd/api` 的 `run.go`（package main）**，由 `main_test.go` 驱动。
@@ -93,14 +111,32 @@ Bootstrap / 优雅退出 / 各流程图）在 [`docs/architecture.md`](docs/arch
 7. **`corsPreflightMaxAge` 是常量不是配置**。允许的方法与头在编译期固定，
    运维没有可调的东西。
 
+### Phase 3 的补充决定
+
+1. **`Role` 归 `auth` 所有，`user.User.Role` 的类型就是 `auth.Role`**。
+   依赖方向是 `user → auth`，`auth` 永不 import `user`；`auth` 自己定义
+   `Account`/`AccountStore` 窄接口，适配器放在 `user` 一侧。
+   两处各定义一份 Role 会立刻产生两张需要手工同步的权限表。
+2. **503 不进 `apperr.Kind`**（延续 Phase 2 的第 3 条）。限流后端不可用用
+   sentinel `ratelimit.ErrBackendUnavailable`，中间件直接写 503。
+3. **`users` 表带 `role` 列并有 CHECK 约束**。角色是授权判据，
+   让它只存在于应用内存里意味着数据库可以存下应用拒绝的值。
+4. **登录限流必须读 body**，因此 `Login` 中间件以 4 KiB 上限读取后再把 body 还原。
+   不设这个上限，限流器本身就会变成让服务端缓冲大 body 的入口。
+5. **refresh 轮转全程在一个事务内**，且 `GetByTokenHash` 取行锁。
+   没有锁，两个并发 refresh 会双双成功，重放检测形同虚设。
+6. **`registerRoutes` 拆成不依赖数据库的独立函数**，
+   使路由表能在单元测试里被遍历并与 OpenAPI 对照。
+   只能通过完整启动才能拿到的路由表，等于没有被任何东西校验。
+
 ## Not Implemented Yet
 
-- User 业务模块（Phase 3）、认证与 RBAC（Phase 3/4）
-- 限流（Phase 6）、消息队列与 outbox（Phase 7）
 - OpenTelemetry 实际接入与指标（Phase 5，中间件栈中已留注释挂载点）
-- OpenAPI spec 与路由一致性测试（Phase 8）
-- Dockerfile、docker-compose、GitHub Actions、Kubernetes manifests（Phase 8）
+- 消息队列、outbox 与 `processed_events`（Phase 7）
+- Dockerfile、docker-compose、GitHub Actions、Kubernetes manifests（Phase 6/8）
 - `goscaffold` CLI（Phase 8）
+- 用户注册（自助 sign-up）：当前建用户需要 `user:create` 权限，
+  没有公开注册端点；这是范围问题，不是遗漏
 
 ## Known Limitations
 
@@ -129,31 +165,51 @@ Phase 2 引入的新妥协：
 | 集成测试需要 Docker，默认 `go test ./...` 不跑 | 用 `-tags=integration` 显式开启，见 `make test-integration` |
 | `internal/postgres/db` 的生成代码带 `emit_interface`，当前无人实现该接口 | Phase 3 的 repository 会用它做测试替身 |
 
+Phase 3 引入的新妥协：
+
+| 妥协 | 理由 |
+|------|------|
+| 没有 seed 的第一个管理员账号；首个 admin 需人工插库或后续 Phase 提供 CLI | 引导路径未在本阶段定义，硬编码一个默认 admin 是常见的后门来源 |
+| `Guard` 降级到本地限流器时，配额按副本数放大（`fallbackFactor=2`） | 每副本独立计数无法得到全局配额；放大系数是"别把配额收得比预期紧"的取舍 |
+| refresh 家族撤销会把合法客户端一并登出 | 无法区分"被盗用"与"客户端重试"，从安全侧取严 |
+| `POST /users` 的 409 会泄漏"该邮箱已注册" | 沿用 ADR-0007 的判断：该端点需要 `user:create`，调用方已是可信管理员 |
+| OpenAPI 由手写维护，只有路径/方法/路径参数被自动校验，schema 与实现之间仍可能漂移 | 全量 schema 校验需要引入运行时校验中间件，成本与收益不匹配 |
+| `make openapi-lint` 需要 npx，未纳入 `make check` | `check` 必须在离线环境可跑 |
+
 工程层面：
 
-- 本阶段所有门禁命令均**实际执行并通过**，无 SKIPPED 项
+- Phase 2 与 Phase 3 所有门禁命令均**实际执行并通过**，无 SKIPPED 项
 - 集成测试在真实 PostgreSQL 17 容器上运行（testcontainers + OrbStack）
+- `npx @redocly/cli lint api/openapi.yaml`：valid，4 条 warning
+  （servers 用 localhost、三个探针没有 4xx 响应）——均为有意为之
 
 ## Next Phase Entry Conditions
 
-Phase 3 (User Module) 开始前已成立：
+Phase 4 (Testing & Quality) 开始前已成立：
 
-- [x] `make check` 全绿（fmt / vet / lint / test -race / vuln / sqlc-check）
-- [x] `make test-integration` 全绿（真实 PostgreSQL）
-- [x] depguard 规则已生效，业务包的依赖方向在编译期受约束
-- [x] migration 与 sqlc 工具链可用且已被测试实际调用
-- [x] `TxManager` 的提交 / 回滚 / panic 回滚 / 嵌套复用四种语义已有集成测试覆盖
+- [x] `make check` 全绿（fmt / vet / lint / test -race / vuln / sqlc-check），
+      `golangci-lint run` 0 issues
+- [x] `make test-integration` 全绿（真实 PostgreSQL 17）
+- [x] 9 个业务端点全部实现，且与 `api/openapi.yaml` 双向一致（有测试强制）
+- [x] 登录三种失败路径不可区分；refresh 重放会撤销整个 family（有测试）
+- [x] 四个限流 scope 落地，通用 fail-open / 登录 fail-closed（有测试）
+- [x] Argon2id 与登录限流同阶段落地（ADR-0007 / 0008 的硬约束）
 
-Phase 3 必须遵守且最容易被违反的点：
+Phase 4 必须遵守且最容易被违反的点：
 
-1. `internal/user/*.go`（根目录）**不得 import** `pgx` / `chi` / `net/http` /
-   `go-redis` / `otel`。写完立刻跑 `make lint` 验证，不要等到阶段结束。
-2. 新增 query 后必须 `make sqlc` 并**提交生成物**，否则 `make sqlc-check` 会失败。
-3. 数据库错误码（如 `23505` 唯一约束冲突）的翻译**只能写在 `internal/user/userpg`**，
-   翻译成 `apperr.Conflict`。Service 层不得出现 pgx 错误判断。
-4. **Argon2id 与登录限流必须同时落地**（ADR-0007 / 0008）——只做前者会引入内存 DoS。
-5. 分页排序必须是 `ORDER BY created_at DESC, id DESC`（ADR-0004），
-   缺少 `id` 兜底会在同毫秒插入时产生不稳定顺序。
-6. 新增配置项必须同步更新 `.env.example`，否则 `TestEnvExampleMatchesTheLoader` 失败。
+1. **新增或修改端点必须同步 `api/openapi.yaml`**，否则
+   `cmd/api/openapi_test.go` 会双向失败。这条现在是自动强制的，不靠自觉。
+2. 数据库错误码的翻译**只能出现在 `*pg` 包**。Phase 4 补测试时若发现
+   Service 层需要判断具体错误，说明翻译漏了一层，改仓储而不是改 Service。
+3. 覆盖率不是目标，**没有被断言的行为才是**。Phase 4 的重点是补
+   `internal/auth/authpg` 与 `internal/user/userpg` 之外仍未被覆盖的分支，
+   以及为 `Guard` 的降级路径补并发测试。
+4. 任何"为了测试"而放宽的生产代码（导出内部符号、加 test-only 分支）
+   都必须先在 ADR 或本文件里说明理由。
 
-Phase 3 **不做**：限流实现、OpenAPI、消息、tracing/metrics。
+## 与原始阶段划分的偏差
+
+原 Prompt 把限流排在 Phase 6、OpenAPI 排在 Phase 8。重构后的 Prompt
+（`prompts/03-user-auth.md`）把两者都并入 Phase 3，理由已写在 ADR-0007 / 0008：
+Argon2id 单独上线会引入内存 DoS 入口，而 OpenAPI 越晚写越接近于事后补文档。
+本文件的 Phase 2 章节仍保留当时的措辞，作为决策变更的记录。

@@ -109,6 +109,25 @@ func validConfig() config.Config {
 			Audience:   "go-enterprise-api",
 			AccessTTL:  900 * secondsUnit,
 			RefreshTTL: 2592000 * secondsUnit,
+
+			Argon2Time:    3,
+			Argon2Memory:  64 * 1024,
+			Argon2Threads: 4,
+		},
+		RateLimit: config.RateLimit{
+			Enabled:       true,
+			IPQuota:       100,
+			IPPeriod:      60 * secondsUnit,
+			IPBurst:       200,
+			UserQuota:     600,
+			UserPeriod:    60 * secondsUnit,
+			UserBurst:     1000,
+			LoginIPQuota:  10,
+			LoginIPPeriod: 900 * secondsUnit,
+			LoginIPBurst:  10,
+			LoginIDQuota:  5,
+			LoginIDPeriod: 900 * secondsUnit,
+			LoginIDBurst:  5,
 		},
 		OTel: config.OTel{
 			Enabled:       false,
@@ -177,6 +196,21 @@ func TestValidateRejects(t *testing.T) {
 			name:   "refresh ttl not longer than access ttl",
 			mutate: func(c *config.Config) { c.Auth.RefreshTTL = 60 * secondsUnit },
 			want:   "AUTH_REFRESH_TTL",
+		},
+		{
+			name:   "argon2 memory below the owasp floor",
+			mutate: func(c *config.Config) { c.Auth.Argon2Memory = 4096 },
+			want:   "AUTH_ARGON2_MEMORY_KIB",
+		},
+		{
+			name:   "rate limiting disabled in production",
+			mutate: func(c *config.Config) { c.RateLimit.Enabled = false },
+			want:   "RATELIMIT_ENABLED",
+		},
+		{
+			name:   "login burst smaller than login quota",
+			mutate: func(c *config.Config) { c.RateLimit.LoginIDBurst = 1 },
+			want:   "RATELIMIT_LOGIN_ID_BURST",
 		},
 		{
 			name:   "min conns above max conns",

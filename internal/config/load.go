@@ -90,6 +90,31 @@ func Load() (Config, error) {
 			Audience:   p.str("AUTH_AUDIENCE", "go-enterprise-api"),
 			AccessTTL:  p.dur("AUTH_ACCESS_TTL", 15*time.Minute),
 			RefreshTTL: p.dur("AUTH_REFRESH_TTL", 720*time.Hour),
+
+			// OWASP's recommended Argon2id profile: 64 MiB, three passes,
+			// four lanes.
+			Argon2Time:    p.uint32("AUTH_ARGON2_TIME", 3),
+			Argon2Memory:  p.uint32("AUTH_ARGON2_MEMORY_KIB", 64*1024),
+			Argon2Threads: p.uint8("AUTH_ARGON2_THREADS", 4),
+		},
+		RateLimit: RateLimit{
+			Enabled: p.bool("RATELIMIT_ENABLED", true),
+
+			IPQuota:  p.int("RATELIMIT_IP_QUOTA", 100),
+			IPPeriod: p.dur("RATELIMIT_IP_PERIOD", time.Minute),
+			IPBurst:  p.int("RATELIMIT_IP_BURST", 200),
+
+			UserQuota:  p.int("RATELIMIT_USER_QUOTA", 600),
+			UserPeriod: p.dur("RATELIMIT_USER_PERIOD", time.Minute),
+			UserBurst:  p.int("RATELIMIT_USER_BURST", 1000),
+
+			LoginIPQuota:  p.int("RATELIMIT_LOGIN_IP_QUOTA", 10),
+			LoginIPPeriod: p.dur("RATELIMIT_LOGIN_IP_PERIOD", 15*time.Minute),
+			LoginIPBurst:  p.int("RATELIMIT_LOGIN_IP_BURST", 10),
+
+			LoginIDQuota:  p.int("RATELIMIT_LOGIN_ID_QUOTA", 5),
+			LoginIDPeriod: p.dur("RATELIMIT_LOGIN_ID_PERIOD", 15*time.Minute),
+			LoginIDBurst:  p.int("RATELIMIT_LOGIN_ID_BURST", 5),
 		},
 		OTel: OTel{
 			Enabled:       p.bool("OTEL_ENABLED", false),
@@ -200,6 +225,53 @@ func (c Config) Validate() error {
 		probs.add("AUTH_REFRESH_TTL", "must be longer than AUTH_ACCESS_TTL")
 	}
 
+	// Argon2. The floors match OWASP's minimum acceptable profile; going below
+	// them is a security regression that nothing else in the system would
+	// surface.
+	if c.Auth.Argon2Time < 2 {
+		probs.add("AUTH_ARGON2_TIME", "must be at least 2")
+	}
+	if c.Auth.Argon2Memory < 19*1024 {
+		probs.add("AUTH_ARGON2_MEMORY_KIB", "must be at least 19456 (19 MiB)")
+	}
+	if c.Auth.Argon2Threads < 1 {
+		probs.add("AUTH_ARGON2_THREADS", "must be at least 1")
+	}
+
+	// Rate limiting. The checks only run when limiting is enabled, but the
+	// production guard below runs unconditionally: disabling limits in
+	// production removes the only bound on Argon2 memory use.
+	if c.App.Environment.IsProduction() && !c.RateLimit.Enabled {
+		probs.add("RATELIMIT_ENABLED",
+			"must be true in production; login rate limiting bounds Argon2 memory use")
+	}
+	if c.RateLimit.Enabled {
+		for _, r := range []struct {
+			prefix       string
+			quota, burst int
+			period       time.Duration
+		}{
+			{"RATELIMIT_IP", c.RateLimit.IPQuota, c.RateLimit.IPBurst, c.RateLimit.IPPeriod},
+			{"RATELIMIT_USER", c.RateLimit.UserQuota, c.RateLimit.UserBurst, c.RateLimit.UserPeriod},
+			{"RATELIMIT_LOGIN_IP", c.RateLimit.LoginIPQuota, c.RateLimit.LoginIPBurst, c.RateLimit.LoginIPPeriod},
+			{"RATELIMIT_LOGIN_ID", c.RateLimit.LoginIDQuota, c.RateLimit.LoginIDBurst, c.RateLimit.LoginIDPeriod},
+		} {
+			if r.quota <= 0 {
+				probs.add(r.prefix+"_QUOTA", "must be positive")
+			}
+			if r.burst <= 0 {
+				probs.add(r.prefix+"_BURST", "must be positive")
+			}
+			probs.positive(r.prefix+"_PERIOD", r.period)
+			// A burst smaller than nothing is meaningless, but a burst smaller
+			// than the quota is worse: it caps throughput below the advertised
+			// limit, so the service rejects requests it promised to serve.
+			if r.burst > 0 && r.quota > 0 && r.burst < r.quota {
+				probs.add(r.prefix+"_BURST", "must not be smaller than "+r.prefix+"_QUOTA")
+			}
+		}
+	}
+
 	// OTel
 	if c.OTel.SamplingRatio < 0 || c.OTel.SamplingRatio > 1 {
 		probs.add("OTEL_SAMPLING_RATIO", "must be between 0 and 1")
@@ -290,6 +362,35 @@ func (p *parser) int32(key string, def int32) int32 {
 		return def
 	}
 	return int32(n)
+}
+
+// uint32 parses a value that must be non-negative and fit in 32 bits. Argon2
+// takes its cost parameters as uint32, and a negative or oversized value would
+// wrap into a nonsensical cost rather than being rejected.
+func (p *parser) uint32(key string, def uint32) uint32 {
+	v, ok := p.lookup(key)
+	if !ok {
+		return def
+	}
+	n, err := strconv.ParseUint(v, 10, 32)
+	if err != nil {
+		p.add(key, "must be a non-negative 32-bit integer")
+		return def
+	}
+	return uint32(n)
+}
+
+func (p *parser) uint8(key string, def uint8) uint8 {
+	v, ok := p.lookup(key)
+	if !ok {
+		return def
+	}
+	n, err := strconv.ParseUint(v, 10, 8)
+	if err != nil {
+		p.add(key, "must be an integer between 0 and 255")
+		return def
+	}
+	return uint8(n)
 }
 
 func (p *parser) float(key string, def float64) float64 {

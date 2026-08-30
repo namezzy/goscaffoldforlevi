@@ -8,13 +8,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/example/go-enterprise/internal/config"
 	"github.com/example/go-enterprise/internal/httpx"
 	"github.com/example/go-enterprise/internal/postgres"
+	"github.com/example/go-enterprise/internal/ratelimit/ratelimithttp"
 	"github.com/example/go-enterprise/internal/redis"
 	"github.com/example/go-enterprise/internal/telemetry"
 )
@@ -48,7 +48,6 @@ func run(ctx context.Context) error {
 	defer pool.Close()
 
 	txManager := postgres.NewTxManager(pool)
-	_ = txManager // consumed by feature packages from Phase 3.
 
 	var cache *goredis.Client
 	cache, err = redis.NewClient(ctx, cfg.Redis)
@@ -67,14 +66,17 @@ func run(ctx context.Context) error {
 
 	health := httpx.NewHealth(logger, cfg.App.Version, checkers(pool, cache, cfg.Redis.Required)...)
 
+	features, err := buildFeatures(cfg, pool, cache, txManager, logger)
+	if err != nil {
+		return err
+	}
+
 	handler := httpx.NewRouter(httpx.RouterDeps{
-		Config: cfg,
-		Logger: logger,
-		Health: health,
-		Register: func(r chi.Router) {
-			// Feature routes are attached here from Phase 3.
-			_ = r
-		},
+		Config:        cfg,
+		Logger:        logger,
+		Health:        health,
+		Register:      features.register,
+		RateLimitByIP: ratelimithttp.ByIP(features.guard, cfg.HTTP.TrustedProxyCount, logger),
 	})
 
 	server := httpx.NewServer(cfg.HTTP, handler)
