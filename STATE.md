@@ -6,9 +6,11 @@
 
 ## Current Phase
 
-**Phase 1 (Architecture Design) completed at 2026-08-29.**
+**Phase 2 (Foundation) completed at 2026-08-30.**
 
-产出物全部为文档。仓库中**尚无任何 Go 代码**，无 `go.mod`。
+可运行的骨架服务已就绪：配置、日志、Postgres、Redis、HTTP Server、
+中间件栈、错误映射、健康探针、优雅退出、迁移与代码生成工具链。
+**尚无任何业务功能**（无 User、无认证、无限流、无消息）。
 
 ## Locked Decisions
 
@@ -39,27 +41,66 @@ Bootstrap / 优雅退出 / 各流程图）在 [`docs/architecture.md`](docs/arch
 
 ## Implemented
 
-文档：
+### 文档
 
 - `docs/adr/0001` ~ `docs/adr/0009`（9 个 ADR）
 - `docs/architecture.md`
 - `STATE.md`（本文件）
 
-代码：**无**。
+### 代码
+
+| 包 | 内容 |
+|----|------|
+| `internal/apperr` | `Kind`/`Code`/`Message`/`cause` 错误模型；`Kind` 零值 = Internal；`Kind.String()` 越界返回 `"unknown"`（供穷尽性测试探测） |
+| `internal/validate` | `Violations` 累加器 + `Required`/`Email`/`RuneLen`/`OneOf`/`IntRange`/`NormalizeEmail`。不含任何业务规则 |
+| `internal/config` | `Secret` 类型（`String`/`GoString`/`LogValue`/`MarshalText` 全部返回 `[REDACTED]`）；`Load()` 环境变量优先 + godotenv 兜底；`Validate()` 一次性累积全部问题 |
+| `internal/telemetry` | slog logger（dev 文本 / 其余 JSON），`contextHandler` 自动注入 `request_id`，Phase 5 在同一处加 `trace_id` |
+| `internal/postgres` | `NewPool`（失败即关池）、`TxManager.WithTx`、`Querier(ctx, pool)`、`InTx`、`HealthCheck`（执行真实 SQL）、`db/`（sqlc 生成物）、`pgtest/`（testcontainers 夹具） |
+| `internal/redis` | `NewClient`；连接失败一律返回 error，required/optional 的取舍留给调用方 |
+| `internal/httpx` | `errmap.go`（唯一的 Kind→status 表）、`response.go`（`WriteJSON`/`WriteError`/`DecodeJSON`）、`middleware.go`、`server.go`（五个超时全部显式）、`health.go`、`router.go` |
+| `cmd/api` | `main.go`（只决定退出码）+ `run.go`（手工 DI + 优雅退出）+ `main_test.go`（真实启停） |
+
+### 工程配置
+
+`go.mod`（7 个直接依赖，ADR-0001 上限 20）、`.gitignore`、`.golangci.yml`（v2 格式，含 depguard）、
+`.env.example`、`Makefile`、`sqlc.yaml`、`migrations/000001_baseline`。
+
+### 已生效的强制机制
+
+| 机制 | 实现位置 | 违反时的后果 |
+|------|---------|-------------|
+| 依赖方向（ADR-0002） | `.golangci.yml` depguard 三组规则 | `make lint` 失败 |
+| Kind→status 映射唯一且穷尽 | `internal/httpx/errmap_test.go` | 新增 Kind 未登记 → 测试失败 |
+| `.env.example` 与 loader 不漂移 | `internal/config/env_example_test.go` | 键名不一致 → 测试失败 |
+| 示例密钥不得进 production | `Validate()` + `env_example_test.go` 交叉校验 | 启动失败 / 测试失败 |
+| sqlc 生成物不过期 | `make sqlc-check`（`sqlc diff`） | CI 失败 |
+| 迁移与代码 schema 一致 | `pgtest` 对真实库跑真实迁移 | 集成测试失败 |
+
+### 相对 Phase 1 设计的补充决定
+
+1. **`run(ctx)` 放在 `cmd/api` 的 `run.go`（package main）**，由 `main_test.go` 驱动。
+   既满足"shutdown 可测试"，又不违反 ADR-0002 对 `bootstrap/` 包的否决。
+2. **`main()` 只做 `os.Exit(start())`**。`os.Exit` 会跳过 defer，把二者写在同一函数里
+   会静默丢掉清理逻辑。
+3. **503 / 504 / 405 不进 `Kind` 集合**。它们描述传输层状态（依赖不可用 / 超时 /
+   路由表），不是业务错误分类，由 health handler、Timeout 中间件、
+   `MethodNotAllowed` 直接写出。
+4. **`Timeout` 自己实现而非用 `http.TimeoutHandler`**。后者只掐响应写入，
+   不取消 handler 的 context，超时后数据库查询仍在跑——那正是要释放的资源。
+5. **`RequestID` 校验入站头必须是 UUID**。该头由客户端控制，未校验就写进每行日志
+   等于开放日志注入。
+6. **新增 `LOG_LEVEL` 配置**。事故中提高日志级别不应该需要重新构建。
+7. **`corsPreflightMaxAge` 是常量不是配置**。允许的方法与头在编译期固定，
+   运维没有可调的东西。
 
 ## Not Implemented Yet
 
-除上述文档外的**全部内容**，包括但不限于：
-
-- `go.mod` 及任何 Go 源文件
-- 配置 / 日志 / 数据库 / Redis / HTTP Server / Router / 中间件 / 错误处理
-- migration 与 sqlc 工具链
-- User 模块、认证、RBAC、限流、OpenAPI spec
-- 消息队列、outbox、消费者
-- OpenTelemetry 接入、指标
-- Dockerfile、docker-compose、GitHub Actions、Kubernetes manifests
-- `goscaffold` CLI
-- `.gitignore`、`Makefile`、`.golangci.yml`、`.env.example`
+- User 业务模块（Phase 3）、认证与 RBAC（Phase 3/4）
+- 限流（Phase 6）、消息队列与 outbox（Phase 7）
+- OpenTelemetry 实际接入与指标（Phase 5，中间件栈中已留注释挂载点）
+- OpenAPI spec 与路由一致性测试（Phase 8）
+- Dockerfile、docker-compose、GitHub Actions、Kubernetes manifests（Phase 8）
+- `goscaffold` CLI（Phase 8）
 
 ## Known Limitations
 
@@ -78,27 +119,41 @@ Bootstrap / 优雅退出 / 各流程图）在 [`docs/architecture.md`](docs/arch
 | Redis 成为 v1 硬依赖（因限流），单机部署也需运行 | ADR-0001 / 0008 |
 | outbox 引入至少一个轮询周期（默认 1s）的消息延迟 | ADR-0009 |
 
+Phase 2 引入的新妥协：
+
+| 妥协 | 理由 |
+|------|------|
+| `Timeout` 中间件在 handler 已开始写响应后无法改写状态码，只能截断 | 无法回收已发出的字节；日志里能看到真实原因 |
+| `queries/system.sql` 只有一条 `ReadinessProbe`，仅为验证 sqlc 工具链 | Phase 3 起才有真实业务查询 |
+| `migrations/000001_baseline` 只建了 `set_updated_at()` 触发器函数 | Phase 2 无业务表；该函数是后续每张表都要用的基础设施 |
+| 集成测试需要 Docker，默认 `go test ./...` 不跑 | 用 `-tags=integration` 显式开启，见 `make test-integration` |
+| `internal/postgres/db` 的生成代码带 `emit_interface`，当前无人实现该接口 | Phase 3 的 repository 会用它做测试替身 |
+
 工程层面：
 
-- 本阶段**未执行**任何 `go` 命令（Phase 1 无代码，符合 Phase 0 §0.4）
-- 本阶段**未执行** Docker / kubectl 相关验证（无产物可验证）
+- 本阶段所有门禁命令均**实际执行并通过**，无 SKIPPED 项
+- 集成测试在真实 PostgreSQL 17 容器上运行（testcontainers + OrbStack）
 
 ## Next Phase Entry Conditions
 
-Phase 2 (Foundation) 开始前必须成立：
+Phase 3 (User Module) 开始前已成立：
 
-- [x] Go 1.27+ 可用（已确认 `go1.27.0 darwin/arm64`）
-- [x] Docker 可用（已确认 `29.4.0`）—— Phase 2 的 compose 与 Phase 3 的 testcontainers 需要
-- [x] 9 个 ADR 与 `docs/architecture.md` 已落盘
-- [x] git 仓库已初始化
+- [x] `make check` 全绿（fmt / vet / lint / test -race / vuln / sqlc-check）
+- [x] `make test-integration` 全绿（真实 PostgreSQL）
+- [x] depguard 规则已生效，业务包的依赖方向在编译期受约束
+- [x] migration 与 sqlc 工具链可用且已被测试实际调用
+- [x] `TxManager` 的提交 / 回滚 / panic 回滚 / 嵌套复用四种语义已有集成测试覆盖
 
-Phase 2 必须完成且不得遗漏的**新增项**（相对原始 prompt 有前移或补充）：
+Phase 3 必须遵守且最容易被违反的点：
 
-1. `.golangci.yml` 中的 **depguard 规则**——否则 ADR-0002 的依赖方向不存在
-2. **golang-migrate 工具链**（`make migrate-up/down/create`）——Phase 3 立即需要
-3. **sqlc 工具链**（`sqlc.yaml` + `make sqlc` + 生成物入库 + CI diff 校验）——Phase 3 立即需要
-4. `config.Secret` 类型（`String()` / `LogValue()` 返回 `[REDACTED]`）
-5. `Validate()` 必须拒绝 production 环境下使用 `.env.example` 的示例 JWT 密钥
-6. `.gitignore`
+1. `internal/user/*.go`（根目录）**不得 import** `pgx` / `chi` / `net/http` /
+   `go-redis` / `otel`。写完立刻跑 `make lint` 验证，不要等到阶段结束。
+2. 新增 query 后必须 `make sqlc` 并**提交生成物**，否则 `make sqlc-check` 会失败。
+3. 数据库错误码（如 `23505` 唯一约束冲突）的翻译**只能写在 `internal/user/userpg`**，
+   翻译成 `apperr.Conflict`。Service 层不得出现 pgx 错误判断。
+4. **Argon2id 与登录限流必须同时落地**（ADR-0007 / 0008）——只做前者会引入内存 DoS。
+5. 分页排序必须是 `ORDER BY created_at DESC, id DESC`（ADR-0004），
+   缺少 `id` 兜底会在同毫秒插入时产生不稳定顺序。
+6. 新增配置项必须同步更新 `.env.example`，否则 `TestEnvExampleMatchesTheLoader` 失败。
 
-Phase 2 **不做**：User 业务、认证、限流、消息、tracing/metrics（仅预留挂载点）。
+Phase 3 **不做**：限流实现、OpenAPI、消息、tracing/metrics。
