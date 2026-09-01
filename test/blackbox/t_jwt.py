@@ -1,6 +1,9 @@
 import os,sys,json,time,base64; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from lib import *
-SECRET=sys.argv[1]
+SECRET=sys.argv[1] if len(sys.argv)>1 else os.environ.get("AUTH_JWT_SECRET","")
+if not SECRET:
+    sys.exit("t_jwt.py needs the signing secret: pass it as argv[1] or set AUTH_JWT_SECRET.\n"
+             "Without it every request is rejected for the wrong reason and the suite is a false green.")
 T=load_tokens()
 admin_at=T['admin']['access_token']; member_at=T['member']['access_token']
 member_rt=T['member']['refresh_token']

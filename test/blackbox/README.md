@@ -11,7 +11,7 @@ checked. Everything here was found by treating the API as a stranger would.
 ```sh
 make run                       # or: go run ./cmd/api
 python3 lib.py                 # writes tok.json (admin + member tokens)
-python3 t_jwt.py "$AUTH_JWT_SECRET"
+python3 t_jwt.py "$AUTH_JWT_SECRET"   # or export it; argv wins
 python3 t_authz.py
 python3 t_input.py
 python3 t_race.py
