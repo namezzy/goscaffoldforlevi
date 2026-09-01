@@ -71,6 +71,11 @@ type Decision struct {
 	Allowed bool
 	// Limit and Remaining populate the X-RateLimit-* headers so a well-behaved
 	// client can slow down before it is rejected.
+	//
+	// Limit is the bucket depth rather than the sustained quota, because that
+	// is the quantity Remaining counts down from. Reporting the quota instead
+	// let Remaining exceed Limit whenever a rule allowed bursting, and clients
+	// that compute usage as limit-remaining then saw a negative number.
 	Limit     int
 	Remaining int
 	// RetryAfter is how long until one more request would be permitted. Token
@@ -93,7 +98,7 @@ type Limiter interface {
 func allowDecision(rule Rule, tokens float64, now time.Time) Decision {
 	return Decision{
 		Allowed:   true,
-		Limit:     rule.Quota,
+		Limit:     rule.Burst,
 		Remaining: int(math.Floor(tokens)),
 		ResetAt:   now.Add(rule.ttl()),
 	}
@@ -113,7 +118,7 @@ func denyDecision(rule Rule, tokens float64, now time.Time) Decision {
 	}
 	return Decision{
 		Allowed:    false,
-		Limit:      rule.Quota,
+		Limit:      rule.Burst,
 		Remaining:  0,
 		RetryAfter: retry,
 		ResetAt:    now.Add(retry),

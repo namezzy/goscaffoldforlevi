@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
+	"strings"
 
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/telemetry"
@@ -108,6 +110,10 @@ func WriteError(ctx context.Context, w http.ResponseWriter, logger *slog.Logger,
 // client bug into a confusing "the update did nothing" report. The body is
 // assumed to be already size-limited by the BodyLimit middleware.
 func DecodeJSON(r *http.Request, v any) error {
+	if err := requireJSONContentType(r); err != nil {
+		return err
+	}
+
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 
@@ -130,4 +136,40 @@ func DecodeJSON(r *http.Request, v any) error {
 		return apperr.Invalid("REQUEST_BODY_INVALID", "request body must contain a single JSON object")
 	}
 	return nil
+}
+
+// requireJSONContentType refuses a body that is not declared as JSON.
+//
+// Without this the decoder happily parsed a JSON body labelled text/plain,
+// which contradicts the OpenAPI document and, more importantly, removes a
+// browser-side obstacle: text/plain is one of the three content types a
+// cross-origin HTML form may send without a preflight request, so accepting it
+// is what lets such a request reach a handler at all.
+//
+// The answer is 400 rather than 415 because ADR-0003 fixes the set of error
+// kinds, and inventing one for a case the client can correct from the code
+// alone is not worth reopening that decision. The code is distinct, which is
+// what a client branches on.
+func requireJSONContentType(r *http.Request) error {
+	raw := r.Header.Get("Content-Type")
+	if raw == "" {
+		return apperr.Invalid("UNSUPPORTED_MEDIA_TYPE",
+			"Content-Type must be application/json")
+	}
+
+	mediaType, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		return apperr.Invalid("UNSUPPORTED_MEDIA_TYPE",
+			"Content-Type must be application/json")
+	}
+
+	// Vendor types such as application/vnd.example.v1+json are JSON by
+	// construction, and rejecting them would break versioning schemes that are
+	// otherwise perfectly compatible with this decoder.
+	mediaType = strings.ToLower(mediaType)
+	if mediaType == "application/json" || strings.HasSuffix(mediaType, "+json") {
+		return nil
+	}
+	return apperr.Invalid("UNSUPPORTED_MEDIA_TYPE",
+		"Content-Type must be application/json")
 }

@@ -129,3 +129,56 @@ func TestNormalizeEmail(t *testing.T) {
 		}
 	}
 }
+
+// TestNoControlCharsRejectsWhatPostgreSQLCannotStore covers the case that
+// reached production behaviour as a 500.
+//
+// A name containing U+0000 passed every rule — it is one rune, so the length
+// check was satisfied — and PostgreSQL then refused it with SQLSTATE 22021,
+// which surfaced to the client as an internal error. Text a user typed is not
+// an internal error.
+func TestNoControlCharsRejectsWhatPostgreSQLCannotStore(t *testing.T) {
+	t.Parallel()
+
+	rejected := map[string]string{
+		"nul":              "A\x00B",
+		"leading nul":      "\x00Name",
+		"bell":             "A\aB",
+		"escape":           "A\x1bB",
+		"newline":          "A\nB",
+		"tab":              "A\tB",
+		"carriage return":  "A\rB",
+		"delete":           "A\x7fB",
+		"line separator":   "A\u2028B",
+		"rtl override":     "admin\u202egnp.exe",
+		"zero width space": "A\u200bB",
+	}
+	for name, input := range rejected {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var v validate.Violations
+			if v.NoControlChars("name", input) {
+				t.Fatalf("%q was accepted", input)
+			}
+			if !v.Any() {
+				t.Fatal("no violation was recorded")
+			}
+			if got := v.Items()[0].Reason; got != "invalid_characters" {
+				t.Errorf("reason = %q, want %q", got, "invalid_characters")
+			}
+		})
+	}
+
+	// The rule must not reject text people legitimately have in their names,
+	// or it trades a 500 for a wrongly rejected user.
+	accepted := []string{
+		"Ada Lovelace", "李四", "José Ñuñez", "O'Brien-Smith", "Ω μ 😀",
+	}
+	for _, input := range accepted {
+		var v validate.Violations
+		if !v.NoControlChars("name", input) {
+			t.Errorf("%q was rejected but is a legitimate name", input)
+		}
+	}
+}

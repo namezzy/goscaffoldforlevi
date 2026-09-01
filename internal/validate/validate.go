@@ -8,6 +8,7 @@ package validate
 import (
 	"net/mail"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/example/go-enterprise/internal/apperr"
@@ -82,6 +83,38 @@ func (v *Violations) RuneLen(field, s string, minLen, maxLen int) bool {
 	case n > maxLen:
 		v.Add(field, "too_long")
 		return false
+	}
+	return true
+}
+
+// NoControlChars records a violation when s contains a character that has no
+// place in human-entered text.
+//
+// The immediate reason is that PostgreSQL cannot store U+0000 in a text column
+// at all: it answers SQLSTATE 22021, which reaches the client as an internal
+// error for input the client supplied. Rejecting it here names the offending
+// field instead.
+//
+// The rest of the set is about display rather than storage. Bidirectional
+// overrides let "admin\u202egnp.exe" render as something else entirely, and
+// invisible characters let two distinct names look identical in every user
+// interface that shows them.
+//
+// Zero-width joiners are deliberately absent from the set: they are load-
+// bearing in Persian and Indic names, and a rule that rejects real names to
+// prevent a rendering trick has made the product worse.
+func (v *Violations) NoControlChars(field, s string) bool {
+	for _, r := range s {
+		switch {
+		case unicode.IsControl(r),
+			r == '\u2028', r == '\u2029', // line and paragraph separators
+			r >= '\u202a' && r <= '\u202e', // bidi embedding and override
+			r >= '\u2066' && r <= '\u2069', // bidi isolates
+			r == '\u200b',                  // zero-width space
+			r == '\ufeff':                  // zero-width no-break space
+			v.Add(field, "invalid_characters")
+			return false
+		}
 	}
 	return true
 }

@@ -1,0 +1,30 @@
+import sys,json; sys.path.insert(0,'/tmp/apitest')
+import uuid
+from lib import *
+T=json.load(open('tok.json')); A=T['admin']['access_token']
+print("--- the three defects, against the running service ---")
+s,b,_=call("POST","/api/v1/users",raw=b'{"email":"nul3-%s@example.com","name":"A\\u0000B","password":"a long enough password"}' % uuid.uuid4().hex[:8].encode(),token=A)
+check("NUL in name -> 400 with a named field", s==400 and 'invalid_characters' in b, f"{s} {b}")
+print("     ",b[:150])
+s,b,_=call("GET","/api/v1/users?page=9223372036854775807",token=A)
+check("page=max int64 -> 200 empty page", s==200 and json.loads(b)['items']==[], f"{s} {b}")
+print("     ",b[:150])
+s,b,_=call("POST","/api/v1/users",raw=b'{"email":"ct2-%s@example.com","name":"N","password":"a long enough password"}' % uuid.uuid4().hex[:8].encode(),token=A,ctype="text/plain")
+check("text/plain -> rejected", s==400 and 'UNSUPPORTED_MEDIA_TYPE' in b, f"{s} {b}")
+
+print("\n--- the fixes must not have broken the normal paths ---")
+s,b,_=call("POST","/api/v1/users",{"email":f'ok-after-fix-{uuid.uuid4().hex[:8]}@example.com',"name":"Ada Lovelace","password":"a long enough password"},token=A)
+check("a normal create still works", s==201, f"{s} {b}")
+s,b,_=call("POST","/api/v1/users",{"email":f'unicode-ok-{uuid.uuid4().hex[:8]}@example.com',"name":"李四 José 😀","password":"a long enough password"},token=A)
+check("unicode names still accepted", s==201, f"{s} {b}")
+s,b,_=call("POST","/api/v1/users",{"email":f'zwnj-{uuid.uuid4().hex[:8]}@example.com',"name":"م\u200cریم","password":"a long enough password"},token=A)
+check("Persian zero-width non-joiner still accepted", s==201, f"{s} {b}")
+s,b,_=call("GET","/api/v1/users?page=1&page_size=5",token=A)
+check("listing still works", s==200 and len(json.loads(b)['items'])>0, f"{s} {b}")
+d=json.loads(b)['page_info']
+s2,b2,_=call("GET","/api/v1/users?page=99999999",token=A)
+check("total_pages is consistent past the end", json.loads(b2)['page_info']['total_pages']>0, b2)
+print("      in-range:",d," past-end:",json.loads(b2)['page_info'])
+s,b,_=call("POST","/api/v1/auth/login",{"email":"member@example.com","password":"another correct horse"})
+check("login still works", s==200, f"{s} {b}")
+report()

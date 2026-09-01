@@ -123,7 +123,7 @@ func ErrRateLimited() error {
 func (g *Guard) Allow(ctx context.Context, scope Scope, identity string) (Decision, error) {
 	rule := g.cfg.Rule(scope)
 	if !g.cfg.Enabled || !rule.Valid() || identity == "" {
-		return Decision{Allowed: true, Limit: rule.Quota, Remaining: rule.Burst}, nil
+		return Decision{Allowed: true, Limit: rule.Burst, Remaining: rule.Burst}, nil
 	}
 
 	if g.primary != nil {

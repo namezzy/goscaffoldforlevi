@@ -79,6 +79,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (User, error) {
 	v.Email("email", email)
 	v.Required("name", in.Name)
 	v.RuneLen("name", in.Name, 1, 100)
+	v.NoControlChars("name", in.Name)
 	if !in.Role.Valid() {
 		v.Add("role", "must be one of: admin, user")
 	}
@@ -133,13 +134,23 @@ func (s *Service) List(ctx context.Context, page, pageSize int) (Page, error) {
 		return Page{}, err
 	}
 
+	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
+
 	// The conversions below are safe because both values have just been
 	// clamped: pageSize is at most MaxPageSize, and page is bounded so that the
-	// offset cannot exceed the row count. Without the explicit bound on page a
-	// client could send page=2^40 and overflow the offset into a negative
-	// number, which PostgreSQL rejects with a confusing error.
-	if int64(page)*int64(pageSize) > maxOffset {
-		return Page{Items: []User{}, Page: page, PageSize: pageSize, Total: total}, nil
+	// offset cannot exceed maxOffset.
+	//
+	// The bound is checked by division rather than by comparing
+	// page*pageSize against the limit. That multiplication overflows for a
+	// large page — page=math.MaxInt with pageSize=20 wraps to -20, which is
+	// below any limit — so the guard against the overflow was itself the
+	// overflow, and a negative OFFSET reached PostgreSQL. Dividing cannot
+	// overflow, because pageSize is at least 1 here.
+	if page > maxOffset/pageSize {
+		return Page{
+			Items: []User{}, Page: page, PageSize: pageSize,
+			Total: total, TotalPages: totalPages,
+		}, nil
 	}
 	offset := int32((page - 1) * pageSize)                  //nolint:gosec // bounded above
 	items, err := s.repo.List(ctx, int32(pageSize), offset) //nolint:gosec // <= MaxPageSize
@@ -147,7 +158,6 @@ func (s *Service) List(ctx context.Context, page, pageSize int) (Page, error) {
 		return Page{}, err
 	}
 
-	totalPages := int((total + int64(pageSize) - 1) / int64(pageSize))
 	return Page{
 		Items:      items,
 		Page:       page,
@@ -195,6 +205,7 @@ func (s *Service) Update(ctx context.Context, id ID, p Patch) (User, error) {
 	if p.Name != nil {
 		v.Required("name", *p.Name)
 		v.RuneLen("name", *p.Name, 1, 100)
+		v.NoControlChars("name", *p.Name)
 	}
 	if p.Status != nil && !p.Status.Valid() {
 		v.Add("status", "must be one of: active, disabled")

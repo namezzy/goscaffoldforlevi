@@ -277,3 +277,72 @@ func TestGuardIgnoresAnEmptyIdentity(t *testing.T) {
 		t.Errorf("backend calls = %d, want 0", backend.calls)
 	}
 }
+
+// TestRemainingNeverExceedsLimit covers a defect found by reading the response
+// headers of a plain GET: X-RateLimit-Limit was 600 while
+// X-RateLimit-Remaining was 999.
+//
+// Clients derive their usage as limit-remaining, so that pair says the caller
+// has made -399 requests. The cause is that the two numbers were counting
+// different things: Limit reported the sustained quota while Remaining
+// reported the depth of the token bucket, and the default general rule allows
+// a burst of 1000 against a quota of 600/min.
+//
+// The bucket depth is the honest answer to "how many requests may I send right
+// now", so Limit follows Remaining rather than the other way round. Where
+// burst equals quota — every login rule — nothing changes.
+func TestRemainingNeverExceedsLimit(t *testing.T) {
+	t.Parallel()
+
+	// Burst deliberately above Quota, which is the configuration that made the
+	// inconsistency visible.
+	rule := ratelimit.Rule{Quota: 600, Period: time.Minute, Burst: 1000}
+
+	check := func(t *testing.T, what string, d ratelimit.Decision) {
+		t.Helper()
+		if d.Remaining < 0 || d.Remaining > d.Limit {
+			t.Errorf("%s: remaining = %d, limit = %d, want 0 <= remaining <= limit",
+				what, d.Remaining, d.Limit)
+		}
+	}
+
+	t.Run("allowed", func(t *testing.T) {
+		t.Parallel()
+		limiter := ratelimit.NewLocalLimiter(16)
+		d, err := limiter.Allow(context.Background(), ratelimit.ScopeIP, "someone", rule)
+		if err != nil {
+			t.Fatalf("Allow: %v", err)
+		}
+		if !d.Allowed {
+			t.Fatal("the first request against a fresh bucket was denied")
+		}
+		check(t, "first request", d)
+	})
+
+	t.Run("denied", func(t *testing.T) {
+		t.Parallel()
+		limiter := ratelimit.NewLocalLimiter(16)
+		tight := ratelimit.Rule{Quota: 1, Period: time.Minute, Burst: 1}
+		for i := 0; i < 3; i++ {
+			d, err := limiter.Allow(context.Background(), ratelimit.ScopeIP, "someone", tight)
+			if err != nil {
+				t.Fatalf("Allow: %v", err)
+			}
+			check(t, "request after exhaustion", d)
+		}
+	})
+
+	t.Run("guard disabled", func(t *testing.T) {
+		t.Parallel()
+		guard := ratelimit.NewGuard(
+			ratelimit.Config{Enabled: false, IP: rule},
+			ratelimit.NewLocalLimiter(16),
+			discardLogger(),
+		)
+		d, err := guard.Allow(context.Background(), ratelimit.ScopeIP, "someone")
+		if err != nil {
+			t.Fatalf("Allow: %v", err)
+		}
+		check(t, "limiting disabled", d)
+	})
+}

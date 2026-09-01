@@ -6,8 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/example/go-enterprise/internal/config"
 )
@@ -169,5 +173,75 @@ func TestEveryResponseCarriesARequestID(t *testing.T) {
 
 	if rec.Header().Get(HeaderRequestID) == "" {
 		t.Fatal("response has no request id header")
+	}
+}
+
+// TestMethodNotAllowedAdvertisesTheAllowedMethods covers a defect found by
+// sending DELETE to a route that only serves GET and POST: the answer was 405
+// with no Allow header.
+//
+// RFC 9110 requires a 405 to carry Allow, and the reason is practical rather
+// than ceremonial: without it the client is told "not that method" and has to
+// guess which one to use. chi sets the header in its built-in responder, so
+// replacing that responder to emit a JSON body silently dropped it.
+func TestMethodNotAllowedAdvertisesTheAllowedMethods(t *testing.T) {
+	t.Parallel()
+
+	logger := discardLogger()
+	router := NewRouter(RouterDeps{
+		Config: config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
+		Logger: logger,
+		Health: NewHealth(logger, "test"),
+		Register: func(v1 chi.Router) {
+			v1.Route("/things", func(r chi.Router) {
+				r.Get("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+				r.Post("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })
+				r.Get("/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+				r.Delete("/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			})
+		},
+	})
+
+	for _, tc := range []struct {
+		method, path string
+		want         []string
+	}{
+		{http.MethodDelete, "/api/v1/things", []string{"GET", "POST"}},
+		{http.MethodPut, "/api/v1/things", []string{"GET", "POST"}},
+		{http.MethodPost, "/api/v1/things/7", []string{"DELETE", "GET"}},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s %s: status = %d, want 405", tc.method, tc.path, rec.Code)
+		}
+
+		got := rec.Header().Values("Allow")
+		if len(got) == 1 {
+			got = strings.Split(got[0], ", ")
+		}
+		sort.Strings(got)
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("%s %s: Allow = %v, want %v", tc.method, tc.path, got, tc.want)
+		}
+		// The body still has to be the JSON shape every other error uses; the
+		// header is an addition, not a replacement.
+		if !strings.Contains(rec.Body.String(), "METHOD_NOT_ALLOWED") {
+			t.Errorf("%s %s: body = %s", tc.method, tc.path, rec.Body)
+		}
+	}
+
+	// A path that matches nothing is a 404, and a 404 must not claim that some
+	// other method would have worked.
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/nothing-here", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+	if got := rec.Header().Get("Allow"); got != "" {
+		t.Errorf("a 404 carried Allow = %q", got)
 	}
 }

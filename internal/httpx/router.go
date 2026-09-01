@@ -70,18 +70,11 @@ func NewRouter(deps RouterDeps) http.Handler {
 	if deps.RateLimitByIP != nil {
 		r.Use(deps.RateLimitByIP)
 	}
+	r.Use(jsonMethodNotAllowed)
 
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
 		WriteError(req.Context(), w, deps.Logger,
 			apperr.NotFound("ROUTE_NOT_FOUND", "the requested endpoint does not exist"))
-	})
-	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
-		// 405 has no counterpart in the error Kind set: it describes the
-		// route table, not a business outcome. Written directly, like 504.
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		_, _ = w.Write([]byte(
-			`{"error":{"code":"METHOD_NOT_ALLOWED","message":"the method is not allowed for this endpoint"}}`))
 	})
 
 	// Probes sit outside /api/v1: they are infrastructure, not API surface,
@@ -95,4 +88,55 @@ func NewRouter(deps RouterDeps) http.Handler {
 	})
 
 	return r
+}
+
+// jsonMethodNotAllowed gives chi's 405 the JSON body the rest of the API uses,
+// without taking over the response.
+//
+// Replacing chi's responder with a custom one was the obvious approach and was
+// wrong: chi computes the set of allowed methods while routing, keeps it in an
+// unexported field, and passes it only to its own responder. A custom handler
+// therefore cannot set Allow, which RFC 9110 requires, and the three ways to
+// rebuild the list from outside are all worse — the route tree matches every
+// method at a subrouter's mount point, RoutePattern reports that mount point
+// rather than the leaf, and walking the tree means reimplementing chi's
+// pattern matching well enough to avoid advertising a method that then 404s.
+//
+// So chi keeps writing the status and the header, and this only fills in the
+// body it leaves empty.
+func jsonMethodNotAllowed(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mw := &methodNotAllowedWriter{ResponseWriter: w}
+		next.ServeHTTP(mw, r)
+
+		if mw.status == http.StatusMethodNotAllowed && !mw.wroteBody {
+			_, _ = mw.ResponseWriter.Write([]byte(
+				`{"error":{"code":"METHOD_NOT_ALLOWED",` +
+					`"message":"the method is not allowed for this endpoint"}}`))
+		}
+	})
+}
+
+type methodNotAllowedWriter struct {
+	http.ResponseWriter
+	status    int
+	wroteBody bool
+}
+
+func (w *methodNotAllowedWriter) WriteHeader(status int) {
+	w.status = status
+	if status == http.StatusMethodNotAllowed {
+		// Set before the status is written, because that is when the header
+		// map is flushed.
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *methodNotAllowedWriter) Write(b []byte) (int, error) {
+	// chi's responder calls Write(nil); a zero-length write is not a body.
+	if len(b) > 0 {
+		w.wroteBody = true
+	}
+	return w.ResponseWriter.Write(b)
 }

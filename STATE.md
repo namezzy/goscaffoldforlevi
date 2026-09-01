@@ -228,6 +228,52 @@ Phase 4 必须遵守且最容易被违反的点：
    不是登录计数器，所以没泄漏剩余尝试次数；但一个 429 旁边写着
    "Remaining: 199" 是自相矛盾的。登录中间件现在主动清掉上游设置的这三个头。
 
+## 对抗性黑盒测试发现并修复的问题（2026-08-31）
+
+把 API 当作陌生人来打，共 110 条断言（`test/blackbox/`），发现 5 个真实缺陷，
+全部已修并带回归测试：
+
+1. **姓名里的 U+0000 造成 500**。校验层没有控制字符规则，NUL 一路进到
+   PostgreSQL，SQLSTATE 22021 未被翻译成领域错误。新增 `validate.NoControlChars`
+   （拒 C0/C1、U+2028/2029、bidi 覆写、U+200B、U+FEFF），接在 Create/Update 上。
+   **放行 ZWJ/ZWNJ**：波斯语和天城文的姓名要用它们，一刀切会拒掉合法用户。
+
+2. **防溢出的守卫自己溢出了**。`List` 用 `int64(page)*int64(pageSize) > 1<<30`
+   拦越界，`page=9223372036854775807` 时乘积回绕成 -20，守卫放行，负 OFFSET
+   进了 PG。改成除法 `page > maxOffset/pageSize`，不产生中间值就不会回绕。
+   **同样是假件掩盖了它**：`fakeRepository.List` 默默接受负 offset，
+   已改成像 PG 一样报错，现在没有 Docker 也能复现。
+   顺带修了越界页返回 `total_pages: 0` 与在范围内不一致的问题。
+
+3. **`Content-Type: text/plain` 的请求被当作 JSON 接受**。`DecodeJSON`
+   从不检查 Content-Type。新增 `requireJSONContentType`（接受 `application/json`
+   与 `+json` 后缀）。ADR-0003 锁死了 7 个 Kind，所以沿用 503 的先例：
+   `KindInvalidArgument` + 独立 code `UNSUPPORTED_MEDIA_TYPE`。
+
+4. **405 不带 `Allow` 头**（RFC 9110 要求）。根因不在我们的代码：chi 在路由时
+   算出允许的方法集，存在非导出字段里，只传给它自己的 responder——为了返回
+   JSON 体而替换 responder，就把这个头一起丢了。三种从外部重建列表的办法都更糟
+   （子路由挂载点对任何方法都 match、`RoutePattern` 给的是挂载点而非叶子、
+   遍历路由树等于重新实现 chi 的模式匹配）。最终**不替换** responder，
+   改用一个中间件补上 chi 留空的响应体，头仍由 chi 自己写。
+
+5. **`X-RateLimit-Remaining` 大于 `X-RateLimit-Limit`**（999 > 600）。
+   两个数在数不同的东西：`Limit` 报的是持续配额，`Remaining` 报的是令牌桶深度，
+   而通用规则是 quota 600/min、burst 1000。客户端按 `limit - remaining`
+   算用量会得到负数。改 `Limit` 为桶深——"此刻还能发多少"才是 `Remaining`
+   递减的那个量；burst == quota 的登录规则不受影响。
+
+**方法论教训（比上面任何一条都重要）**：第一轮 18 个 JWT 测试全部"通过"却毫无价值——
+我用的变量名是 `JWT_SECRET`，真名是 `AUTH_JWT_SECRET`，所有 401 都只是签名不对。
+**必须先证明基线能被接受，"改了某个 claim 后被拒绝"才归功于那个 claim。**
+同理，客户端没能发出去的请求不等于服务端拒绝了它：未编码的空格和 2MB 体的
+提前响应都伪装成了服务端缺陷。
+
+**观察到但判断不改的**：HEAD 打到 GET 路由返回 405（chi 不自动支持，属路由策略）；
+重复 JSON 键取最后一个（`encoding/json` 的标准行为，也是 JSON 规范允许的）；
+跨域无 CORS 头（未配置允许的 origin，属预期）。
+
+
 ## 与原始阶段划分的偏差
 
 原 Prompt 把限流排在 Phase 6、OpenAPI 排在 Phase 8。重构后的 Prompt

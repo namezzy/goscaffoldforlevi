@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -68,6 +69,13 @@ func (f *fakeRepository) GetByEmail(_ context.Context, email string) (user.User,
 }
 
 func (f *fakeRepository) List(_ context.Context, limit, offset int32) ([]user.User, error) {
+	// PostgreSQL answers "OFFSET must not be negative" (SQLSTATE 2201X). A fake
+	// that quietly accepted one could never fail when the service computed one,
+	// which is precisely how an overflow bug survived until it was found by
+	// hand against the real database.
+	if offset < 0 || limit < 0 {
+		return nil, errors.New("list users: OFFSET must not be negative")
+	}
 	out := []user.User{}
 	for i := int(offset); i < len(f.order) && len(out) < int(limit); i++ {
 		out = append(out, f.byID[f.order[i]])
@@ -431,5 +439,69 @@ func TestRepositoryErrorsPropagateUnchanged(t *testing.T) {
 	})
 	if !errors.Is(err, sentinel) {
 		t.Errorf("Create() = %v, want the repository error unchanged", err)
+	}
+}
+
+// TestNamesWithControlCharactersAreRejectedBeforeTheDatabase is the regression
+// test for a 500 found by sending a name containing U+0000. PostgreSQL cannot
+// store a NUL in a text column, so the write failed with SQLSTATE 22021 and the
+// client was told the server had broken. The value is invalid input, and
+// validation is both the layer that should reject it and the only layer that
+// can say which field was wrong.
+func TestNamesWithControlCharactersAreRejectedBeforeTheDatabase(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepository()
+	svc := newService(repo)
+	ctx := adminContext()
+
+	_, err := svc.Create(ctx, user.CreateInput{
+		Email: "nul@example.com", Name: "A\x00B", Password: validPassword, Role: auth.RoleUser,
+	})
+	var appErr *apperr.Error
+	if !errors.As(err, &appErr) || appErr.Kind != apperr.KindInvalidArgument {
+		t.Fatalf("Create error = %v, want an invalid-argument error", err)
+	}
+	if len(repo.order) != 0 {
+		t.Error("the invalid name still reached the repository")
+	}
+
+	existing := seedUser(t, repo, "patch@example.com", auth.RoleUser)
+	bad := "A\x00B"
+	_, err = svc.Update(ctx, existing.ID, user.Patch{Name: &bad})
+	if !errors.As(err, &appErr) || appErr.Kind != apperr.KindInvalidArgument {
+		t.Fatalf("Update error = %v, want an invalid-argument error", err)
+	}
+}
+
+// TestAHugePageNumberCannotOverflowTheOffset is the regression test for a 500
+// found by sending page=9223372036854775807.
+//
+// A guard existed and even documented this attack, but it tested for the
+// overflow with a multiplication that overflowed first: page*pageSize wrapped
+// to -20, which is not greater than the limit, so the guard passed and a
+// negative OFFSET reached PostgreSQL. A bound has to be checked with arithmetic
+// that cannot itself overflow.
+func TestAHugePageNumberCannotOverflowTheOffset(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepository()
+	svc := newService(repo)
+	ctx := adminContext()
+	seedUser(t, repo, "a@example.com", auth.RoleUser)
+	seedUser(t, repo, "b@example.com", auth.RoleUser)
+
+	for _, page := range []int{math.MaxInt, math.MaxInt / 2, math.MaxInt / 20, 1 << 40, 1 << 31} {
+		got, err := svc.List(ctx, page, 20)
+		if err != nil {
+			t.Fatalf("List(page=%d): %v", page, err)
+		}
+		if len(got.Items) != 0 {
+			t.Errorf("List(page=%d) returned %d items; a page past the end is empty",
+				page, len(got.Items))
+		}
+		if got.Total != 2 {
+			t.Errorf("List(page=%d) total = %d, want 2", page, got.Total)
+		}
 	}
 }
