@@ -15,6 +15,7 @@ import (
 
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/config"
+	"github.com/example/go-enterprise/internal/messaging"
 	"github.com/example/go-enterprise/internal/telemetry"
 )
 
@@ -345,4 +346,85 @@ type errStubWithSecret struct{}
 
 func (errStubWithSecret) Error() string {
 	return `pq: duplicate key value violates unique constraint "users_email_key"`
+}
+
+// TestTraceContextForwardsAValidTraceParent checks the header reaches the
+// context, which is what puts asynchronous work on the caller's trace.
+func TestTraceContextForwardsAValidTraceParent(t *testing.T) {
+	t.Parallel()
+
+	const header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+	var seen string
+	handler := TraceContext(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			seen = messaging.TraceParentFromContext(r.Context())
+		}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("traceparent", header)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if seen != header {
+		t.Errorf("traceparent in context = %q, want %q", seen, header)
+	}
+}
+
+// TestTraceContextRejectsAForgedTraceParent is the case that matters. The
+// header is attacker-controlled: anyone can send one. Storing it unvalidated
+// puts fabricated parent ids on real traces, which is worse than no trace at
+// all because it looks like evidence.
+func TestTraceContextRejectsAForgedTraceParent(t *testing.T) {
+	t.Parallel()
+
+	forged := []string{
+		"'; DROP TABLE outbox_events; --",
+		"00-00000000000000000000000000000000-0000000000000000-00",
+		strings.Repeat("a", 4096),
+		"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7", // truncated
+	}
+
+	for _, header := range forged {
+		var seen string
+		handler := TraceContext(http.HandlerFunc(
+			func(_ http.ResponseWriter, r *http.Request) {
+				seen = messaging.TraceParentFromContext(r.Context())
+			}))
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("traceparent", header)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if seen != "" {
+			t.Errorf("a forged traceparent %.40q reached the context as %q", header, seen)
+		}
+		// A bad header must not fail the request either: rejecting the call
+		// would let anyone disable the API by sending junk in a header nobody
+		// looks at.
+		if rec.Code != http.StatusOK {
+			t.Errorf("a forged traceparent produced status %d; it must be ignored, not rejected",
+				rec.Code)
+		}
+	}
+}
+
+// TestTraceContextIsHarmlessWhenTheHeaderIsAbsent covers the common path: most
+// callers send nothing at all.
+func TestTraceContextIsHarmlessWhenTheHeaderIsAbsent(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	handler := TraceContext(http.HandlerFunc(
+		func(_ http.ResponseWriter, r *http.Request) {
+			called = true
+			if got := messaging.TraceParentFromContext(r.Context()); got != "" {
+				t.Errorf("traceparent = %q with no header sent", got)
+			}
+		}))
+
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if !called {
+		t.Error("the next handler was not called")
+	}
 }

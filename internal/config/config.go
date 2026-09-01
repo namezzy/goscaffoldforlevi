@@ -60,7 +60,63 @@ type Config struct {
 	Redis     Redis
 	Auth      Auth
 	RateLimit RateLimit
+	Messaging Messaging
 	OTel      OTel
+}
+
+// Messaging configures the outbox relay, the broker and the consumer.
+type Messaging struct {
+	// Enabled controls delivery, not recording.
+	//
+	// Off — the default — means events are discarded rather than written, so a
+	// service that needs no asynchronous work runs no relay, needs no broker,
+	// and deploys no worker. That default is the reason including messaging in
+	// the scaffold costs nothing to the projects that do not want it
+	// (ADR-0009).
+	Enabled bool
+
+	// NATSURLs are the brokers the worker publishes to and consumes from.
+	NATSURLs []string
+	// StreamName and SubjectPrefix namespace this service inside a shared
+	// cluster.
+	StreamName    string
+	SubjectPrefix string
+	// ConsumerName is the durable consumer name. It appears in the dedupe log,
+	// so changing it makes every past event look unprocessed.
+	ConsumerName string
+
+	// ConnectTimeout and PublishTimeout bound broker calls.
+	ConnectTimeout time.Duration
+	PublishTimeout time.Duration
+	// StreamMaxAge is how long the broker keeps a delivered message.
+	StreamMaxAge time.Duration
+	// AckWait must exceed the consumer's whole retry budget, or the broker
+	// redelivers a message that is still being worked on.
+	AckWait time.Duration
+	// MaxDeliver is the broker-side redelivery cap, a backstop behind the
+	// consumer's own retry limit.
+	MaxDeliver int
+
+	// RelayPollInterval is the floor on end-to-end latency: an event waits at
+	// most this long before the relay looks for it.
+	RelayPollInterval time.Duration
+	RelayBatchSize    int32
+
+	// HandlerTimeout bounds one attempt at one event.
+	HandlerTimeout time.Duration
+	// MaxAttempts is how many times an event is tried before it is parked.
+	MaxAttempts int
+	// BaseBackoff and MaxBackoff shape the full-jitter retry schedule.
+	BaseBackoff time.Duration
+	MaxBackoff  time.Duration
+
+	// PublishedRetention and ProcessedRetention are how long delivered events
+	// and dedupe records are kept. ProcessedRetention must stay longer than
+	// any possible redelivery window: prune it too early and an old message
+	// becomes processable again.
+	PublishedRetention time.Duration
+	ProcessedRetention time.Duration
+	PruneInterval      time.Duration
 }
 
 // App holds process-level identity used by logs, traces and metrics.
@@ -196,4 +252,19 @@ type OTel struct {
 // Addr returns the listen address for the HTTP server.
 func (h HTTP) Addr() string {
 	return net.JoinHostPort(h.Host, strconv.Itoa(h.Port))
+}
+
+// retryBudget is the longest a consumer can legitimately spend on one event:
+// every attempt running to its timeout, plus the worst case of every backoff.
+func (m Messaging) retryBudget() time.Duration {
+	budget := time.Duration(m.MaxAttempts) * m.HandlerTimeout
+	ceiling := m.BaseBackoff
+	for i := 1; i < m.MaxAttempts; i++ {
+		if ceiling > m.MaxBackoff {
+			ceiling = m.MaxBackoff
+		}
+		budget += ceiling
+		ceiling *= 2
+	}
+	return budget
 }

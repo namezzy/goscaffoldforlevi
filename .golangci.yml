@@ -109,6 +109,13 @@ linters:
 
   exclusions:
     rules:
+      # depguard matches import paths by prefix, so the "math/rand" rule also
+      # fires on "math/rand/v2" — the exact package its own message tells you
+      # to use. Excluding the v2 path keeps the v1 ban intact.
+      - linters:
+          - depguard
+        text: 'math/rand/v2'
+
       # Tests legitimately ignore errors, use fixed credentials, build
       # requests without a context, and contain deliberate misspellings.
       - path: _test\.go

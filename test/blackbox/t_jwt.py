@@ -1,7 +1,7 @@
-import sys,json,time,base64; sys.path.insert(0,'/tmp/apitest')
+import os,sys,json,time,base64; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from lib import *
 SECRET=sys.argv[1]
-T=json.load(open('tok.json'))
+T=load_tokens()
 admin_at=T['admin']['access_token']; member_at=T['member']['access_token']
 member_rt=T['member']['refresh_token']
 

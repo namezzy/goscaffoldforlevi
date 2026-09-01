@@ -60,6 +60,10 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	r.Use(Recovery(deps.Logger))
 	r.Use(RequestID)
+	// TraceContext is here, next to RequestID, because both establish the
+	// identifiers every later layer correlates on. Phase 5 replaces the
+	// forwarded header with a real span.
+	r.Use(TraceContext)
 	// Phase 5: Tracing
 	r.Use(Logging(deps.Logger))
 	// Phase 5: Metrics — before rate limiting, so rejected requests are counted.

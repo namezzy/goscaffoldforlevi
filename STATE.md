@@ -6,12 +6,12 @@
 
 ## Current Phase
 
-**Phase 3 (User / Auth / RBAC / Rate Limiting / OpenAPI) completed at 2026-08-30.**
+**Phase 4 (Messaging / 异步处理) completed at 2026-09-01.**
 
-服务现在有真实业务面：用户 CRUD、登录与令牌轮转、基于角色的授权、
-四个 scope 的限流，以及一份与路由双向校验的 OpenAPI 文档。
-**尚无**：tracing/metrics 实际接入（Phase 5）、消息与 outbox（Phase 7）、
-容器化与 CI/CD（Phase 8）。
+服务现在有一条完整的异步链路：业务写入与事件在同一个事务里落库（outbox），
+relay 把它们投递到 NATS JetStream，worker 消费、去重、重试，失败进 DLQ。
+默认 `MESSAGING_ENABLED=false`——关掉时 API 完整可用，只是不产生事件。
+**尚无**：tracing/metrics 实际接入（Phase 5）、容器化与 CI/CD（Phase 6/8）。
 
 ## Locked Decisions
 
@@ -132,8 +132,11 @@ Bootstrap / 优雅退出 / 各流程图）在 [`docs/architecture.md`](docs/arch
 ## Not Implemented Yet
 
 - OpenTelemetry 实际接入与指标（Phase 5，中间件栈中已留注释挂载点）
-- 消息队列、outbox 与 `processed_events`（Phase 7）
-- Dockerfile、docker-compose、GitHub Actions、Kubernetes manifests（Phase 6/8）
+- 真实的邮件发送：`notify.LogSender` 只把邮件写进日志。整条链路
+  （outbox、投递、幂等、重试、DLQ）都是真的并有测试，缺的只是一个
+  provider 实现——**不要在未接 provider 的情况下当作"能发信"部署**
+- Dockerfile、GitHub Actions、Kubernetes manifests（Phase 6/8）；
+  `docker-compose.yml` 已在本阶段落地，理由见"与原始阶段划分的偏差"
 - `goscaffold` CLI（Phase 8）
 - 用户注册（自助 sign-up）：当前建用户需要 `user:create` 权限，
   没有公开注册端点；这是范围问题，不是遗漏
@@ -185,7 +188,7 @@ Phase 3 引入的新妥协：
 
 ## Next Phase Entry Conditions
 
-Phase 4 (Testing & Quality) 开始前已成立：
+Phase 4 (Messaging) 开始前已成立：
 
 - [x] `make check` 全绿（fmt / vet / lint / test -race / vuln / sqlc-check），
       `golangci-lint run` 0 issues
@@ -341,3 +344,227 @@ PostgreSQL 17 + Redis 7 + 3 条迁移 + `make bootstrap-admin`，`/ready` 报告
 两个组件均 ok。实测：登录 200、创建用户 201 且邮箱被归一化、
 member 列用户 403、refresh 轮转后旧 token 401 **且新 token 一并失效**
 （上面那个 bug 在真实系统里保持修复状态）、登录失败第 5 次起 429。
+
+---
+
+# Phase 4 — Messaging / 异步处理（2026-09-01）
+
+## Messaging Architecture
+
+链路只有一条，每一段都可以单独替换：
+
+```
+HTTP 请求
+  └─ user.Service.Create  ── 一个事务 ──┬─ INSERT users
+                                        └─ INSERT outbox_events
+                                            （事务提交 = 事件已持久）
+                        ↓
+  cmd/worker: Relay      ── 每 1s / 被 Notify 唤醒
+     ClaimBatch (FOR UPDATE SKIP LOCKED)
+       → natsmq.Publisher.Publish
+       → MarkPublished          （publish 与 mark 在同一个事务内）
+                        ↓
+              NATS JetStream (stream EVENTS)
+                        ↓
+  cmd/worker: Subscription → Consumer.Process
+     一个事务：ClaimEvent(processed_events) → handler → commit
+     失败 → 指数退避重试 → 次数耗尽 → dead_letter_events
+```
+
+分层与依赖方向：
+
+| 包 | 职责 | 允许依赖 |
+|---|---|---|
+| `internal/messaging` | `Event` 信封、`Publisher`/`Handler` 接口、Relay、Consumer | 无基础设施依赖 |
+| `internal/messaging/messagingpg` | outbox 存储 + 去重存储（PostgreSQL） | `internal/postgres` |
+| `internal/messaging/natsmq` | JetStream 传输 | `nats.go`（全仓唯一允许处） |
+| `internal/notify` | 第一个消费者：欢迎邮件 | `messaging`、`user` |
+| `cmd/worker` | 组合根：relay + subscription 的生命周期 | 全部 |
+
+`.golangci.yml` 从 Phase 1 起就 deny 业务包 import `nats.go`。
+业务代码只见 `messaging.Publisher`，换 Kafka 是改 `natsmq` + main，
+不动任何 service。
+
+## Event Contracts
+
+事件类型格式 **`{aggregate}.{action}.v{n}`**，`messaging.ValidateType` 强制，
+不合规直接返回错误。版本写在类型里而不是单独字段：消费者订阅的是契约，
+不是"名字 + 一个需要自己记得检查的数字"。
+
+已定义的事件：
+
+| 类型 | 触发 | payload |
+|---|---|---|
+| `user.created.v1` | `POST /api/v1/users` 成功 | `user_id`、`email`、`name`、`role` |
+
+`user.CreatedPayload` **不含密码、不含哈希、不含令牌**。事件会被复制进
+broker、进每个消费者的存储、进任何记录它的日志——放进去的秘密在有人 review
+之前就已经泄漏了好几遍。`TestTheCreatedEventCarriesNoCredentials` 对**编码后的
+字节**断言而不是对解码后的结构体断言，因为解码会静默丢掉多出来的字段，
+而多出来的字段正是这个测试要抓的东西。
+
+信封字段：`ID`（UUIDv7，幂等键）、`Type`、`OccurredAt`（事实发生时间，
+不是投递时间）、`TraceParent`、`Payload`。
+
+## Delivery Guarantees
+
+**at-least-once。不是 exactly-once。**
+
+消费者必须自己幂等，`processed_events` 提供了一个通用实现，但**副作用发生在
+外部系统时（发信、扣款）去重表救不了你**——它只能保证同一个事务里的数据库
+写入不重复。
+
+三个地方各自可能产生一次重复，全部是有意的取舍：
+
+1. **relay 发布成功但 mark 失败** → 事务回滚，下一轮重发。选这个而不是
+   "先释放锁再发布"，因为后者会让两个 relay 并发发同一条。
+2. **JetStream ack 丢失** → 重投。
+3. **worker 在 handler 提交后、ack 前被杀** → 重投。
+
+去重表吸收这三种情况。代价是每条消息最多一次重复，收益是不会丢。
+
+**顺序**：不保证。`ClaimOutboxEvents` 按 `created_at` 排序只是"大致有序"——
+两个事务的提交顺序可以和插入顺序不同。任何依赖顺序的消费者都会出错。
+
+## Idempotency Strategy
+
+`processed_events` 主键是 **`(event_id, consumer)`**，不是 `event_id` 单列。
+单列会让"给已有事件类型新增一个消费者"静默什么都不做：没有报错、没有日志，
+只是一个永远不会运行的功能。`TestADifferentConsumerStillProcessesTheEvent`
+锁住这一点。
+
+**去重记录与 handler 的副作用必须在同一个事务里。**
+`Consumer.attempt` 在 `store.WithTx` 里先 `ClaimEvent` 再跑 handler。
+`messagingpg.Store.ClaimEvent` 会检查 `postgres.InTx(ctx)`，不在事务里**直接
+报错**——脱离事务时它保证会静默失效，而静默失效的幂等等于没有幂等。
+
+## Retry & DLQ Design
+
+消费者侧（`internal/messaging/consumer.go`）：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `MaxAttempts` | 5 | 含首次 |
+| `BaseBackoff` / `MaxBackoff` | 1s / 30s | 指数 + **full jitter** |
+| `HandlerTimeout` | 30s | 每次尝试独立超时 |
+
+- `messaging.Permanent(err)` 标记的错误**不重试**，直接进 DLQ。
+  解不开的 JSON 不会在第五次变得能解开。
+- handler panic 会被 recover 并当作可重试失败——一个 goroutine 的 panic
+  不该带走整个 worker。
+- 重试预算（5 次 × 30s + 1+2+4+8s ≈ 2m45s）必须小于 `MESSAGING_ACK_WAIT`
+  （5m），否则 JetStream 会在消费者还在重试时并发重投同一条。
+  **`internal/config/load.go` 把这条不变量做成了启动校验**，不是注释。
+- 同理 `PROCESSED_RETENTION`（30d）必须大于 `STREAM_MAX_AGE`（7d），
+  否则去重记录先过期，一次迟到的重投会被当成新消息处理两次。同样有启动校验。
+
+DLQ 运维（ADR-0009 说 Phase 4 只给 SQL + make 目标，CLI 留给 Phase 7）：
+
+```sh
+make outbox-status   # 积压 / 已发布 / 正在失败 / 最差重试次数
+make dlq-list        # 待处理的死信，含失败原因
+make dlq-replay id=<dead_letter_id>   # 放回 outbox 重新投递
+```
+
+replay **保留原 event ID**，这样任何已经处理过它的消费者会认出并跳过。
+换新 ID 会让全系统的去重记录一起失效。
+
+## 本阶段做的超范围的事
+
+一件，明确记录：**`docker-compose.yml`**。
+`prompts/04-messaging.md` §4.11 要求把 broker 放进 compose 的独立 profile，
+但仓库里根本没有 compose 文件，STATE.md 又把 compose 归给 Phase 6。
+处理方式是建一个最小的（pg + redis + nats），**nats 在 `--profile messaging`
+之下**——只做 messaging 需要的部分，Dockerfile / CI / K8s 仍然留给 Phase 6/8。
+
+## Known Limitations（Phase 4 新增）
+
+| 妥协 | 说明 |
+|---|---|
+| `notify.LogSender` 只写日志 | 占位实现，不是"假装能用"。链路是真的，缺 provider。已登记进 Not Implemented Yet |
+| outbox `payload` 是 `jsonb` | PostgreSQL 会规范化空白与键序，**原始字节不被保留**。消费者解析 JSON 所以无影响，但任何对原始 payload 签名/哈希的做法都会失效 |
+| 事件顺序无保证 | 见 Delivery Guarantees |
+| 单 stream / 单 consumer | 所有事件一个 stream，worker 一个 durable consumer。分流留给有第二个消费者时 |
+| relay 在持锁期间发布 | 换来"最多重复一次"，代价是一条慢消息会占着它那批的锁直到 `PublishTimeout` |
+| `traceparent` 目前只是转发请求头 | `httpx.TraceContext` 转发调用方的头，非法值丢弃。Phase 5 接入 OTel 后会改为从活跃 span 取 |
+
+## 测试与变异验证
+
+新增测试全部做了变异验证（改坏实现，确认测试会失败）。**捕获率 15/15**，
+其中两次暴露了"测试通过的原因是错的"：
+
+1. **`r.Use(TraceContext)` 从路由里删掉，所有中间件测试照样通过。**
+   中间件本身测得很好，但没有任何东西验证它被挂上了。一个写对了却没挂载的
+   中间件，和没写完全一样。补 `TestTheRouterPutsTheRequestTraceOnTheContext`
+   后变异被抓。
+2. **把 `Durable:` 改成 `Name:`（消费者不再持久），"重新订阅保持位置"的测试
+   照样通过。** 因为同一进程内重新订阅会复用已存在的 consumer，根本没模拟
+   重启。改为直接向 broker 查询 `info.Config.Durable` 后变异被抓——
+   顺带发现非持久 consumer 的失活阈值只有 5s。
+
+覆盖的六类（§4.10）：
+
+| 类别 | 位置 |
+|---|---|
+| 信封 / 类型校验 | `internal/messaging/messaging_test.go` |
+| Relay（批量、毒消息隔离、突发排空、优雅退出、保留期） | `internal/messaging/relay_test.go` |
+| Consumer（幂等、重试、panic、DLQ、取消） | `internal/messaging/consumer_test.go` |
+| trace 传播 | `internal/messaging/trace_test.go`、`internal/httpx/*_test.go` |
+| 事件契约（含"payload 不含凭据"） | `internal/user/events_test.go` |
+| 消费者实现 | `internal/notify/notify_test.go` |
+| PostgreSQL 真实语义（SKIP LOCKED、事务内去重、DLQ replay） | `internal/messaging/messagingpg/*_integration_test.go` |
+| JetStream 真实语义（往返、重投、毒消息、持久性） | `internal/messaging/natsmq/*_integration_test.go` |
+
+natsmq 集成测试在没有 broker 时 **SKIP 而不是 FAIL**——只跑默认 compose
+profile 的人不该看到红色，否则大家会学会忽略它。
+
+## 运行验证（2026-09-01）
+
+真实跑通，不是"应该能跑"：
+
+- `POST /api/v1/users` 带 `traceparent` 头 → outbox 行的 `traceparent`
+  列就是那个值 → NATS → `notify` 处理，全程约 420ms
+- 停 worker，建 25 个用户 → 25 条积压，**API 不受影响**（201 照常）→
+  重启 worker → 0 积压、52 published、52 handled、52 processed、0 DLQ
+- 手工插一条死信 → `make dlq-list` 看到 → `make dlq-replay` → worker 处理掉
+- `MESSAGING_ENABLED=false`：API 健康、建用户 201、**outbox 不增长**；
+  worker 拒绝启动并说明原因（不是空转）
+- SIGTERM：`nats subscription drained` → `outbox relay stopped` →
+  `worker stopped cleanly`
+- 黑盒回归 **110/110 通过**，确认 Phase 3 行为未被破坏
+  （`POST /users` 现在多了一层事务）
+
+## 本阶段修掉的既有缺陷
+
+1. **`.golangci.yml` 的 depguard 规则自相矛盾**：deny `math/rand` 会前缀匹配
+   到 `math/rand/v2`——正是它自己的提示信息让你用的那个包。加了定向 exclusion。
+2. **黑盒套件不可移植**：`sys.path` 硬编码 `/tmp/apitest`，`t_http.py` 硬编码
+   了管理员密码（我轮转密码后它就以 401 失败，看起来像授权 bug 而不是过期
+   fixture）。改为从环境变量读，并补上 README 里早就写了、代码里却不存在的
+   bootstrap 入口（`python3 lib.py`）。`tok.json` 加进 `.gitignore`——
+   那是一个运行中服务的真实凭据。
+3. **`user.UserCreatedPayload` 命名 stutter**（revive），改为 `user.CreatedPayload`。
+
+## Next Phase Entry Conditions
+
+Phase 5 (Observability) 开始前已成立：
+
+- [x] `make check` 全绿，`golangci-lint run` 0 issues
+- [x] `make test-integration` 全绿（真实 PostgreSQL 17 + 真实 NATS JetStream）
+- [x] outbox 与调用方事务同生共死（有集成测试）
+- [x] `FOR UPDATE SKIP LOCKED` 让多 relay 不重发（有集成测试）
+- [x] 去重键是 `(event_id, consumer)`，去重与副作用同事务（有集成测试）
+- [x] 重试 / DLQ / replay 闭环，且预算不变量有启动校验
+- [x] 默认 `MESSAGING_ENABLED=false`，关掉时 API 完整可用（已实跑验证）
+- [x] 新增测试 15/15 通过变异验证
+
+Phase 5 必须注意：
+
+1. **`httpx.TraceContext` 要改为从活跃 span 取 traceparent**，
+   目前只是转发调用方的头。`messaging.ContextWithTraceParent` 的校验要保留——
+   伪造的 traceparent 比没有更糟。
+2. **`Event.TraceParent` 已经端到端贯通**（HTTP 头 → outbox 列 → NATS header
+   → 消费者），Phase 5 只需要在消费侧用它 **link** 到原始 trace，
+   不要新建一条无关的 trace。
+3. 中间件栈里 `// Phase 5: Metrics` 的挂载点在限流**之前**，
+   这样 429 会被计数——挪到之后就看不见被拒绝的流量了。

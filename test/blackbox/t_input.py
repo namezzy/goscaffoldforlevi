@@ -1,8 +1,8 @@
-import sys,json,base64; sys.path.insert(0,'/tmp/apitest')
+import os,sys,json,base64; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import uuid, subprocess
 from urllib.parse import quote
 from lib import *
-T=json.load(open('tok.json')); A=T['admin']['access_token']; M=T['member']['access_token']
+T=load_tokens(); A=T['admin']['access_token']; M=T['member']['access_token']
 def sub(t):
     p=t.split('.')[1]; p+='='*(-len(p)%4); return json.loads(base64.urlsafe_b64decode(p))['sub']
 mid=sub(M)

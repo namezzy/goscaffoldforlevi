@@ -1,11 +1,11 @@
-import sys,json,uuid,threading; sys.path.insert(0,'/tmp/apitest')
+import os,sys,json,uuid,threading; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from lib import *
 import subprocess
 def reset_login_limits():
     subprocess.run("docker exec goscaffold-redis redis-cli --scan --pattern 'rl:login*' | xargs -r docker exec -i goscaffold-redis redis-cli del",
                    shell=True,capture_output=True)
 
-A=json.load(open('tok.json'))['admin']['access_token']
+A=load_tokens()['admin']['access_token']
 
 print("--- one refresh token used by 8 threads at once ---")
 for trial in range(3):

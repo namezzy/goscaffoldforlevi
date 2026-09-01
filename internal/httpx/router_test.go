@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/example/go-enterprise/internal/config"
+	"github.com/example/go-enterprise/internal/messaging"
 )
 
 func newTestRouter(t *testing.T, checkers ...Checker) http.Handler {
@@ -243,5 +244,43 @@ func TestMethodNotAllowedAdvertisesTheAllowedMethods(t *testing.T) {
 	}
 	if got := rec.Header().Get("Allow"); got != "" {
 		t.Errorf("a 404 carried Allow = %q", got)
+	}
+}
+
+// TestTheRouterPutsTheRequestTraceOnTheContext checks that TraceContext is
+// actually mounted, not merely written. A middleware that exists, is correct
+// and is never added to the stack behaves exactly like one that was never
+// written: every event would ship with an empty traceparent and no test of the
+// middleware in isolation would notice.
+func TestTheRouterPutsTheRequestTraceOnTheContext(t *testing.T) {
+	t.Parallel()
+
+	const header = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+	logger := discardLogger()
+	var seen string
+	router := NewRouter(RouterDeps{
+		Config: config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
+		Logger: logger,
+		Health: NewHealth(logger, "test"),
+		Register: func(v1 chi.Router) {
+			v1.Get("/traced", func(w http.ResponseWriter, r *http.Request) {
+				seen = messaging.TraceParentFromContext(r.Context())
+				w.WriteHeader(http.StatusOK)
+			})
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/traced", nil)
+	req.Header.Set("traceparent", header)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if seen != header {
+		t.Errorf("traceparent reaching the handler = %q, want %q; "+
+			"the TraceContext middleware is not mounted on the router", seen, header)
 	}
 }

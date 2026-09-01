@@ -28,6 +28,7 @@ import (
 
 	"github.com/example/go-enterprise/internal/auth"
 	"github.com/example/go-enterprise/internal/config"
+	"github.com/example/go-enterprise/internal/messaging"
 	"github.com/example/go-enterprise/internal/postgres"
 	"github.com/example/go-enterprise/internal/user"
 	"github.com/example/go-enterprise/internal/user/userpg"
@@ -139,7 +140,18 @@ func bootstrap(
 	// that it gets the same validation, email normalisation and hashing as
 	// every other account. A bootstrap path that writes its own row is a
 	// bootstrap path that drifts from the real one.
-	svc := user.NewService(repo, hasher, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// The event is discarded rather than written to the outbox: bootstrapping
+	// runs before any worker exists, so an outbox row here would sit
+	// undelivered until someone happened to deploy one. The administrator is
+	// also not a user anything downstream needs to be told about — nobody is
+	// waiting to send them a welcome email.
+	svc := user.NewService(
+		repo,
+		hasher,
+		postgres.NewTxManager(pool),
+		messaging.NewNoopPublisher(slog.New(slog.NewTextHandler(io.Discard, nil))),
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
 
 	return svc.Create(bootstrapContext(ctx), in)
 }

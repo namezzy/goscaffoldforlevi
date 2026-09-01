@@ -5,13 +5,16 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/auth"
+	"github.com/example/go-enterprise/internal/messaging"
 	"github.com/example/go-enterprise/internal/user"
 )
 
@@ -131,8 +134,41 @@ type stubHasher struct{}
 
 func (stubHasher) Hash(password string) (string, error) { return "hashed:" + password, nil }
 
+// rollbackTx is a transaction manager that actually rolls back.
+//
+// A fake that merely calls fn is worse than no fake: it makes every test pass
+// regardless of whether the code under test relies on rollback, and that is
+// exactly how a reuse-detection bug in the auth service survived a green suite
+// once already. Snapshotting the repository is enough to reproduce the only
+// property the service depends on — a failed transaction leaves nothing behind.
+type rollbackTx struct{ repo *fakeRepository }
+
+func (t rollbackTx) WithTx(ctx context.Context, fn func(context.Context) error) error {
+	if t.repo == nil {
+		return fn(ctx)
+	}
+
+	byID := maps.Clone(t.repo.byID)
+	byEmail := maps.Clone(t.repo.byEmail)
+	order := slices.Clone(t.repo.order)
+
+	if err := fn(ctx); err != nil {
+		t.repo.byID, t.repo.byEmail, t.repo.order = byID, byEmail, order
+		return err
+	}
+	return nil
+}
+
 func newService(repo user.Repository) *user.Service {
-	return user.NewService(repo, stubHasher{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	fake, _ := repo.(*fakeRepository)
+	return newServiceWithPublisher(repo, messaging.NewMemoryPublisher(), rollbackTx{repo: fake})
+}
+
+func newServiceWithPublisher(
+	repo user.Repository, events user.EventPublisher, tx user.TxManager,
+) *user.Service {
+	return user.NewService(repo, stubHasher{}, tx, events,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func adminContext() context.Context {

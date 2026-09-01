@@ -20,3 +20,8 @@ coverage.*
 .idea/
 .vscode/
 *.swp
+
+# Access tokens written by the black-box suite's bootstrap step. They are real
+# credentials for a running service and have no business in the history.
+test/blackbox/tok.json
+__pycache__/

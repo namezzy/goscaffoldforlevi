@@ -18,6 +18,9 @@
 - [当前仓库结构](#当前仓库结构)
 - [在本机跑起来](#在本机跑起来)
 - [下一步](#下一步)
+- [补齐引导路径与响应体 schema 校验](#补齐引导路径与响应体-schema-校验)
+- [对抗性黑盒测试](#对抗性黑盒测试)
+- [Phase 4：Messaging / 异步处理](#phase-4messaging--异步处理)
 
 ---
 
@@ -554,3 +557,70 @@ JSON 接受、405 缺 Allow、限流头 Remaining > Limit），细节和根因�
 
 修完后 `make check`、`make test-integration`、110 条黑盒断言全绿，
 服务日志零 5xx。
+
+## Phase 4：Messaging / 异步处理
+
+目标是让"用户创建成功"这件事能被系统里其他部分知道，而**不让通知的失败
+影响用户创建的成功**。默认关闭（`MESSAGING_ENABLED=false`），关掉时 API
+完整可用、outbox 不增长。
+
+链路：一个事务同时写 `users` 和 `outbox_events`（事件与它描述的事实同生共死，
+不可能"用户建了但事件丢了"）→ relay 用 `FOR UPDATE SKIP LOCKED` 领取并发布到
+NATS JetStream → 消费者在事务里先写 `processed_events` 去重再跑 handler →
+失败按 full jitter 退避重试 5 次 → 仍失败进 `dead_letter_events`，
+`make dlq-replay` 放回 outbox。
+
+**保证是 at-least-once，不是 exactly-once**，这在 STATE.md 里写死了三个重复来源
+和为什么每一个都是有意选的。去重表主键是 `(event_id, consumer)` 而不是
+`event_id` ——单列会让"给已有事件新增一个消费者"静默什么都不做，
+没有报错、没有日志，只是一个永远不运行的功能。
+
+两条时间不变量做成了**启动校验**而不是注释：重试预算（≈2m45s）必须小于
+`ACK_WAIT`（5m），否则 JetStream 会在消费者还在重试时并发重投；
+`PROCESSED_RETENTION`（30d）必须大于 `STREAM_MAX_AGE`（7d），否则去重记录先
+过期，一次迟到的重投会被当成新消息处理两遍。
+
+### 变异测试抓到的两次"假绿"
+
+新增测试逐一做了变异验证，捕获率 15/15，其中两次说明测试通过的原因是错的：
+
+**一、把 `r.Use(TraceContext)` 从路由里删掉，所有中间件测试照样通过。**
+中间件本身测得很仔细，但没有任何东西验证它被挂上了。一个写对了却没挂载的
+中间件和没写完全等价。孤立的单元测试在结构上就不可能发现这个——
+必须有路由级测试。
+
+**二、把 JetStream 消费者的 `Durable:` 改成 `Name:`（即不再持久），
+"重新订阅后不重放旧消息"的测试照样通过。**
+因为同进程内重新订阅会复用已存在的 consumer，压根没模拟进程重启，
+而持久性只有在进程死掉之后才可见。改成直接向 broker 查
+`info.Config.Durable` / `AckPolicy` / `NumRedelivered` 才抓到——
+顺带看到非持久 consumer 的失活阈值只有 5 秒。同一处还有个变体：
+把 `msg.Term()` 改成 `msg.Nak()`，"毒消息不重试"仍然通过，
+因为断言 `processed == 0` 对两种行为都成立。
+
+共同的教训是：**断言代码的意图会一直通过，断言外部系统实际持有的状态才会失败。**
+
+### 踩到的坑
+
+`.golangci.yml` 里 depguard 的 deny 是**前缀匹配**：`math/rand` 会连
+`math/rand/v2` 一起禁，而它自己的提示语正是"请用 math/rand/v2"。
+试过加 `allow` 列表——错的，depguard 里 allow 一旦非空就变成白名单，
+瞬间 50 个 issue。正解是在 `issues.exclusions.rules` 里按文本定向排除。
+
+outbox 的 `payload` 用 `jsonb`，PostgreSQL 会规范化空白和键序，
+**原始字节不被保留**。消费者解析 JSON 所以没影响，但任何想对原始 payload
+签名或哈希的做法都会坏。登记进了 Known Limitations。
+
+黑盒套件硬编码了旧的管理员密码，我轮转密码后整套以 401 失败，
+看起来像授权 bug——实际上是过期 fixture。顺手参数化，并补上 README 里
+早就声称存在、代码里却没有的 bootstrap 入口。
+
+### 验证
+
+`make check` 与 `make test-integration`（21 个包，含 12 个 messagingpg
+和 4 个 natsmq）全绿后，起真容器实跑：带 `traceparent` 的请求端到端贯通
+（HTTP 头 → outbox 列 → NATS header → 消费者）约 420ms；停 worker 后建 25 个
+用户 API 不受影响、重启后积压归零；DLQ 手工种一条走通 list → replay 闭环；
+SIGTERM 后按 `subscription drained` → `relay stopped` → `worker stopped cleanly`
+顺序退出；110 条黑盒断言仍全绿，确认 `POST /users` 多包一层事务没有破坏
+Phase 3 的行为。

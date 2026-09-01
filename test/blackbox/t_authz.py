@@ -1,6 +1,6 @@
-import sys,json; sys.path.insert(0,'/tmp/apitest')
+import os,sys,json; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from lib import *
-T=json.load(open('tok.json'))
+T=load_tokens()
 A=T['admin']['access_token']; M=T['member']['access_token']
 import base64
 def sub(t):

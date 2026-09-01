@@ -11,6 +11,36 @@ import (
 	"github.com/google/uuid"
 )
 
+type DeadLetterEvent struct {
+	ID          uuid.UUID
+	EventID     uuid.UUID
+	EventType   string
+	Payload     []byte
+	Traceparent *string
+	Consumer    string
+	Attempts    int32
+	LastError   string
+	FailedAt    time.Time
+	ReplayedAt  *time.Time
+}
+
+type OutboxEvent struct {
+	ID          uuid.UUID
+	EventType   string
+	Payload     []byte
+	Traceparent *string
+	CreatedAt   time.Time
+	PublishedAt *time.Time
+	Attempts    int32
+	LastError   *string
+}
+
+type ProcessedEvent struct {
+	EventID     uuid.UUID
+	Consumer    string
+	ProcessedAt time.Time
+}
+
 type RefreshSession struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID

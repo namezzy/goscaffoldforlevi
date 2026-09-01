@@ -16,6 +16,7 @@ import (
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/auth"
 	"github.com/example/go-enterprise/internal/auth/authhttp"
+	"github.com/example/go-enterprise/internal/messaging"
 	"github.com/example/go-enterprise/internal/openapitest"
 	"github.com/example/go-enterprise/internal/user"
 	"github.com/example/go-enterprise/internal/user/userhttp"
@@ -117,11 +118,18 @@ func (stubHasher) Hash(string) (string, error) { return "$stub$hash", nil }
 // newServer builds the route tree with the same permission middleware the
 // application uses, and injects the caller's principal from a header so that a
 // test can act as any role without minting a token.
+// directTx runs the function without a transaction. The handler tests are
+// about status codes and response shapes, and the transactional guarantee is
+// asserted where it lives, in the service and the repository tests.
+type directTx struct{}
+
+func (directTx) WithTx(ctx context.Context, fn func(context.Context) error) error { return fn(ctx) }
+
 func newServer(t *testing.T, repo *fakeRepo) http.Handler {
 	t.Helper()
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := userhttp.NewHandler(user.NewService(repo, stubHasher{}, log), log)
+	h := userhttp.NewHandler(user.NewService(repo, stubHasher{}, directTx{}, messaging.NewMemoryPublisher(), log), log)
 
 	r := chi.NewRouter()
 	r.Use(principalFromHeader)

@@ -116,6 +116,32 @@ func Load() (Config, error) {
 			LoginIDPeriod: p.dur("RATELIMIT_LOGIN_ID_PERIOD", 15*time.Minute),
 			LoginIDBurst:  p.int("RATELIMIT_LOGIN_ID_BURST", 5),
 		},
+		Messaging: Messaging{
+			Enabled: p.bool("MESSAGING_ENABLED", false),
+
+			NATSURLs:      p.csv("MESSAGING_NATS_URLS", []string{"nats://localhost:4222"}),
+			StreamName:    p.str("MESSAGING_STREAM_NAME", "EVENTS"),
+			SubjectPrefix: p.str("MESSAGING_SUBJECT_PREFIX", "events"),
+			ConsumerName:  p.str("MESSAGING_CONSUMER_NAME", "worker"),
+
+			ConnectTimeout: p.dur("MESSAGING_CONNECT_TIMEOUT", 5*time.Second),
+			PublishTimeout: p.dur("MESSAGING_PUBLISH_TIMEOUT", 10*time.Second),
+			StreamMaxAge:   p.dur("MESSAGING_STREAM_MAX_AGE", 7*24*time.Hour),
+			AckWait:        p.dur("MESSAGING_ACK_WAIT", 5*time.Minute),
+			MaxDeliver:     p.int("MESSAGING_MAX_DELIVER", 10),
+
+			RelayPollInterval: p.dur("MESSAGING_RELAY_POLL_INTERVAL", time.Second),
+			RelayBatchSize:    p.int32("MESSAGING_RELAY_BATCH_SIZE", 100),
+
+			HandlerTimeout: p.dur("MESSAGING_HANDLER_TIMEOUT", 30*time.Second),
+			MaxAttempts:    p.int("MESSAGING_MAX_ATTEMPTS", 5),
+			BaseBackoff:    p.dur("MESSAGING_BASE_BACKOFF", time.Second),
+			MaxBackoff:     p.dur("MESSAGING_MAX_BACKOFF", 30*time.Second),
+
+			PublishedRetention: p.dur("MESSAGING_PUBLISHED_RETENTION", 7*24*time.Hour),
+			ProcessedRetention: p.dur("MESSAGING_PROCESSED_RETENTION", 30*24*time.Hour),
+			PruneInterval:      p.dur("MESSAGING_PRUNE_INTERVAL", time.Hour),
+		},
 		OTel: OTel{
 			Enabled:       p.bool("OTEL_ENABLED", false),
 			Endpoint:      p.str("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
@@ -269,6 +295,50 @@ func (c Config) Validate() error {
 			if r.burst > 0 && r.quota > 0 && r.burst < r.quota {
 				probs.add(r.prefix+"_BURST", "must not be smaller than "+r.prefix+"_QUOTA")
 			}
+		}
+	}
+
+	// Messaging
+	//
+	// Everything here is gated on Enabled. A subsystem that is switched off
+	// must not be able to stop the process from starting, or turning it off
+	// stops being a way out of a problem.
+	if c.Messaging.Enabled {
+		if len(c.Messaging.NATSURLs) == 0 {
+			probs.add("MESSAGING_NATS_URLS", "is required when MESSAGING_ENABLED is true")
+		}
+		if c.Messaging.ConsumerName == "" {
+			probs.add("MESSAGING_CONSUMER_NAME", "must not be empty")
+		}
+		if c.Messaging.MaxAttempts < 1 {
+			probs.add("MESSAGING_MAX_ATTEMPTS", "must be at least 1")
+		}
+		if c.Messaging.RelayBatchSize < 1 {
+			probs.add("MESSAGING_RELAY_BATCH_SIZE", "must be at least 1")
+		}
+		probs.positive("MESSAGING_RELAY_POLL_INTERVAL", c.Messaging.RelayPollInterval)
+		probs.positive("MESSAGING_HANDLER_TIMEOUT", c.Messaging.HandlerTimeout)
+		probs.positive("MESSAGING_BASE_BACKOFF", c.Messaging.BaseBackoff)
+		probs.positive("MESSAGING_PRUNE_INTERVAL", c.Messaging.PruneInterval)
+
+		// The broker must not redeliver a message the consumer is still
+		// retrying. If it does, two workers process the same event at once;
+		// the dedupe log keeps that from duplicating the side effect, but one
+		// of them then fails its claim and the message churns. The check turns
+		// a subtle production symptom into a refusal to start.
+		if budget := c.Messaging.retryBudget(); c.Messaging.AckWait < budget {
+			probs.add("MESSAGING_ACK_WAIT",
+				"must exceed the consumer retry budget of "+budget.String()+
+					" (MAX_ATTEMPTS x HANDLER_TIMEOUT plus backoff)")
+		}
+
+		// Pruning the dedupe log inside the redelivery window makes an old
+		// message processable a second time, which is the one failure the log
+		// exists to prevent.
+		if c.Messaging.ProcessedRetention <= c.Messaging.StreamMaxAge {
+			probs.add("MESSAGING_PROCESSED_RETENTION",
+				"must exceed MESSAGING_STREAM_MAX_AGE, or a redelivered message "+
+					"would be processed twice")
 		}
 	}
 

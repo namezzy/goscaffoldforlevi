@@ -1,7 +1,7 @@
-import sys,json; sys.path.insert(0,'/tmp/apitest')
+import os,sys,json; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 import uuid
 from lib import *
-T=json.load(open('tok.json')); A=T['admin']['access_token']
+T=load_tokens(); A=T['admin']['access_token']
 print("--- the three defects, against the running service ---")
 s,b,_=call("POST","/api/v1/users",raw=b'{"email":"nul3-%s@example.com","name":"A\\u0000B","password":"a long enough password"}' % uuid.uuid4().hex[:8].encode(),token=A)
 check("NUL in name -> 400 with a named field", s==400 and 'invalid_characters' in b, f"{s} {b}")

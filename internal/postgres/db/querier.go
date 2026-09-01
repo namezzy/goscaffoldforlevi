@@ -6,11 +6,34 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 type Querier interface {
+	// ClaimEventForConsumer marks an event as handled by one consumer.
+	//
+	// ON CONFLICT DO NOTHING makes the second delivery of the same event return no
+	// rows, which is how a redelivery is recognised. The caller must run this in
+	// the same transaction as the side effect: separated, the process can die
+	// between them and either lose the side effect or suppress it forever.
+	ClaimEventForConsumer(ctx context.Context, arg ClaimEventForConsumerParams) (int64, error)
+	// ClaimOutboxEvents takes the next batch for delivery.
+	//
+	// FOR UPDATE SKIP LOCKED is what allows more than one relay to run: each
+	// claims rows the others are not holding instead of queueing behind them. The
+	// rows stay locked until the caller's transaction ends, so a relay that
+	// crashes releases its batch rather than stranding it.
+	//
+	// The order is by created_at so that events are delivered roughly in the order
+	// they happened. Roughly is the honest word: two transactions can commit in a
+	// different order than they inserted, and no ordering guarantee is offered to
+	// consumers.
+	ClaimOutboxEvents(ctx context.Context, limit int32) ([]ClaimOutboxEventsRow, error)
+	// CountUnpublishedOutboxEvents backs the queue-depth metric and the readiness
+	// of any operator asking "is the relay keeping up".
+	CountUnpublishedOutboxEvents(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	// CountUsersByRole exists for the bootstrap command, which refuses to run once
 	// an administrator already exists. Without that check the command would be a
@@ -24,7 +47,15 @@ type Querier interface {
 	// change at worst.
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteExpiredRefreshSessions(ctx context.Context) (int64, error)
+	// DeleteProcessedEventsBefore prunes the dedupe log. The cutoff must stay
+	// longer than the longest possible redelivery window, or pruning would make
+	// old messages processable again.
+	DeleteProcessedEventsBefore(ctx context.Context, processedAt time.Time) (int64, error)
+	// DeletePublishedOutboxEventsBefore prunes delivered rows.
+	DeletePublishedOutboxEventsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
+	// GetDeadLetter fetches one parked message for replay.
+	GetDeadLetter(ctx context.Context, id uuid.UUID) (DeadLetterEvent, error)
 	// GetRefreshSessionByTokenHash takes a row lock because every caller reads the
 	// session in order to immediately rotate or revoke it. Without the lock, two
 	// concurrent refreshes with the same token both read it as valid and both
@@ -32,10 +63,23 @@ type Querier interface {
 	GetRefreshSessionByTokenHash(ctx context.Context, tokenHash []byte) (RefreshSession, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
+	// Messaging queries: the outbox, the consumer dedupe log, and dead letters.
+	// InsertOutboxEvent records an event inside the caller's transaction.
+	//
+	// It takes no published_at: a row is unpublished by definition when it is
+	// written, and letting a caller set it would allow an event to be born
+	// already-delivered.
+	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error
+	// ListDeadLetters is the triage query behind `make dlq-list`.
+	ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]DeadLetterEvent, error)
 	// ListUsers pages with a stable order. created_at alone is not stable: rows
 	// created in the same millisecond would come back in arbitrary order and a
 	// client paging through them would see duplicates and gaps.
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	// MarkDeadLetterReplayed records that a parked message was put back.
+	MarkDeadLetterReplayed(ctx context.Context, id uuid.UUID) (int64, error)
+	// MarkOutboxEventPublished records a successful delivery.
+	MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error
 	// System queries: infrastructure, not business data.
 	//
 	// Feature queries live in their own files (queries/user.sql, queries/auth.sql)
@@ -44,6 +88,17 @@ type Querier interface {
 	// pgxpool.Ping only proves a connection exists; it does not prove the session
 	// is usable, which is the state a failing-over database leaves behind.
 	ReadinessProbe(ctx context.Context) (int32, error)
+	// RecordDeadLetter parks a message that exhausted its retries.
+	//
+	// A repeat failure of the same event updates the existing row so the table
+	// counts broken messages rather than attempts at them.
+	RecordDeadLetter(ctx context.Context, arg RecordDeadLetterParams) error
+	// RecordOutboxEventFailure counts a failed delivery attempt.
+	//
+	// The row stays unpublished, so the next sweep picks it up again. attempts is
+	// kept for visibility rather than control: an event the broker cannot accept
+	// is a broker problem, and dropping it would turn an outage into data loss.
+	RecordOutboxEventFailure(ctx context.Context, arg RecordOutboxEventFailureParams) error
 	RevokeRefreshFamily(ctx context.Context, familyID uuid.UUID) (int64, error)
 	// RevokeRefreshSession is idempotent: revoked_at is only set the first time,
 	// so re-revoking never moves the timestamp forward.

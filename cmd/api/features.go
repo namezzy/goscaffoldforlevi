@@ -14,6 +14,8 @@ import (
 	"github.com/example/go-enterprise/internal/auth/authjwt"
 	"github.com/example/go-enterprise/internal/auth/authpg"
 	"github.com/example/go-enterprise/internal/config"
+	"github.com/example/go-enterprise/internal/messaging"
+	"github.com/example/go-enterprise/internal/messaging/messagingpg"
 	"github.com/example/go-enterprise/internal/postgres"
 	"github.com/example/go-enterprise/internal/ratelimit"
 	"github.com/example/go-enterprise/internal/ratelimit/ratelimithttp"
@@ -58,7 +60,20 @@ func buildFeatures(
 	}
 
 	userRepo := userpg.New(pool)
-	userService := user.NewService(userRepo, hasher, logger)
+
+	// Which publisher is chosen is the whole of the messaging decision as far
+	// as the API is concerned. With messaging off, events are discarded and no
+	// relay, broker or worker is needed; with it on, the event is written in
+	// the same transaction as the user and a separate process delivers it.
+	// Neither the service nor the handler can tell the difference.
+	var events user.EventPublisher
+	if cfg.Messaging.Enabled {
+		events = messagingpg.NewOutboxPublisher(pool)
+	} else {
+		events = messaging.NewNoopPublisher(logger)
+	}
+
+	userService := user.NewService(userRepo, hasher, txManager, events, logger)
 
 	sessionRepo := authpg.NewSessionRepository(pool)
 	authService := auth.NewService(

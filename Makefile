@@ -14,6 +14,19 @@ MIGRATIONS  := migrations
 # have to keep the URL in two places.
 DATABASE_URL ?= $(shell grep -s '^DATABASE_URL=' .env .env.example 2>/dev/null | head -1 | cut -d= -f2-)
 
+# The SQL helper targets prefer a local psql and otherwise run one inside the
+# database container, so they work on a machine that has Docker but no
+# PostgreSQL client installed. Inside the container the server is always on
+# localhost:5432 whichever port the host published, so the host and port are
+# rewritten for that case. The container is addressed by name rather than
+# through `docker compose exec` so the fallback also works for a database
+# someone started by hand.
+PG_CONTAINER := goscaffold-pg
+CONTAINER_DATABASE_URL = $(shell echo '$(DATABASE_URL)' | sed -E 's,@[^/]+/,@localhost:5432/,')
+PSQL = $(shell command -v psql >/dev/null 2>&1 \
+	&& echo 'psql "$(DATABASE_URL)"' \
+	|| echo 'docker exec -i $(PG_CONTAINER) psql "$(CONTAINER_DATABASE_URL)"')
+
 # Tool versions are pinned. An unpinned linter changes its opinion between
 # machines, and the resulting failures look like code problems.
 GOLANGCI_LINT_VERSION := v2.13.2
@@ -127,6 +140,51 @@ migrate-create: ## Create a migration: make migrate-create name=add_users
 bootstrap-admin: ## Create the first administrator: make bootstrap-admin email=you@example.com
 	@test -n "$(email)" || { echo "usage: make bootstrap-admin email=<address> [name=<name>]"; exit 1; }
 	go run ./cmd/adminctl -email "$(email)" $(if $(name),-name "$(name)",)
+
+# ------------------------------------------------------------------- messaging
+
+.PHONY: worker
+worker: ## Run the outbox relay and event consumer
+	go run ./cmd/worker
+
+.PHONY: broker-up
+broker-up: ## Start the message broker (NATS JetStream)
+	docker compose --profile messaging up -d nats
+
+.PHONY: broker-down
+broker-down: ## Stop the message broker
+	docker compose --profile messaging stop nats
+
+.PHONY: outbox-status
+outbox-status: ## Show how many events are waiting to be delivered
+	@$(PSQL) -v ON_ERROR_STOP=1 -c "\
+	  SELECT count(*) FILTER (WHERE published_at IS NULL) AS pending, \
+	         count(*) FILTER (WHERE published_at IS NOT NULL) AS published, \
+	         count(*) FILTER (WHERE published_at IS NULL AND attempts > 0) AS failing, \
+	         max(attempts) FILTER (WHERE published_at IS NULL) AS worst_attempts \
+	  FROM outbox_events;"
+
+.PHONY: dlq-list
+dlq-list: ## List dead-lettered events awaiting triage
+	@$(PSQL) -v ON_ERROR_STOP=1 -c "\
+	  SELECT id, event_id, event_type, consumer, attempts, \
+	         failed_at, left(last_error, 80) AS last_error \
+	  FROM dead_letter_events \
+	  WHERE replayed_at IS NULL \
+	  ORDER BY failed_at DESC LIMIT 50;"
+
+.PHONY: dlq-replay
+dlq-replay: ## Put one dead letter back in the outbox: make dlq-replay id=<dead_letter_id>
+	@test -n "$(id)" || { echo "usage: make dlq-replay id=<dead_letter_id>"; exit 1; }
+	@$(PSQL) -v ON_ERROR_STOP=1 -c "\
+	  WITH letter AS ( \
+	    UPDATE dead_letter_events SET replayed_at = now() \
+	    WHERE id = '$(id)' AND replayed_at IS NULL \
+	    RETURNING event_id, event_type, payload, traceparent \
+	  ) \
+	  INSERT INTO outbox_events (id, event_type, payload, traceparent, created_at) \
+	  SELECT event_id, event_type, payload, traceparent, now() FROM letter \
+	  ON CONFLICT (id) DO NOTHING;"
 
 # ----------------------------------------------------------------------- tools
 

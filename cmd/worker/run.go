@@ -1,0 +1,165 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/example/go-enterprise/internal/config"
+	"github.com/example/go-enterprise/internal/messaging"
+	"github.com/example/go-enterprise/internal/messaging/messagingpg"
+	"github.com/example/go-enterprise/internal/messaging/natsmq"
+	"github.com/example/go-enterprise/internal/notify"
+	"github.com/example/go-enterprise/internal/postgres"
+	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/example/go-enterprise/internal/user"
+)
+
+// run starts the relay and the consumer and serves until ctx is cancelled.
+func run(ctx context.Context) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	logger := telemetry.NewLogger(cfg.App, telemetry.LoggerOptions{Level: cfg.App.LogLevel})
+
+	if !cfg.Messaging.Enabled {
+		// Refusing to start is the useful behaviour. A worker that idles
+		// politely with messaging disabled looks healthy in every dashboard
+		// while delivering nothing, and the misconfiguration is found by
+		// someone wondering where their events went.
+		return errors.New(
+			"MESSAGING_ENABLED is false: the worker has nothing to do. " +
+				"Set MESSAGING_ENABLED=true, or do not deploy this process")
+	}
+
+	logger.InfoContext(ctx, "worker starting",
+		slog.String("consumer", cfg.Messaging.ConsumerName),
+		slog.Any("nats_urls", cfg.Messaging.NATSURLs))
+
+	pool, err := postgres.NewPool(ctx, cfg.Database)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer pool.Close()
+
+	store := messagingpg.NewStore(pool, postgres.NewTxManager(pool))
+
+	conn, err := natsmq.Connect(ctx, natsConfig(cfg.Messaging), logger)
+	if err != nil {
+		return fmt.Errorf("connect nats: %w", err)
+	}
+	defer conn.Close()
+
+	relay := messaging.NewRelay(
+		store,
+		natsmq.NewPublisher(conn),
+		relayConfig(cfg.Messaging),
+		logger,
+	)
+
+	consumer := messaging.NewConsumer(
+		notify.NewWelcomeHandler(notify.NewLogSender(logger), logger),
+		store,
+		consumerConfig(cfg.Messaging),
+		logger,
+	)
+
+	// The consumer subscribes to the one event it handles rather than to
+	// everything. Filtering at the broker means an unrelated event never
+	// becomes this consumer's problem, and never appears in its dedupe log.
+	subscription, err := natsmq.Subscribe(ctx, conn, user.EventUserCreated, logger)
+	if err != nil {
+		return fmt.Errorf("subscribe: %w", err)
+	}
+
+	// Both halves stop on the same context and are waited for. Nothing here
+	// depends on finishing in time: an event the relay did not publish is
+	// still in the table, and a message the consumer did not acknowledge will
+	// be redelivered. The wait exists to make the common case clean, not to
+	// make correctness depend on it.
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := relay.Run(ctx); err != nil {
+			errs <- fmt.Errorf("relay: %w", err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := subscription.Run(ctx, consumer); err != nil {
+			errs <- fmt.Errorf("subscription: %w", err)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.InfoContext(context.WithoutCancel(ctx), "worker draining")
+
+	drained := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(drained)
+	}()
+
+	select {
+	case <-drained:
+		logger.Info("worker stopped cleanly")
+	case <-time.After(cfg.HTTP.ShutdownTimeout):
+		// Not a data loss event, which is why it is a warning rather than a
+		// failure: whatever was in flight is unacknowledged or unpublished and
+		// will be picked up again.
+		logger.Warn("worker drain timed out; in-flight work will be redelivered",
+			slog.Duration("timeout", cfg.HTTP.ShutdownTimeout))
+	}
+
+	close(errs)
+	var runErr error
+	for err := range errs {
+		runErr = errors.Join(runErr, err)
+	}
+	return runErr
+}
+
+func natsConfig(cfg config.Messaging) natsmq.Config {
+	return natsmq.Config{
+		URLs:           cfg.NATSURLs,
+		StreamName:     cfg.StreamName,
+		SubjectPrefix:  cfg.SubjectPrefix,
+		ConsumerName:   cfg.ConsumerName,
+		ConnectTimeout: cfg.ConnectTimeout,
+		PublishTimeout: cfg.PublishTimeout,
+		MaxAge:         cfg.StreamMaxAge,
+		AckWait:        cfg.AckWait,
+		MaxDeliver:     cfg.MaxDeliver,
+	}
+}
+
+func relayConfig(cfg config.Messaging) messaging.RelayConfig {
+	return messaging.RelayConfig{
+		PollInterval:       cfg.RelayPollInterval,
+		BatchSize:          cfg.RelayBatchSize,
+		PublishTimeout:     cfg.PublishTimeout,
+		PublishedRetention: cfg.PublishedRetention,
+		ProcessedRetention: cfg.ProcessedRetention,
+		PruneInterval:      cfg.PruneInterval,
+	}
+}
+
+func consumerConfig(cfg config.Messaging) messaging.ConsumerConfig {
+	return messaging.ConsumerConfig{
+		Name:           cfg.ConsumerName,
+		HandlerTimeout: cfg.HandlerTimeout,
+		MaxAttempts:    cfg.MaxAttempts,
+		BaseBackoff:    cfg.BaseBackoff,
+		MaxBackoff:     cfg.MaxBackoff,
+	}
+}

@@ -1,9 +1,9 @@
-import sys,json,time,statistics; sys.path.insert(0,'/tmp/apitest')
+import os,sys,json,time,statistics; sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
 from lib import *
 import subprocess,base64
 def reset():
     subprocess.run("docker exec goscaffold-redis redis-cli --scan --pattern 'rl:*' | xargs -r docker exec -i goscaffold-redis redis-cli del",shell=True,capture_output=True)
-T=json.load(open('tok.json')); A=T['admin']['access_token']; M=T['member']['access_token']
+T=load_tokens(); A=T['admin']['access_token']; M=T['member']['access_token']
 def sub(t):
     p=t.split('.')[1]; p+='='*(-len(p)%4); return json.loads(base64.urlsafe_b64decode(p))['sub']
 mid=sub(M)
@@ -37,7 +37,7 @@ for i in range(6):
 check(f"6th wrong login -> 429 (got {s})", s==429, f"{s} {b}")
 check("429 carries Retry-After", any(k.lower()=='retry-after' for k in h), list(h))
 print("     Retry-After:",[v for k,v in h.items() if k.lower()=='retry-after'])
-s,b,_=call("POST","/api/v1/auth/login",{"email":"admin@example.com","password":"twTHyedj8xxIRQ1CUVD63i4i6oqtJ3J2"})
+s,b,_=call("POST","/api/v1/auth/login",{"email":ADMIN_EMAIL,"password":ADMIN_PW})
 check(f"a different identifier is unaffected by the id limit (got {s})", s in (200,429), f"{s} {b}")
 print(f"     (admin login during member lockout -> {s}; the login IP limit is 10/15m and is shared)")
 report()

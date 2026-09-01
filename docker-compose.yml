@@ -1,0 +1,68 @@
+# Local development dependencies.
+#
+# The broker sits behind a profile because messaging is off by default
+# (MESSAGING_ENABLED=false): someone working on the HTTP API should not have to
+# run, or wait for, a queue they are not using. `docker compose up` starts the
+# database and cache; `docker compose --profile messaging up` adds NATS.
+#
+# This file is for development only. It has no resource limits, no secrets
+# management and no restart policy, and nothing here should be taken as a
+# deployment artefact.
+
+name: goscaffold
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: goscaffold-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: go_enterprise
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready returns success while the server is still starting, so the
+      # check names the database and user it will actually be used with.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d go_enterprise"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: goscaffold-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: goscaffold-nats
+    profiles: ["messaging"]
+    # JetStream is not on by default, and without it every stream operation
+    # fails with an error that does not mention the flag.
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres-data:
+  nats-data:

@@ -6,6 +6,7 @@ import (
 
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/auth"
+	"github.com/example/go-enterprise/internal/messaging"
 	"github.com/example/go-enterprise/internal/validate"
 )
 
@@ -24,6 +25,23 @@ type Repository interface {
 	Count(ctx context.Context) (int64, error)
 	Update(ctx context.Context, id ID, p Patch) (User, error)
 	Delete(ctx context.Context, id ID) error
+}
+
+// TxManager runs a function inside a database transaction. Declared here, as
+// a one-method interface, so the service can make a write and its event atomic
+// without importing a driver (ADR-0002).
+type TxManager interface {
+	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
+// EventPublisher records a domain event.
+//
+// The service does not know, and must not know, whether this reaches a broker.
+// What it relies on is narrower and is the reason the call sits inside the
+// transaction: an accepted event is durable exactly when the change that
+// caused it is.
+type EventPublisher interface {
+	Publish(ctx context.Context, event messaging.Event) error
 }
 
 // PasswordHasher is the hashing port. Declaring it here rather than importing a
@@ -49,12 +67,20 @@ const (
 type Service struct {
 	repo   Repository
 	hasher PasswordHasher
+	tx     TxManager
+	events EventPublisher
 	log    *slog.Logger
 }
 
 // NewService wires the service.
-func NewService(repo Repository, hasher PasswordHasher, log *slog.Logger) *Service {
-	return &Service{repo: repo, hasher: hasher, log: log}
+func NewService(
+	repo Repository,
+	hasher PasswordHasher,
+	tx TxManager,
+	events EventPublisher,
+	log *slog.Logger,
+) *Service {
+	return &Service{repo: repo, hasher: hasher, tx: tx, events: events, log: log}
 }
 
 // CreateInput is the validated input for registration.
@@ -98,14 +124,71 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (User, error) {
 		return User{}, apperr.Internal(err)
 	}
 
-	return s.repo.Create(ctx, User{
-		ID:           NewID(),
-		Email:        email,
-		PasswordHash: hash,
-		Name:         in.Name,
-		Status:       StatusActive,
-		Role:         in.Role,
+	// The insert and the event are one transaction. Publishing after the
+	// commit would lose the event whenever the process dies in between, and it
+	// would leave no evidence that it had: the user exists, nothing downstream
+	// ever hears about it, and only a reconciliation job would ever notice.
+	// Publishing before the commit is worse — it announces a user that may
+	// still roll back.
+	var created User
+	err = s.tx.WithTx(ctx, func(ctx context.Context) error {
+		created, err = s.repo.Create(ctx, User{
+			ID:           NewID(),
+			Email:        email,
+			PasswordHash: hash,
+			Name:         in.Name,
+			Status:       StatusActive,
+			Role:         in.Role,
+		})
+		if err != nil {
+			return err
+		}
+		return s.publishCreated(ctx, created)
 	})
+	if err != nil {
+		return User{}, err
+	}
+	return created, nil
+}
+
+// EventUserCreated is emitted when a user is registered.
+const EventUserCreated = "user.created.v1"
+
+// CreatedPayload is the body of EventUserCreated.
+//
+// It carries an email because the only consumer that exists needs to send mail
+// to it, and it carries nothing else that a consumer could get by asking. No
+// password, no hash, no token: an event is copied into logs, into a broker,
+// and into every consumer's storage, so anything secret in it has been leaked
+// several times over before anyone reviews it. ADR-0009 makes this a rule
+// rather than a habit.
+type CreatedPayload struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Name   string `json:"name"`
+	Role   string `json:"role"`
+}
+
+func (s *Service) publishCreated(ctx context.Context, u User) error {
+	event, err := messaging.NewEvent(EventUserCreated, CreatedPayload{
+		UserID: u.ID.String(),
+		Email:  u.Email,
+		Name:   u.Name,
+		Role:   string(u.Role),
+	})
+	if err != nil {
+		return apperr.Internal(err)
+	}
+	event.TraceParent = messaging.TraceParentFromContext(ctx)
+
+	if err := s.events.Publish(ctx, event); err != nil {
+		// Deliberately fatal to the request. The event is part of the write:
+		// letting the user be created without it is exactly the silent
+		// inconsistency the outbox exists to prevent, and a 500 on a failure
+		// this rare is cheaper than an unnoticed divergence.
+		return apperr.Internal(err)
+	}
+	return nil
 }
 
 // Get returns one user.
