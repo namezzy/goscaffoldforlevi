@@ -20,7 +20,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"go.opentelemetry.io/otel/codes"
+
 	"github.com/example/go-enterprise/internal/messaging"
+	"github.com/example/go-enterprise/internal/telemetry"
 )
 
 // Config describes the connection and the stream.
@@ -161,10 +164,25 @@ func (c *Conn) Close() {
 // Publisher publishes events to JetStream.
 type Publisher struct {
 	conn *Conn
+
+	// tracer is never nil; see SetTracer.
+	tracer telemetry.TracerProvider
 }
 
 // NewPublisher returns a publisher on conn.
-func NewPublisher(conn *Conn) *Publisher { return &Publisher{conn: conn} }
+func NewPublisher(conn *Conn) *Publisher {
+	return &Publisher{conn: conn, tracer: telemetry.NoopTracerProvider()}
+}
+
+// SetTracer attaches tracing. Passing nil restores the no-op provider, so a
+// caller that has not configured tracing cannot leave a nil interface on the
+// publish path.
+func (p *Publisher) SetTracer(tp telemetry.TracerProvider) {
+	if tp == nil {
+		tp = telemetry.NoopTracerProvider()
+	}
+	p.tracer = tp
+}
 
 // Publish sends one event and waits for the broker to acknowledge storage.
 //
@@ -172,6 +190,9 @@ func NewPublisher(conn *Conn) *Publisher { return &Publisher{conn: conn} }
 // as the bytes leave the process, so a broker that is up but unable to persist
 // looks exactly like a healthy one, and the relay marks the event delivered.
 func (p *Publisher) Publish(ctx context.Context, event messaging.Event) error {
+	ctx, span := startPublishSpan(ctx, p.tracer, event)
+	defer span.End()
+
 	msg := &nats.Msg{
 		Subject: subjectFor(p.conn.cfg.SubjectPrefix, event.Type),
 		Data:    event.Payload,
@@ -181,8 +202,8 @@ func (p *Publisher) Publish(ctx context.Context, event messaging.Event) error {
 			headerOccurredAt: []string{event.OccurredAt.Format(time.RFC3339Nano)},
 		},
 	}
-	if event.TraceParent != "" {
-		msg.Header.Set(headerTraceParent, event.TraceParent)
+	if header := traceParentForMessage(ctx, event.TraceParent); header != "" {
+		msg.Header.Set(headerTraceParent, header)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, p.conn.cfg.PublishTimeout)
@@ -192,6 +213,11 @@ func (p *Publisher) Publish(ctx context.Context, event messaging.Event) error {
 	// after crashing before the mark produces one stored message.
 	_, err := p.conn.js.PublishMsg(ctx, msg, jetstream.WithMsgID(event.ID.String()))
 	if err != nil {
+		// The span records that the publish failed and not why. The broker's
+		// error text quotes the subject, and a subject is derived from the
+		// event type today but is the sort of thing that grows a tenant or an
+		// id in it later.
+		span.SetStatus(codes.Error, "publish failed")
 		return fmt.Errorf("publish %s to nats: %w", event.Type, err)
 	}
 	return nil
@@ -208,6 +234,9 @@ func subjectFor(prefix, eventType string) string {
 
 // Subscription pulls events from JetStream and hands them to a processor.
 type Subscription struct {
+	// tracer is never nil; see SetTracer.
+	tracer telemetry.TracerProvider
+
 	conn     jetstream.Consumer
 	logger   *slog.Logger
 	inFlight sync.WaitGroup
@@ -245,7 +274,7 @@ func Subscribe(ctx context.Context, conn *Conn, filter string, logger *slog.Logg
 		slog.String("consumer", conn.cfg.ConsumerName),
 		slog.String("subject", subject))
 
-	return &Subscription{conn: consumer, logger: logger}, nil
+	return &Subscription{conn: consumer, logger: logger, tracer: telemetry.NoopTracerProvider()}, nil
 }
 
 // Run consumes until ctx is cancelled, then waits for in-flight messages.
@@ -274,11 +303,15 @@ func (s *Subscription) Run(ctx context.Context, processor Processor) error {
 			return
 		}
 
-		if err := processor.Process(ctx, event); err != nil {
+		msgCtx, span := startConsumeSpan(ctx, s.tracer, event)
+		defer span.End()
+
+		if err := processor.Process(msgCtx, event); err != nil {
 			// Unacknowledged on purpose: the processor only returns an error
 			// when it could neither handle nor park the event, which means
 			// redelivery is the correct outcome.
-			s.logger.ErrorContext(ctx, "message left for redelivery",
+			span.SetStatus(codes.Error, "left for redelivery")
+			s.logger.ErrorContext(msgCtx, "message left for redelivery",
 				slog.String("event_id", event.ID.String()),
 				slog.String("event_type", event.Type),
 				slog.Any("error", err))
@@ -342,4 +375,14 @@ func eventFromMsg(msg jetstream.Msg) (messaging.Event, error) {
 		TraceParent: header.Get(headerTraceParent),
 		Payload:     payload,
 	}, nil
+}
+
+// SetTracer attaches tracing. Passing nil restores the no-op provider, so a
+// caller that has not configured tracing cannot leave a nil interface on the
+// delivery path, where a panic costs every message rather than one request.
+func (s *Subscription) SetTracer(tp telemetry.TracerProvider) {
+	if tp == nil {
+		tp = telemetry.NoopTracerProvider()
+	}
+	s.tracer = tp
 }

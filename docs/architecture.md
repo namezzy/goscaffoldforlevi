@@ -15,6 +15,7 @@
 | 认证授权 | [ADR-0007](./adr/0007-auth.md) |
 | 限流 | [ADR-0008](./adr/0008-rate-limiting.md) |
 | 消息与异步 | [ADR-0009](./adr/0009-messaging.md) |
+| 可观测性接线 | [ADR-0010](./adr/0010-observability.md) |
 
 ---
 
@@ -244,6 +245,22 @@ Metrics label 与 span name 一律使用**路由模板**（`/api/v1/users/{id}`�
 原因：Prometheus 的时间序列数量 = 各 label 基数的乘积。
 一个 `user_id` label 就能让序列数从几十涨到几十万，直接打爆存储。
 
+### 实现状态（Phase 5 完成）
+
+| 面 | 落地位置 |
+|---|---|
+| Trace | HTTP（`internal/httpx/observability.go`）、PostgreSQL（`internal/postgres/tracing.go`）、Redis（`internal/redis/tracing.go`）、NATS 发布与消费（`internal/messaging/natsmq/tracing.go`） |
+| Metrics | `internal/telemetry/metrics.go`，独立端口导出（`endpoint.go`），默认 `127.0.0.1:9464`（worker 自动 +1） |
+| Log 关联 | `internal/telemetry/logger.go` 的 `contextHandler` 注入 `trace_id` / `span_id` |
+| 跨进程串联 | traceparent 经 outbox 列与 NATS header 传递，consumer span 是 publish span 的**子节点** |
+
+**属性白名单**：DB 只记 sqlc 的 query 名，Redis 只记 `cmd.Name()`，span 的
+error status 只记"失败了"不记原因——驱动的错误文本会引用参数。
+详见 [ADR-0010](./adr/0010-observability.md)。
+
+本地起观测栈：`docker compose --profile observability up -d`
+（Grafana http://localhost:3000，已 provision Service Overview 仪表盘）。
+
 ---
 
 ## 5. 中间件顺序
@@ -254,14 +271,15 @@ Metrics label 与 span name 一律使用**路由模板**（`/api/v1/users/{id}`�
 ③      Tracing
 ④        Logging
 ⑤          Metrics
-⑥            CORS
-⑦              BodyLimit
-⑧                Timeout
-⑨                  RateLimitByIP
-⑩                    Authentication
-⑪                      RateLimitByUser
-⑫                        Authorization
-                            Handler
+⑥            SecurityHeaders
+⑦              CORS
+⑧                BodyLimit
+⑨                  Timeout
+⑩                    RateLimitByIP
+⑪                      Authentication
+⑫                        RateLimitByUser
+⑬                          Authorization
+                              Handler
 ```
 
 逐条理由：
@@ -273,18 +291,19 @@ Metrics label 与 span name 一律使用**路由模板**（`/api/v1/users/{id}`�
 | ③ Tracing | 在 Logging 之前，这样日志才能携带 trace_id。反过来则 trace 上下文尚未建立 |
 | ④ Logging | 在 Metrics 之前无实质影响，但排在前面能记录更完整的耗时 |
 | ⑤ Metrics | 应统计**所有**进入的请求，包括被限流和被拒绝认证的。放在限流之后会漏掉 429，而 429 的量恰恰是最需要监控的 |
-| ⑥ CORS | **必须在限流之前**。浏览器 preflight（OPTIONS）不带凭据、量大，让它消耗业务配额会误伤正常用户。CORS 中间件对 preflight 直接短路返回，不进入后续 |
-| ⑦ BodyLimit | 在 Timeout 之前，先限制大小再限制时间。避免超大 body 在超时窗口内持续占用内存 |
-| ⑧ Timeout | 在所有业务处理之前设定 deadline，让下游的 DB/Redis 调用都继承取消信号 |
-| ⑨ RateLimitByIP | 在 Authentication **之前**：未认证的攻击流量不应先消耗 JWT 验证的 CPU |
-| ⑩ Authentication | 产出 `Principal` 放入 context |
-| ⑪ RateLimitByUser | 在 Authentication **之后**：此时才知道 UserID。这是 prompt 原始顺序中缺失的一环（见 ADR-0008） |
-| ⑫ Authorization | 最内层。它需要 Principal，且只有确定要执行 handler 时才需要判权 |
+| ⑥ SecurityHeaders | 在 CORS 之前，这样即使 CORS 短路返回 preflight，响应也带着安全头。放在后面，preflight 响应会缺头 |
+| ⑦ CORS | **必须在限流之前**。浏览器 preflight（OPTIONS）不带凭据、量大，让它消耗业务配额会误伤正常用户。CORS 中间件对 preflight 直接短路返回，不进入后续 |
+| ⑧ BodyLimit | 在 Timeout 之前，先限制大小再限制时间。避免超大 body 在超时窗口内持续占用内存 |
+| ⑨ Timeout | 在所有业务处理之前设定 deadline，让下游的 DB/Redis 调用都继承取消信号 |
+| ⑩ RateLimitByIP | 在 Authentication **之前**：未认证的攻击流量不应先消耗 JWT 验证的 CPU |
+| ⑪ Authentication | 产出 `Principal` 放入 context |
+| ⑫ RateLimitByUser | 在 Authentication **之后**：此时才知道 UserID。这是 prompt 原始顺序中缺失的一环（见 ADR-0008） |
+| ⑬ Authorization | 最内层。它需要 Principal，且只有确定要执行 handler 时才需要判权 |
 
 登录路由额外挂载 `RateLimitLogin`（在 handler 内、解析出 email 之后触发），
 因为它的限流维度依赖请求体。
 
-**注意 ⑤ 与 ⑨ 的关系**：Metrics 在限流之前，所以 429 会被计入
+**注意 ⑤ 与 ⑩ 的关系**：Metrics 在限流之前，所以 429 会被计入
 `http_requests_total{status="429"}`。这是有意的——
 限流拒绝量是核心监控指标。
 

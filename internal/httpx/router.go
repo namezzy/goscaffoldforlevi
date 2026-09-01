@@ -8,6 +8,7 @@ import (
 
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/config"
+	"github.com/example/go-enterprise/internal/telemetry"
 )
 
 // chiRouter is the slice of chi.Router used for mounting routes, kept narrow
@@ -36,6 +37,15 @@ type RouterDeps struct {
 	// exists — but it is the composition root's decision to make, not this
 	// function's.
 	RateLimitByIP func(http.Handler) http.Handler
+
+	// Tracer starts the server span for each request. A nil value means no
+	// tracing, which is not a degraded mode: OTEL_ENABLED defaults to false,
+	// and an entry point with no collector must not have to assemble one.
+	Tracer telemetry.TracerProvider
+
+	// Metrics records one observation per request. Nil disables recording;
+	// the scrape endpoint is a separate listener and is not mounted here.
+	Metrics *telemetry.Metrics
 }
 
 // NewRouter assembles the middleware stack and the route tree.
@@ -60,13 +70,24 @@ func NewRouter(deps RouterDeps) http.Handler {
 
 	r.Use(Recovery(deps.Logger))
 	r.Use(RequestID)
-	// TraceContext is here, next to RequestID, because both establish the
-	// identifiers every later layer correlates on. Phase 5 replaces the
-	// forwarded header with a real span.
-	r.Use(TraceContext)
-	// Phase 5: Tracing
+	// Tracing is here, next to RequestID, because both establish the
+	// identifiers every later layer correlates on — and because Logging below
+	// reads the span from the context to attach trace_id to every line.
+	//
+	// A nil Tracer becomes a no-op provider rather than a skipped middleware:
+	// Tracing also carries the inbound traceparent through to the outbox, and
+	// that has to keep working with tracing switched off.
+	tracer := deps.Tracer
+	if tracer == nil {
+		tracer = telemetry.NoopTracerProvider()
+	}
+	r.Use(Tracing(tracer))
 	r.Use(Logging(deps.Logger))
-	// Phase 5: Metrics — before rate limiting, so rejected requests are counted.
+	// Metrics precedes rate limiting, so that rejected requests are counted.
+	// After it, a service under attack would look idle.
+	if deps.Metrics != nil {
+		r.Use(Metrics(deps.Metrics))
+	}
 	r.Use(SecurityHeaders)
 	r.Use(CORS(deps.Config.HTTP))
 	r.Use(BodyLimit(deps.Config.HTTP.MaxBodyBytes))

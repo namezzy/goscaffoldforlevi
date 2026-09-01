@@ -1,0 +1,41 @@
+# Collector configuration for local development.
+#
+# The application always exports to the collector rather than directly to a
+# backend. That indirection is the point: swapping Tempo for a vendor, adding
+# sampling, or dropping an attribute becomes a collector change, applied
+# without rebuilding or restarting the services being observed.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bounded queueing. Without a limit, a backend outage turns the collector
+  # into a memory leak that takes the host down with it — the observability
+  # stack causing the incident it exists to explain.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo]
+  telemetry:
+    logs:
+      level: warn

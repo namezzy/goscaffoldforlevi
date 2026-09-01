@@ -78,6 +78,16 @@ type Guard struct {
 	// Observer is called for every backend error so Phase 5 can attach a
 	// counter without this package importing a metrics library.
 	Observer func(scope Scope)
+
+	// RejectionObserver is called for every rejected request, so Phase 5 can
+	// attach a counter without this package importing a metrics library.
+	//
+	// It is deliberately outside the log sampler. The log is sampled because
+	// an attack would otherwise make the defence generate a flood of its own;
+	// a counter costs nothing per event, and sampling it would report one
+	// rejection per interval whether the attacker sent two requests or two
+	// million — destroying the only number that says how big the attack is.
+	RejectionObserver func(scope Scope)
 }
 
 // fallbackFactor loosens the in-process quota relative to the real one. The
@@ -164,7 +174,13 @@ func (g *Guard) onBackendError(ctx context.Context, scope Scope, err error) {
 // so the defence against the flood generates a flood of its own. Metrics stay
 // unsampled because a counter costs nothing per event.
 func (g *Guard) logIfDenied(ctx context.Context, scope Scope, identity string, d Decision) {
-	if d.Allowed || !g.sampler.allow(string(scope)+":"+identity) {
+	if d.Allowed {
+		return
+	}
+	if g.RejectionObserver != nil {
+		g.RejectionObserver(scope)
+	}
+	if !g.sampler.allow(string(scope) + ":" + identity) {
 		return
 	}
 	g.log.WarnContext(ctx, "rate limit exceeded",

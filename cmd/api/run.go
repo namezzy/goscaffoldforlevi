@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
 
 	"github.com/example/go-enterprise/internal/config"
 	"github.com/example/go-enterprise/internal/httpx"
@@ -37,15 +38,62 @@ func run(ctx context.Context) error {
 	logger.InfoContext(ctx, "starting",
 		slog.String("addr", cfg.HTTP.Addr()),
 		slog.Bool("otel_enabled", cfg.OTel.Enabled),
+		slog.Bool("metrics_enabled", cfg.Metrics.Enabled),
 	)
+
+	// Telemetry is built before any dependency, so that the pool and the cache
+	// can be instrumented as they are created rather than retro-fitted.
+	tracer, err := telemetry.NewTracerProvider(ctx, cfg.App, cfg.OTel)
+	if err != nil {
+		return fmt.Errorf("build tracer: %w", err)
+	}
+	defer func() {
+		// A separate budget: ctx is already cancelled by the time this runs,
+		// and flushing the last spans of a shutdown is exactly when they
+		// matter most.
+		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := tracer.Shutdown(flushCtx); err != nil {
+			logger.Warn("tracer shutdown failed", slog.Any("error", err))
+		}
+	}()
+
+	// Set globally so that libraries which propagate on their own — the OTLP
+	// exporter's own gRPC client included — agree with the middleware about
+	// the wire format.
+	otel.SetTextMapPropagator(telemetry.Propagator())
+
+	metrics := telemetry.NewMetrics()
+	metricsServer, metricsAddr, err := telemetry.NewMetricsServer(ctx, cfg.Metrics, metrics)
+	if err != nil {
+		return fmt.Errorf("start metrics endpoint: %w", err)
+	}
+	if metricsServer != nil {
+		logger.InfoContext(ctx, "metrics listening",
+			slog.String("addr", metricsAddr), slog.String("path", cfg.Metrics.Path))
+		go func() {
+			if err := metricsServer.Serve(); err != nil {
+				logger.Error("metrics endpoint failed", slog.Any("error", err))
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			_ = metricsServer.Shutdown(shutdownCtx)
+		}()
+	}
 
 	// Dependencies are opened in dependency order and closed in reverse, so a
 	// failure part-way through never leaves a connection pool behind.
-	pool, err := postgres.NewPool(ctx, cfg.Database)
+	pool, err := postgres.NewPool(ctx, cfg.Database, postgres.WithTracing(tracer))
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
 	defer pool.Close()
+
+	// Pool saturation is the first thing to look at when latency rises and
+	// nothing else changed, and it is invisible from inside a query timing.
+	metrics.RegisterPoolCollector(poolStats{pool})
 
 	txManager := postgres.NewTxManager(pool)
 
@@ -61,12 +109,13 @@ func run(ctx context.Context) error {
 			slog.Any("error", err))
 		cache = nil
 	default:
+		cache.AddHook(redis.NewHook(tracer, metrics))
 		defer func() { _ = cache.Close() }()
 	}
 
 	health := httpx.NewHealth(logger, cfg.App.Version, checkers(pool, cache, cfg.Redis.Required)...)
 
-	features, err := buildFeatures(cfg, pool, cache, txManager, logger)
+	features, err := buildFeatures(cfg, pool, cache, txManager, logger, metrics)
 	if err != nil {
 		return err
 	}
@@ -77,6 +126,8 @@ func run(ctx context.Context) error {
 		Health:        health,
 		Register:      features.register,
 		RateLimitByIP: ratelimithttp.ByIP(features.guard, cfg.HTTP.TrustedProxyCount, logger),
+		Tracer:        tracer,
+		Metrics:       metrics,
 	})
 
 	server := httpx.NewServer(cfg.HTTP, handler)
@@ -171,3 +222,11 @@ func serve(
 	logger.Info("shutdown complete")
 	return nil
 }
+
+// poolStats adapts the pgx pool to the telemetry package's collector, so that
+// telemetry does not import pgx and pgx does not import Prometheus.
+type poolStats struct{ pool *pgxpool.Pool }
+
+func (p poolStats) TotalConns() int32    { return p.pool.Stat().TotalConns() }
+func (p poolStats) IdleConns() int32     { return p.pool.Stat().IdleConns() }
+func (p poolStats) AcquiredConns() int32 { return p.pool.Stat().AcquiredConns() }

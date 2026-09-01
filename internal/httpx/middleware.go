@@ -15,7 +15,6 @@ import (
 
 	"github.com/example/go-enterprise/internal/apperr"
 	"github.com/example/go-enterprise/internal/config"
-	"github.com/example/go-enterprise/internal/messaging"
 	"github.com/example/go-enterprise/internal/telemetry"
 )
 
@@ -295,27 +294,6 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
-		next.ServeHTTP(w, r)
-	})
-}
-
-// TraceContext copies an inbound W3C traceparent header into the request
-// context so that events published while handling the request carry it, and
-// the asynchronous work that follows shows up on the same trace as the call
-// that caused it.
-//
-// This forwards the caller's header rather than starting a span; real
-// instrumentation arrives in Phase 5 and will overwrite the value from the
-// active span. A malformed or absent header leaves the context untouched —
-// messaging.ContextWithTraceParent validates it, because a fabricated
-// traceparent produces traces that look joined but are not, which is worse
-// than having none.
-func TraceContext(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if header := r.Header.Get("traceparent"); header != "" {
-			ctx := messaging.ContextWithTraceParent(r.Context(), header)
-			r = r.WithContext(ctx)
-		}
 		next.ServeHTTP(w, r)
 	})
 }

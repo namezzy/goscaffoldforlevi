@@ -38,6 +38,9 @@ type Service struct {
 	tx       TxManager
 	now      Clock
 	log      *slog.Logger
+
+	// observer is never nil; see SetObserver.
+	observer Observer
 }
 
 // NewService wires the service. Every collaborator is an interface, so the
@@ -52,6 +55,7 @@ func NewService(
 	log *slog.Logger,
 ) *Service {
 	return &Service{
+		observer: NopObserver(),
 		cfg:      cfg,
 		accounts: accounts,
 		sessions: sessions,
@@ -92,12 +96,37 @@ func errInvalidCredentials() error {
 // account is rejected only after its real password has been checked. Skipping
 // either would make the timing of a failure reveal which case it was.
 func (s *Service) Login(ctx context.Context, email, password string, meta RequestMeta) (TokenPair, error) {
+	// The request is shaped before it is counted. A malformed body is a client
+	// error, not a credential check, and counting it would let anyone raise
+	// the authentication failure rate by posting empty forms — which turns a
+	// security alert into a nuisance and then into something people mute.
 	var v validate.Violations
 	v.Required("email", email)
 	v.Required("password", password)
 	if v.Any() {
 		return TokenPair{}, v.Err("INVALID_ARGUMENT", "invalid login request")
 	}
+
+	// Counted through one call on every terminating path, so that the failure
+	// rate has attempts as its denominator. Successes as the denominator would
+	// go to zero during the one incident that matters — every login failing —
+	// and the alert would never fire.
+	pair, err := s.login(ctx, email, password, meta)
+	s.observer.LoginAttempt(err == nil)
+	return pair, err
+}
+
+// SetObserver attaches instrumentation. Passing nil restores the no-op, so a
+// caller that has not configured metrics cannot leave a nil interface on the
+// login path.
+func (s *Service) SetObserver(o Observer) {
+	if o == nil {
+		o = NopObserver()
+	}
+	s.observer = o
+}
+
+func (s *Service) login(ctx context.Context, email, password string, meta RequestMeta) (TokenPair, error) {
 
 	account, err := s.accounts.FindByEmail(ctx, validate.NormalizeEmail(email))
 	switch {

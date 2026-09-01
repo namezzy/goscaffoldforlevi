@@ -80,6 +80,9 @@ type Consumer struct {
 	cfg     ConsumerConfig
 	logger  *slog.Logger
 
+	// observer is never nil; see SetObserver.
+	observer Observer
+
 	// sleep is injectable so retry-schedule tests do not spend real seconds
 	// waiting. The schedule is the thing under test, not the clock.
 	sleep func(ctx context.Context, d time.Duration) error
@@ -95,7 +98,19 @@ func NewConsumer(
 		cfg:     cfg,
 		logger:  logger,
 		sleep:   sleepCtx,
+
+		observer: NopObserver(),
 	}
+}
+
+// SetObserver attaches instrumentation. Passing nil restores the no-op, so a
+// caller that has not configured metrics cannot leave a nil interface on the
+// message path.
+func (c *Consumer) SetObserver(o Observer) {
+	if o == nil {
+		o = NopObserver()
+	}
+	c.observer = o
 }
 
 // Process handles one event to completion: it returns nil once the event has
@@ -107,6 +122,16 @@ func NewConsumer(
 // looking like a broken message.
 func (c *Consumer) Process(ctx context.Context, event Event) error {
 	var lastErr error
+	started := time.Now()
+
+	// observe reports the terminal outcome exactly once. Anything that leaves
+	// Process without passing through here — only shutdown does — is
+	// deliberately uncounted: a cancelled attempt is a deploy, not a failure,
+	// and an alert that fires on every rolling restart is one nobody reads.
+	observe := func(err error) {
+		c.observer.MessagingConsumed(
+			event.Type, c.cfg.Name, time.Since(started).Seconds(), err)
+	}
 
 	for attempt := 1; attempt <= c.cfg.MaxAttempts; attempt++ {
 		handled, err := c.attempt(ctx, event, attempt)
@@ -117,6 +142,9 @@ func (c *Consumer) Process(ctx context.Context, event Event) error {
 					slog.String("event_id", event.ID.String()),
 					slog.String("event_type", event.Type),
 					slog.Int("attempt", attempt))
+				observe(nil)
+			} else {
+				c.observer.MessagingDuplicate(event.Type, c.cfg.Name)
 			}
 			return nil
 		}
@@ -135,6 +163,8 @@ func (c *Consumer) Process(ctx context.Context, event Event) error {
 				slog.String("event_id", event.ID.String()),
 				slog.String("event_type", event.Type),
 				slog.Any("error", err))
+			c.observer.MessagingDeadLettered(event.Type, c.cfg.Name)
+			observe(err)
 			return c.park(ctx, event, attempt, err)
 		}
 
@@ -143,6 +173,7 @@ func (c *Consumer) Process(ctx context.Context, event Event) error {
 		}
 
 		delay := c.backoff(attempt)
+		c.observer.MessagingRetry(event.Type, c.cfg.Name)
 		c.logger.WarnContext(ctx, "event failed, retrying",
 			slog.String("consumer", c.cfg.Name),
 			slog.String("event_id", event.ID.String()),
@@ -163,6 +194,9 @@ func (c *Consumer) Process(ctx context.Context, event Event) error {
 		slog.String("event_type", event.Type),
 		slog.Int("attempts", c.cfg.MaxAttempts),
 		slog.Any("error", lastErr))
+
+	c.observer.MessagingDeadLettered(event.Type, c.cfg.Name)
+	observe(lastErr)
 
 	return c.park(ctx, event, c.cfg.MaxAttempts, lastErr)
 }

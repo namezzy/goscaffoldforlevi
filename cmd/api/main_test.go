@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -22,6 +23,11 @@ import (
 func TestRunServesAndShutsDownGracefully(t *testing.T) {
 	c := pgtest.Start(t)
 	port := freePort(t)
+	// The metrics listener needs a reserved port too. Leaving it at the
+	// default would make this test fail whenever a developer happens to have
+	// the service running locally, and a test that fails for a reason unrelated
+	// to the code under test is a test people learn to ignore.
+	metricsPort := freePort(t)
 
 	setEnv(t, map[string]string{
 		"APP_ENV":                    "development",
@@ -29,6 +35,8 @@ func TestRunServesAndShutsDownGracefully(t *testing.T) {
 		"HTTP_PORT":                  strconv.Itoa(port),
 		"HTTP_SHUTDOWN_TIMEOUT":      "10s",
 		"HTTP_READINESS_DRAIN_DELAY": "200ms",
+		"METRICS_ENABLED":            "true",
+		"METRICS_ADDR":               "127.0.0.1:" + strconv.Itoa(metricsPort),
 		"DATABASE_URL":               c.URL,
 		// Redis is not started: the service must come up anyway, because the
 		// cache is optional by configuration.
@@ -55,6 +63,42 @@ func TestRunServesAndShutsDownGracefully(t *testing.T) {
 	t.Run("unknown routes are structured errors", func(t *testing.T) {
 		if got := statusOf(t, base+"/api/v1/nope"); got != http.StatusNotFound {
 			t.Fatalf("/api/v1/nope = %d, want 404", got)
+		}
+	})
+
+	t.Run("metrics are exported on their own port", func(t *testing.T) {
+		metricsBase := "http://127.0.0.1:" + strconv.Itoa(metricsPort)
+
+		resp, err := http.Get(metricsBase + "/metrics")
+		if err != nil {
+			t.Fatalf("GET /metrics: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("/metrics = %d, want 200", resp.StatusCode)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read /metrics: %v", err)
+		}
+		// The requests above must be visible. An endpoint that serves an empty
+		// exposition is indistinguishable from one that serves a live registry
+		// until an incident, when the graphs turn out to have always been flat.
+		if !strings.Contains(string(body), "http_requests_total") {
+			t.Error("/metrics does not expose http_requests_total")
+		}
+
+		// The metrics listener carries no authentication, so it must not serve
+		// the application. A mux that falls through to the API turns an
+		// internal-only port into an unauthenticated copy of the service.
+		if got := statusOf(t, metricsBase+"/live"); got != http.StatusNotFound {
+			t.Errorf("metrics port served /live with %d, want 404", got)
+		}
+
+		// The application port must not export the registry: it is public, and
+		// metrics name internal routes, dependencies and error rates.
+		if got := statusOf(t, base+"/metrics"); got == http.StatusOK {
+			t.Error("the public HTTP port exposes /metrics")
 		}
 	})
 

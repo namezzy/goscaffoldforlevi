@@ -62,6 +62,7 @@ type Config struct {
 	RateLimit RateLimit
 	Messaging Messaging
 	OTel      OTel
+	Metrics   Metrics
 }
 
 // Messaging configures the outbox relay, the broker and the consumer.
@@ -244,9 +245,42 @@ type RateLimit struct {
 // OTel configures telemetry export. Instrumentation is always compiled in;
 // Enabled only controls whether spans and metrics leave the process.
 type OTel struct {
-	Enabled       bool
-	Endpoint      string
+	Enabled  bool
+	Endpoint string
+
+	// Protocol selects the OTLP transport: "grpc" or "http".
+	//
+	// gRPC is the default because the Collector's gRPC receiver is the one
+	// every distribution enables out of the box, and because the endpoint form
+	// (host:port, no scheme) is harder to get subtly wrong than the HTTP one,
+	// where omitting /v1/traces produces a 404 that looks like a network fault.
+	Protocol string
+
+	// Insecure disables TLS to the collector. True is right for a collector
+	// sharing a pod or a compose network and wrong across any other boundary,
+	// so it defaults to false and Validate warns when production sets it.
+	Insecure bool
+
 	SamplingRatio float64
+}
+
+// OTLP protocol values for OTel.Protocol.
+const (
+	OTLPGRPC = "grpc"
+	OTLPHTTP = "http"
+)
+
+// Metrics configures the Prometheus scrape endpoint.
+//
+// It is a separate listener rather than a route on the API router, because
+// the two have opposite exposure requirements: the API is meant to be reachable
+// from the internet and /metrics is meant not to be. Sharing a port makes that
+// distinction a matter of ingress rules written somewhere else, which is how
+// metrics endpoints end up public.
+type Metrics struct {
+	Enabled bool
+	Addr    string
+	Path    string
 }
 
 // Addr returns the listen address for the HTTP server.

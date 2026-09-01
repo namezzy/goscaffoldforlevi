@@ -6,12 +6,13 @@
 
 ## Current Phase
 
-**Phase 4 (Messaging / 异步处理) completed at 2026-09-01.**
+**Phase 5 (Observability) completed at 2026-09-01.**
 
-服务现在有一条完整的异步链路：业务写入与事件在同一个事务里落库（outbox），
-relay 把它们投递到 NATS JetStream，worker 消费、去重、重试，失败进 DLQ。
-默认 `MESSAGING_ENABLED=false`——关掉时 API 完整可用，只是不产生事件。
-**尚无**：tracing/metrics 实际接入（Phase 5）、容器化与 CI/CD（Phase 6/8）。
+服务现在能被观测：结构化日志带 `trace_id`/`span_id`，HTTP / PostgreSQL /
+Redis / NATS 全部产生 span 且跨进程连成一条 trace，Prometheus 指标在独立
+内网端口导出，Grafana 仪表盘由测试守护不会静默失效。
+默认 `OTEL_ENABLED=false`——关掉时业务行为完全不变（有实跑验证）。
+**尚无**：容器化与 CI/CD（Phase 6/8）、告警规则、SLO 定义。
 
 ## Locked Decisions
 
@@ -568,3 +569,266 @@ Phase 5 必须注意：
    不要新建一条无关的 trace。
 3. 中间件栈里 `// Phase 5: Metrics` 的挂载点在限流**之前**，
    这样 429 会被计数——挪到之后就看不见被拒绝的流量了。
+
+---
+
+# Phase 5 — Observability（2026-09-01）
+
+## Telemetry Architecture
+
+```
+业务包（user / auth / ratelimit / messaging / postgres / redis / httpx）
+        │  只依赖自己声明的窄接口（Observer / PoolStats / TracerProvider）
+        ▼
+internal/telemetry        ← 唯一 import OTel SDK 与 Prometheus 的包
+        │
+        ├── tracing.go     TracerProvider / Resource / OTLP exporter / Noop
+        ├── propagation.go traceparent ⇄ context（W3C，单头 carrier）
+        ├── metrics.go     实例化 registry + 15 组指标
+        ├── endpoint.go    /metrics 独立监听
+        └── logger.go      contextHandler 注入 trace_id / span_id
+        ▲
+        │  组合根（cmd/api、cmd/worker）是唯一把两者接起来的地方
+```
+
+**分层的理由**：ADR-0001 要求业务包不感知具体基础设施。业务包 import
+Prometheus 的那一刻，单元测试就需要一个 registry，而 registry 重复注册会
+panic，测试于是开始互相干扰。改为业务包声明 `Observer` 接口、由组合根传入
+`*telemetry.Metrics`，业务测试用 fake 即可。
+
+`Observer` 的方法名带 `Messaging` 前缀是**故意**的：这样 `*telemetry.Metrics`
+天然满足接口，不需要适配器。适配器是标签被悄悄丢掉的地方。
+
+## Metrics Added
+
+独立端口导出（API `127.0.0.1:9464`，worker `9465`），`METRICS_PATH` 默认 `/metrics`。
+
+| 指标 | 类型 | 标签 | 为什么是这个形状 |
+|---|---|---|---|
+| `http_requests_total` | counter | method, route, status | route 是 chi 模板不是路径，否则每个 id 一条时间序列 |
+| `http_request_duration_seconds` | histogram | method, route | |
+| `http_errors_total` | counter | method, route | **只计 5xx**；4xx 是 API 正常工作 |
+| `rate_limit_rejected_total` | counter | scope | 在日志采样器**之外**计数 |
+| `redis_operation_total` / `_duration_seconds` | counter/histogram | command, outcome | 只记命令名，不记 key |
+| `messaging_published_total` | counter | event_type | 投递成功后、`MarkPublished` 之前 |
+| `messaging_consumed_total` | counter | consumer, event_type, outcome | |
+| `messaging_consume_duration_seconds` | histogram | consumer, event_type | |
+| `messaging_retry_total` / `_dlq_total` / `_duplicate_total` | counter | consumer, event_type | duplicate **不折进** consumed |
+| `outbox_pending_events` | gauge | — | 在 `drain()` 结束时 defer 上报 |
+| `user_registration_total` | counter | — | **事务提交后**计数 |
+| `login_total` / `login_failure_total` | counter | — | 两者都计，失败率的分母必须是尝试数 |
+| `db_pool_{total,idle,acquired}_conns` | gauge | — | pgx 池状态 |
+
+几条不显然的取舍：
+
+- **`login_total` 同时计成功与失败**。用成功数当分母，在"全部登录失败"的
+  事故里分母归零，告警永远不触发。
+- **malformed 登录请求不计入失败**。否则任何人 POST 一个空 body 就能拉高
+  认证失败率，把安全告警变成噪音。
+- **`user_registration_total` 计提交而非尝试**。计尝试会让注册曲线变成表单
+  提交曲线：校验逻辑回归导致注册全挂时，图上反而是流量创纪录。
+- **`messaging_duplicate_total` 与 consumed 分开**。折进成功数后，broker
+  全量重投会被读成"吞吐翻倍"而不是"broker 有问题"。
+- **`outbox_pending_events` 不用独立 ticker**。独立 ticker 是第二个会停的
+  东西；relay 卡死时它仍在持续上报最后读到的值，看上去一切正常。
+
+## Trace Coverage
+
+| 位置 | span | 关键属性 |
+|---|---|---|
+| HTTP 入站 | `{METHOD} {route}` SERVER | `http.route`（模板；无匹配为 `unmatched`） |
+| PostgreSQL | `db.query {QueryName}` CLIENT | 名字取自 sqlc 的 `-- name:` 注释 |
+| Redis | `redis {COMMAND}` CLIENT | `cmd.Name()`，**不是** `cmd.String()` |
+| NATS 发布 | `publish {event_type}` PRODUCER | 父节点 = outbox 里存的 traceparent |
+| NATS 消费 | `consume {event_type}` CONSUMER | 父节点 = live publish span |
+
+实跑验证的完整链路（Tempo 中的真实 trace，12 个 span，跨 API 与 worker 两个进程）：
+
+```
+POST /api/v1/users                            [api, SERVER]
+├── redis EVALSHA ×2                          [限流]
+├── db.query BEGIN / CreateUser / InsertOutboxEvent / COMMIT
+└── publish user.created.v1                   [worker, PRODUCER]
+    └── consume user.created.v1               [worker, CONSUMER]
+        └── db.query BEGIN / ClaimEventForConsumer / COMMIT
+```
+
+**高基数与泄漏的三道防线**（每一道都有测试）：
+
+1. `routeTemplate()` 用 chi 的 `RoutePattern()`，未匹配路由统一归并为
+   `unmatched`。不这样做，一次扫描器攻击就能把 registry 撑爆。
+2. DB/Redis 走**白名单**：只记 query 名 / 命令名。现成的库默认记
+   `db.statement`，在本项目里那就是 `rl:login:victim@example.com` 和
+   refresh token 本身。
+3. span 的 error status **只记"失败了"不记"为什么"**。驱动的错误文本会引用
+   参数：唯一约束冲突的报文里就带着那个邮箱地址。
+
+**为什么手写 HTTP 中间件而不用 otelhttp**：chi 的 route 模板只有在
+`next.ServeHTTP` **之后**才能读到。开 span 时先用临时名，出栈时 `SetName()`。
+otelhttp 做不到这一点，只能拿到原始路径——那正是高基数的来源。
+
+**traceparent 的优先级**（两处，都是刻意的）：
+
+- `traceParentForEvents`（HTTP → outbox）：**活跃 server span 优先于入站头**。
+  tracing 关闭时才回退到转发调用方的头，保证默认部署下 outbox 的
+  traceparent 列不为空。
+- `traceParentForMessage`（relay → NATS）：**live publish span 优先于库里存的头**。
+  这让 consumer 成为 publish 的**子节点**而非兄弟。兄弟只说明"两件事发生过"，
+  父子才说明"一件导致了另一件"。tracing 关闭时回退到 Phase 4 已有的头。
+
+## Logging Changes
+
+`internal/telemetry/logger.go` 的 `contextHandler.Handle` 在有效 span 下追加
+`trace_id` / `span_id`。用 `sc.IsValid()` 而不是 `IsRecording()`：未采样的
+span 依然有合法的 trace id，日志仍应带上它，否则采样一开日志就断链。
+
+日志本身的字段、脱敏规则、采样策略沿用 Phase 2，本阶段未改。
+
+## Docker Observability Stack
+
+`docker compose --profile observability up -d` 拉起：
+
+| 服务 | 镜像 | 端口 | 作用 |
+|---|---|---|---|
+| otel-collector | 0.115.1 | 4317/4318 | 接 OTLP，转发 Tempo |
+| tempo | 2.6.1 | 3200 | trace 存储与查询 |
+| prometheus | v3.0.1 | 9090 | 抓 API:9464 与 worker:9465 |
+| grafana | 11.4.0 | 3000 | datasource 与 dashboard 均已 provision |
+
+配置在 `deployments/observability/`。Grafana 打开即有
+**Service Overview** 仪表盘（9 个面板：请求率 / 错误率 / P50-P95-P99 延迟 /
+限流拒绝 / DB 池 / Redis / 消息发布与消费 / outbox 深度 / 登录失败率）。
+
+**profile 是默认关闭的**：这套栈占约 1.5G 内存，不该是 `docker compose up`
+的默认代价。
+
+## 本阶段做的超范围的事
+
+1. **`cmd/worker` 的 metrics 端口自动 +1**（`workerMetricsConfig()`）。
+   prompt 没要求，但 API 与 worker 共用同一份 `.env`，不这样做两个进程会抢
+   9464，且失败发生在启动时——正是最容易被当成"端口冲突、重启一下"忽略的地方。
+2. **`deployments/observability/dashboard_test.go`**。prompt 只要求提供仪表盘。
+   但仪表盘是本阶段唯一会**静默失效**的产物：查询一个不存在的指标名，渲染
+   出来是一张空图，与"指标真的是 0"完全无法区分。这个测试解析仪表盘里的
+   PromQL，断言每个指标名在真实 registry 中存在——**首次运行就抓到 2 个错名**。
+3. **`internal/httpx/leak_test.go`**（§5.13 要求审计，未要求自动化）。
+   一次请求同时在 body / header / query 里携带密码、access token、refresh
+   token、cookie、api key，走完整中间件栈，然后在日志与 span 里同时搜。
+   将来新增中间件会自动被它覆盖。
+4. **升级 `google.golang.org/grpc` v1.81.1 → v1.82.1**。引入 OTLP gRPC
+   exporter 后 `govulncheck` 报出 GO-2026-6061，属于本阶段引入的依赖。
+5. **删除 `httpx.TraceContext` 中间件及其 3 个单测**。Phase 4 留下的占位实现
+   只转发调用方的头，被 `Tracing` 中间件完全取代；留着它会产生两个来源不同
+   的 traceparent。
+
+## Known Limitations（Phase 5 新增）
+
+1. **没有告警规则，也没有 SLO**。仪表盘能让人看见问题，但需要有人在看。
+   告警需要先有 SLO，SLO 需要先有稳定的基线流量——这两样都还不存在。
+2. **Collector 是单点且无持久队列**。Collector 挂掉期间的 span 直接丢失。
+   生产上应加 `sending_queue` 的磁盘持久化，或直接双写。
+3. **Tempo 用本地磁盘存储，无保留策略**。开发用足够，生产需要对象存储。
+4. **指标端口无鉴权**，靠绑定 `127.0.0.1` 与网络策略保护。`endpoint.go` 的
+   注释里写了三种方案的取舍：public 端口只差一条 ingress 规则就暴露到公网
+   且会被限流吃掉；admin 端口要耦合鉴权；独立内网端口靠网络策略控制，是
+   Prometheus 部署本来就需要的控制。
+5. **`db_pool_*` 是 pgx 的采样值**，在 `/metrics` 被抓取时读取。抓取间隔内的
+   瞬时耗尽看不见。
+6. **exemplars 未接**。指标与 trace 之间只能靠时间窗口手工关联，不能从一个
+   延迟尖峰直接跳到那条慢 trace。
+7. **worker 的 `consume` span 不覆盖 handler 内部的业务分支**，只到
+   `ClaimEventForConsumer` 与 handler 调用为止。
+
+## 测试与变异验证
+
+新增测试文件 11 个，全部经过变异验证（故意注入缺陷、确认测试变红）：
+
+| 模块 | 测试数 | 变异 |
+|---|---|---|
+| config | +4 | 4/4 |
+| telemetry/tracing | 10 | 5/5 |
+| telemetry/propagation | 4 | 3/3（1 个存活，见下） |
+| telemetry/metrics | 11 | 6/6 |
+| telemetry/endpoint | 5 | 3/3 |
+| telemetry/logger | +3 | 3/3 |
+| httpx/observability | 11 | 8/8 |
+| postgres/tracing | 8 | 6/6 |
+| redis/tracing | 6 | 4/4 |
+| messaging/observer + consumer + relay | 9 | 7/7 |
+| messaging/natsmq/tracing | 6 | 3/3 |
+| ratelimit/rejection | 3 | 2/2 |
+| user/observer、auth/observer | 8 | 5/5 |
+| deployments/observability/dashboard | 1 | 2/2 |
+| cmd/api 集成（/metrics） | +1 | 2/2 |
+
+### 变异抓到的真问题（写下来是因为它们都"测试全绿"过）
+
+- **postgres M5**：`span.SetStatus(codes.Error, data.Err.Error())` 通过了全部
+  测试，因为测试用的错误文本是无害的。真实驱动错误长这样：
+  `DETAIL: Key (email)=(victim@example.com) already exists.`——最常见的那种
+  失败，错误消息里就带着失败的那个邮箱。**只用无害文本测脱敏等于没测。**
+- **redis M4**：同类问题。补了一个用 MOVED/CROSSSLOT 风格（错误文本里含 key）
+  的测试之后才被抓到。
+- **messaging Consumer M2**（重试耗尽却报成功）**存活**：唯一的死信测试走的是
+  `ErrPermanent` 分支。而"耗尽"才是生产上更常见的路径（依赖宕机）。
+- **user M3**（提交前计数）**存活**：唯一被拒的注册是校验失败，发生在事务之前。
+  补了"事务回滚"的测试才抓到。
+- **telemetry M2**（无 span 时的 `TraceParentFromContext`）**存活**：所有测试
+  都持有真实 span，漏掉了"tracing 关闭"这个**默认部署形态**。全零的
+  traceparent 语法合法，会让全系统共用同一个 trace id。
+
+### 一个存活但合理的变异
+
+`ContextWithTraceParent` 里的 `sc.IsValid()` 守卫被删掉后测试全绿——因为 W3C
+propagator 本身已经拒绝了非法输入，这个守卫是冗余的。选择**保留**并把注释改
+诚实：它是第二道防线，防的是将来换成 B3 / Jaeger propagator 的情况。
+
+## 运行验证（2026-09-01）
+
+- `make check` 全绿（`golangci-lint run` 0 issues，`govulncheck` 0 vulnerabilities）
+- `make test-integration` 全绿（真实 PostgreSQL 17 + 真实 NATS JetStream）
+- 黑盒回归 **110/110** 通过（t_http 14、t_authz 20、t_input 37、t_jwt 18、
+  t_fixed 9、t_race 12）——Phase 3/4 无回归
+- 实跑完整栈（Collector / Tempo / Prometheus / Grafana），注册一个用户：
+  - Tempo 中得到跨进程的 12-span 完整 trace（见上）
+  - Prometheus 两个 target 均 `up`，`http_requests_total`、`redis_operation_total`、
+    `user_registration_total`、`login_total`、`messaging_published_total`、
+    `messaging_consumed_total`、`outbox_pending_events`、`db_pool_total_conns` 均有值
+  - 错误前缀 `/v1/users` 的 404 正确归并为 `POST unmatched`，未产生高基数序列
+- `OTEL_ENABLED=false`（默认）下全部集成测试通过，业务行为不变
+
+## 本阶段查清的一个"假故障"
+
+端到端验证时 publish / consume span 始终不出现在 trace 里，而 worker 的日志
+明确显示事件已处理。按 systematic-debugging 四阶段排查后确认：**代码没有问题**
+——`/tmp/goscaffold-worker` 是 Phase 4 遗留的旧二进制（9-01 15:47 启动），没有
+Phase 5 埋点，却在和新 worker 抢同一份 outbox 与同一个 JetStream consumer。
+杀掉它之后链路立刻完整。
+
+教训：验证可观测性时，**先确认在跑的就是刚构建的那个二进制**。这类"代码正确
+但观测不到"的现象，最省时间的第一步是 `ps` 而不是读代码。
+
+## Next Phase Entry Conditions
+
+Phase 6 (容器化 / 部署) 开始前已成立：
+
+- [x] `make check` 与 `make test-integration` 全绿
+- [x] tracing 默认关闭，且关闭时业务行为不变（有实跑验证）
+- [x] 业务包的**非测试代码**不 import OTel SDK 或 Prometheus（已用 `go list` 验证；
+      `natsmq` 的测试用 `sdk/trace/tracetest` 做录制器，属于测试专用，Phase 8 静态审计须放行）
+- [x] HTTP / DB / Redis / NATS 全链路 span 跨进程连通（有实跑验证）
+- [x] 指标在独立端口导出，Prometheus 抓取成功
+- [x] 仪表盘的指标名由测试守护
+- [x] 无高基数标签，无密钥进入日志或 span（有自动化审计测试）
+
+Phase 6 必须注意：
+
+1. **镜像里要暴露 metrics 端口，但不要 publish 到宿主机**。`METRICS_ADDR`
+   在容器里应绑 `0.0.0.0`(让 Prometheus 抓得到)，同时靠 NetworkPolicy /
+   安全组限制来源——绑 `127.0.0.1` 在容器里等于谁也抓不到。
+2. **`OTEL_EXPORTER_OTLP_INSECURE` 默认 false**。集群内走 mTLS 时不要为了
+   省事打开它；开发环境的 compose 里已经显式设成 true，不要把那份配置复制到
+   生产的 manifest。
+3. **worker 与 api 是两个 Deployment**，各自的 metrics 端口不再冲突，
+   `workerMetricsConfig()` 的 +1 逻辑在容器里是多余但无害的——不要因此删掉它，
+   本地开发仍然依赖它。

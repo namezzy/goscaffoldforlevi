@@ -63,6 +63,80 @@ services:
       timeout: 3s
       retries: 10
 
+  # ---------------------------------------------------------------------------
+  # Observability stack. Started only with --profile observability, because it
+  # is roughly a gigabyte of memory and nothing in the application needs it:
+  # with OTEL_ENABLED=false the services run exactly as they do without it.
+  # ---------------------------------------------------------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: goscaffold-otelcol
+    profiles: ["observability"]
+    # The collector sits between the application and the backends so that
+    # changing where traces are stored is a collector config change rather
+    # than an application redeploy and restart.
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deployments/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: goscaffold-tempo
+    profiles: ["observability"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./deployments/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: goscaffold-prometheus
+    profiles: ["observability"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=24h"
+    volumes:
+      - ./deployments/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    # host.docker.internal is how the scraper reaches an API running on the
+    # developer's machine rather than in a container, which is the normal
+    # local workflow: `make run` in one terminal, the stack in another.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: goscaffold-grafana
+    profiles: ["observability"]
+    environment:
+      # Anonymous admin access, local only. This container is bound to
+      # localhost and holds nothing but dashboards; a password prompt on every
+      # `docker compose up` is friction that teaches people to disable the
+      # stack rather than to use it.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deployments/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deployments/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+
 volumes:
   postgres-data:
   nats-data:
+  tempo-data:
+  prometheus-data:

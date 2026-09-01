@@ -70,6 +70,9 @@ type Service struct {
 	tx     TxManager
 	events EventPublisher
 	log    *slog.Logger
+
+	// observer is never nil; see SetObserver.
+	observer Observer
 }
 
 // NewService wires the service.
@@ -80,7 +83,8 @@ func NewService(
 	events EventPublisher,
 	log *slog.Logger,
 ) *Service {
-	return &Service{repo: repo, hasher: hasher, tx: tx, events: events, log: log}
+	return &Service{repo: repo, hasher: hasher, tx: tx, events: events, log: log,
+		observer: NopObserver()}
 }
 
 // CreateInput is the validated input for registration.
@@ -148,7 +152,24 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
+
+	// Counted after the commit, so the number matches the users table. Counting
+	// the attempt would make the signup graph a graph of form submissions, and
+	// a validation regression that rejected every signup would read as record
+	// traffic rather than as an outage.
+	s.observer.UserRegistered()
+
 	return created, nil
+}
+
+// SetObserver attaches instrumentation. Passing nil restores the no-op, so a
+// caller that has not configured metrics cannot leave a nil interface on the
+// request path.
+func (s *Service) SetObserver(o Observer) {
+	if o == nil {
+		o = NopObserver()
+	}
+	s.observer = o
 }
 
 // EventUserCreated is emitted when a user is registered.

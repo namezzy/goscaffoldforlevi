@@ -132,7 +132,13 @@ func validConfig() config.Config {
 		OTel: config.OTel{
 			Enabled:       false,
 			Endpoint:      "localhost:4317",
+			Protocol:      config.OTLPGRPC,
 			SamplingRatio: 0.1,
+		},
+		Metrics: config.Metrics{
+			Enabled: true,
+			Addr:    "127.0.0.1:9464",
+			Path:    "/metrics",
 		},
 	}
 }
@@ -296,3 +302,93 @@ func TestAddrJoinsHostAndPort(t *testing.T) {
 
 // secondsUnit keeps the fixture readable without importing time in every line.
 const secondsUnit = time.Second
+
+// --- Phase 5: observability configuration ---
+
+func TestValidateRejectsObservabilitySettings(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*config.Config)
+		want   string
+	}{
+		{
+			name:   "unknown OTLP protocol",
+			mutate: func(c *config.Config) { c.OTel.Protocol = "thrift" },
+			want:   "OTEL_EXPORTER_OTLP_PROTOCOL",
+		},
+		{
+			name:   "metrics path is not a path",
+			mutate: func(c *config.Config) { c.Metrics.Path = "metrics" },
+			want:   "METRICS_PATH",
+		},
+		{
+			name:   "metrics address has no port",
+			mutate: func(c *config.Config) { c.Metrics.Addr = "127.0.0.1" },
+			want:   "METRICS_ADDR",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(&cfg)
+
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("Validate() = nil, want an error mentioning %s", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error does not mention %s: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// Metrics describe internal topology: route templates, dependency names, build
+// version, and enough timing to make enumeration cheaper. Serving them on the
+// port the internet reaches is a disclosure, and the mistake is silent, so the
+// loader refuses it in production rather than leaving it to a deployment review.
+func TestValidateRefusesToServeMetricsOnThePublicPortInProduction(t *testing.T) {
+	cfg := validConfig()
+	cfg.App.Environment = config.EnvProduction
+	cfg.Metrics.Enabled = true
+	cfg.Metrics.Addr = cfg.HTTP.Addr()
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() = nil, want production to reject metrics on the public port")
+	}
+	if !strings.Contains(err.Error(), "METRICS_ADDR") {
+		t.Errorf("error does not mention METRICS_ADDR: %v", err)
+	}
+}
+
+// The same overlap in development is a convenience, not a disclosure: nothing
+// is reachable from outside. Refusing it everywhere would make people set two
+// ports to run one binary locally, and a rule that gets in the way at every
+// `go run` is a rule that gets disabled.
+func TestValidateAllowsMetricsOnThePublicPortInDevelopment(t *testing.T) {
+	cfg := validConfig()
+	cfg.App.Environment = config.EnvDevelopment
+	cfg.Auth.JWTSecret = config.Secret("a-genuinely-random-32-byte-secret!!")
+	cfg.Metrics.Enabled = true
+	cfg.Metrics.Addr = cfg.HTTP.Addr()
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want development to allow the overlap", err)
+	}
+}
+
+// Disabled means disabled: a config that would be rejected while serving is
+// irrelevant when nothing is served, and rejecting it would block startup over
+// a setting that has no effect.
+func TestValidateIgnoresTheMetricsAddressWhenMetricsAreOff(t *testing.T) {
+	cfg := validConfig()
+	cfg.App.Environment = config.EnvProduction
+	cfg.Metrics.Enabled = false
+	cfg.Metrics.Addr = cfg.HTTP.Addr()
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want no error when metrics are disabled", err)
+	}
+}

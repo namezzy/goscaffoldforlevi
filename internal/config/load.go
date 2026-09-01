@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -145,7 +146,17 @@ func Load() (Config, error) {
 		OTel: OTel{
 			Enabled:       p.bool("OTEL_ENABLED", false),
 			Endpoint:      p.str("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+			Protocol:      p.str("OTEL_EXPORTER_OTLP_PROTOCOL", OTLPGRPC),
+			Insecure:      p.bool("OTEL_EXPORTER_OTLP_INSECURE", false),
 			SamplingRatio: p.float("OTEL_SAMPLING_RATIO", 1.0),
+		},
+		Metrics: Metrics{
+			Enabled: p.bool("METRICS_ENABLED", true),
+			// Loopback by default: a metrics port that binds every interface
+			// the moment someone runs the binary is exposed before anyone
+			// decides to expose it.
+			Addr: p.str("METRICS_ADDR", "127.0.0.1:9464"),
+			Path: p.str("METRICS_PATH", "/metrics"),
 		},
 	}
 
@@ -348,6 +359,31 @@ func (c Config) Validate() error {
 	}
 	if c.OTel.Enabled && c.OTel.Endpoint == "" {
 		probs.add("OTEL_EXPORTER_OTLP_ENDPOINT", "is required when OTEL_ENABLED is true")
+	}
+	switch c.OTel.Protocol {
+	case OTLPGRPC, OTLPHTTP:
+	default:
+		probs.add("OTEL_EXPORTER_OTLP_PROTOCOL",
+			`must be "`+OTLPGRPC+`" or "`+OTLPHTTP+`"`)
+	}
+
+	// Metrics
+	if c.Metrics.Enabled {
+		if !strings.HasPrefix(c.Metrics.Path, "/") {
+			probs.add("METRICS_PATH", "must begin with /")
+		}
+		if _, _, err := net.SplitHostPort(c.Metrics.Addr); err != nil {
+			probs.add("METRICS_ADDR", "must be host:port")
+		} else if c.App.Environment == EnvProduction && c.Metrics.Addr == c.HTTP.Addr() {
+			// Metrics name every route template, dependency and build version,
+			// and expose enough timing to make enumeration cheaper. Serving
+			// them from the port that terminates public traffic is a
+			// disclosure, and it is a silent one, so it is refused here rather
+			// than left to whoever writes the ingress rules.
+			probs.add("METRICS_ADDR",
+				"must not be the public HTTP address in production; "+
+					"use a separate port that ingress does not route to")
+		}
 	}
 
 	return probs.err()

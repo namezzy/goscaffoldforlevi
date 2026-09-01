@@ -15,6 +15,7 @@ import (
 
 	"github.com/example/go-enterprise/internal/config"
 	"github.com/example/go-enterprise/internal/messaging"
+	"github.com/example/go-enterprise/internal/telemetry"
 )
 
 func newTestRouter(t *testing.T, checkers ...Checker) http.Handler {
@@ -283,4 +284,116 @@ func TestTheRouterPutsTheRequestTraceOnTheContext(t *testing.T) {
 		t.Errorf("traceparent reaching the handler = %q, want %q; "+
 			"the TraceContext middleware is not mounted on the router", seen, header)
 	}
+}
+
+// The Phase 4 lesson, applied to Phase 5: a middleware that is written,
+// correct and never mounted behaves exactly like one that was never written.
+// Both of these assert against the router rather than the middleware, because
+// mounting is the part no unit test can see.
+func TestTheRouterRecordsMetricsForEveryRequest(t *testing.T) {
+	t.Parallel()
+
+	logger := discardLogger()
+	metrics := telemetry.NewMetrics()
+	router := NewRouter(RouterDeps{
+		Config:  config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
+		Logger:  logger,
+		Health:  NewHealth(logger, "test"),
+		Metrics: metrics,
+		Register: func(v1 chi.Router) {
+			v1.Get("/counted", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+		},
+	})
+
+	router.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/api/v1/counted", nil))
+
+	if got := totalOf(t, metrics, "http_requests_total"); got != 1 {
+		t.Errorf("http_requests_total = %v, want 1; "+
+			"the Metrics middleware is not mounted on the router", got)
+	}
+}
+
+// §5.9 and the ordering note in NewRouter: the metrics middleware sits before
+// the rate limiters so that rejected requests are counted. Moving it after
+// them would make a service under attack look idle, which is the one time the
+// dashboard has to be right.
+func TestRateLimitedRequestsAreStillCounted(t *testing.T) {
+	t.Parallel()
+
+	logger := discardLogger()
+	metrics := telemetry.NewMetrics()
+	router := NewRouter(RouterDeps{
+		Config:  config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
+		Logger:  logger,
+		Health:  NewHealth(logger, "test"),
+		Metrics: metrics,
+		RateLimitByIP: func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+			})
+		},
+		Register: func(v1 chi.Router) {
+			v1.Get("/counted", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+		},
+	})
+
+	router.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/api/v1/counted", nil))
+
+	if got := totalOf(t, metrics, "http_requests_total"); got != 1 {
+		t.Errorf("http_requests_total = %v after a 429, want 1; "+
+			"rejected traffic is invisible", got)
+	}
+}
+
+// A router built without a metrics registry or a tracer provider must still
+// serve. Every existing test constructs RouterDeps without them, and more to
+// the point cmd/adminctl and any future entry point should not have to
+// assemble an observability stack to mount a route.
+func TestTheRouterWorksWithoutObservabilityWiredIn(t *testing.T) {
+	t.Parallel()
+
+	logger := discardLogger()
+	router := NewRouter(RouterDeps{
+		Config: config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
+		Logger: logger,
+		Health: NewHealth(logger, "test"),
+		Register: func(v1 chi.Router) {
+			v1.Get("/plain", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/plain", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 with no telemetry configured", rec.Code)
+	}
+}
+
+func totalOf(t *testing.T, m *telemetry.Metrics, name string) float64 {
+	t.Helper()
+
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("Gather() = %v", err)
+	}
+
+	total := 0.0
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			total += metric.GetCounter().GetValue()
+		}
+	}
+	return total
 }

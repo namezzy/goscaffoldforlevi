@@ -81,6 +81,9 @@ type Relay struct {
 	// It is buffered with capacity one because the signal is "there is work",
 	// which does not accumulate.
 	wake chan struct{}
+
+	// observer is never nil; see SetObserver.
+	observer Observer
 }
 
 // NewRelay builds a relay.
@@ -91,6 +94,7 @@ func NewRelay(
 	logger *slog.Logger,
 ) *Relay {
 	return &Relay{
+		observer:  NopObserver(),
 		store:     store,
 		publisher: publisher,
 		cfg:       cfg,
@@ -144,6 +148,12 @@ func (r *Relay) Run(ctx context.Context) error {
 // empty. Without this loop a burst larger than one batch would trickle out at
 // BatchSize per poll interval.
 func (r *Relay) drain(ctx context.Context) {
+	// Reported at the end of the sweep, not from a ticker of its own. A
+	// separate ticker is a second thing that can stop, and a gauge that keeps
+	// updating while the relay is wedged would keep reporting the last depth
+	// it managed to read — which is the one number that must not be stale.
+	defer r.reportPending(ctx)
+
 	for {
 		if ctx.Err() != nil {
 			return
@@ -157,6 +167,22 @@ func (r *Relay) drain(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// reportPending publishes the outbox depth to the observer.
+//
+// A failure to read it is logged and dropped: the depth is diagnostic, and
+// failing the sweep over it would let a broken gauge stop delivery.
+func (r *Relay) reportPending(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	pending, err := r.store.PendingCount(ctx)
+	if err != nil {
+		r.logger.WarnContext(ctx, "could not read outbox depth", slog.Any("error", err))
+		return
+	}
+	r.observer.MessagingOutboxPending(pending)
 }
 
 // deliverBatch publishes one claimed batch and reports how many rows it saw.
@@ -186,6 +212,11 @@ func (r *Relay) deliverBatch(ctx context.Context) (int, error) {
 					}
 					continue
 				}
+
+				// Counted here rather than at the outbox write: the metric
+				// answers "is anything reaching the broker", and a relay that
+				// had stopped delivering must not still look busy.
+				r.observer.MessagingPublished(pending.Event.Type)
 
 				if err := r.store.MarkPublished(ctx, pending.Event.ID); err != nil {
 					// The event is already out. Failing here rolls back the
@@ -237,3 +268,13 @@ func (r *Relay) prune(ctx context.Context) {
 // ErrRelayStopped is returned by helpers that need a sentinel for a relay that
 // is no longer running.
 var ErrRelayStopped = errors.New("messaging: relay stopped")
+
+// SetObserver attaches instrumentation. Passing nil restores the no-op, so a
+// caller that has not configured metrics cannot leave a nil interface on the
+// delivery path.
+func (r *Relay) SetObserver(o Observer) {
+	if o == nil {
+		o = NopObserver()
+	}
+	r.observer = o
+}

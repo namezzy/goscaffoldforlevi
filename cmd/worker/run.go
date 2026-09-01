@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
 
 	"github.com/example/go-enterprise/internal/config"
 	"github.com/example/go-enterprise/internal/messaging"
@@ -39,9 +43,43 @@ func run(ctx context.Context) error {
 
 	logger.InfoContext(ctx, "worker starting",
 		slog.String("consumer", cfg.Messaging.ConsumerName),
-		slog.Any("nats_urls", cfg.Messaging.NATSURLs))
+		slog.Any("nats_urls", cfg.Messaging.NATSURLs),
+		slog.Bool("otel_enabled", cfg.OTel.Enabled),
+		slog.Bool("metrics_enabled", cfg.Metrics.Enabled))
 
-	pool, err := postgres.NewPool(ctx, cfg.Database)
+	tracer, err := telemetry.NewTracerProvider(ctx, cfg.App, cfg.OTel)
+	if err != nil {
+		return fmt.Errorf("build tracer: %w", err)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		if err := tracer.Shutdown(flushCtx); err != nil {
+			logger.Warn("tracer shutdown failed", slog.Any("error", err))
+		}
+	}()
+	otel.SetTextMapPropagator(telemetry.Propagator())
+
+	metrics := telemetry.NewMetrics()
+	metricsServer, metricsAddr, err := telemetry.NewMetricsServer(ctx, workerMetricsConfig(cfg.Metrics), metrics)
+	if err != nil {
+		return fmt.Errorf("start metrics endpoint: %w", err)
+	}
+	if metricsServer != nil {
+		logger.InfoContext(ctx, "metrics listening", slog.String("addr", metricsAddr))
+		go func() {
+			if err := metricsServer.Serve(); err != nil {
+				logger.Error("metrics endpoint failed", slog.Any("error", err))
+			}
+		}()
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			_ = metricsServer.Shutdown(shutdownCtx)
+		}()
+	}
+
+	pool, err := postgres.NewPool(ctx, cfg.Database, postgres.WithTracing(tracer))
 	if err != nil {
 		return fmt.Errorf("connect postgres: %w", err)
 	}
@@ -55,12 +93,16 @@ func run(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	publisher := natsmq.NewPublisher(conn)
+	publisher.SetTracer(tracer)
+
 	relay := messaging.NewRelay(
 		store,
-		natsmq.NewPublisher(conn),
+		publisher,
 		relayConfig(cfg.Messaging),
 		logger,
 	)
+	relay.SetObserver(metrics)
 
 	consumer := messaging.NewConsumer(
 		notify.NewWelcomeHandler(notify.NewLogSender(logger), logger),
@@ -68,6 +110,7 @@ func run(ctx context.Context) error {
 		consumerConfig(cfg.Messaging),
 		logger,
 	)
+	consumer.SetObserver(metrics)
 
 	// The consumer subscribes to the one event it handles rather than to
 	// everything. Filtering at the broker means an unrelated event never
@@ -76,6 +119,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("subscribe: %w", err)
 	}
+	subscription.SetTracer(tracer)
 
 	// Both halves stop on the same context and are waited for. Nothing here
 	// depends on finishing in time: an event the relay did not publish is
@@ -162,4 +206,27 @@ func consumerConfig(cfg config.Messaging) messaging.ConsumerConfig {
 		BaseBackoff:    cfg.BaseBackoff,
 		MaxBackoff:     cfg.MaxBackoff,
 	}
+}
+
+// workerMetricsConfig moves the worker's metrics endpoint off the API's port.
+//
+// The two processes share one configuration file and, in development, one
+// host. Left on the same address the second process to start fails to bind,
+// and the failure reads as "metrics endpoint" rather than as "two services on
+// one port", which is a confusing way to lose a deployment. Incrementing the
+// port keeps both scrapable with no extra variable to forget.
+func workerMetricsConfig(cfg config.Metrics) config.Metrics {
+	if !cfg.Enabled {
+		return cfg
+	}
+	host, port, err := net.SplitHostPort(cfg.Addr)
+	if err != nil {
+		return cfg
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n == 0 {
+		return cfg
+	}
+	cfg.Addr = net.JoinHostPort(host, strconv.Itoa(n+1))
+	return cfg
 }

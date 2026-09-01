@@ -19,6 +19,7 @@ import (
 	"github.com/example/go-enterprise/internal/postgres"
 	"github.com/example/go-enterprise/internal/ratelimit"
 	"github.com/example/go-enterprise/internal/ratelimit/ratelimithttp"
+	"github.com/example/go-enterprise/internal/telemetry"
 	"github.com/example/go-enterprise/internal/user"
 	"github.com/example/go-enterprise/internal/user/userhttp"
 	"github.com/example/go-enterprise/internal/user/userpg"
@@ -42,6 +43,7 @@ func buildFeatures(
 	cache *goredis.Client,
 	txManager postgres.TxManager,
 	logger *slog.Logger,
+	metrics *telemetry.Metrics,
 ) (*features, error) {
 	hasher, err := auth.NewArgon2Hasher(auth.Argon2Params{
 		Time:    cfg.Auth.Argon2Time,
@@ -74,6 +76,7 @@ func buildFeatures(
 	}
 
 	userService := user.NewService(userRepo, hasher, txManager, events, logger)
+	userService.SetObserver(metrics)
 
 	sessionRepo := authpg.NewSessionRepository(pool)
 	authService := auth.NewService(
@@ -90,6 +93,7 @@ func buildFeatures(
 		txManager,
 		logger,
 	)
+	authService.SetObserver(metrics)
 
 	// A nil primary limiter is a supported state: the Guard then serves every
 	// decision from its in-process fallback. That is the right behaviour when
@@ -102,6 +106,9 @@ func buildFeatures(
 		logger.Warn("redis unavailable: rate limits will be enforced per-replica only")
 	}
 	guard := ratelimit.NewGuard(rateLimitConfig(cfg.RateLimit), primary, logger)
+	guard.RejectionObserver = func(scope ratelimit.Scope) {
+		metrics.RateLimitRejected(string(scope))
+	}
 
 	authHandler := authhttp.NewHandler(authService, cfg.HTTP.TrustedProxyCount, logger)
 	userHandler := userhttp.NewHandler(userService, logger)

@@ -1,8 +1,8 @@
-// Package telemetry builds the logger, and from Phase 5 the tracer and meter.
+// Package telemetry builds the logger, the tracer provider and the metrics registry.
 //
 // It is the only place allowed to know about correlation identifiers, so that
-// business code can call logger.InfoContext(ctx, ...) and get request_id and
-// (later) trace_id attached without doing anything.
+// business code can call logger.InfoContext(ctx, ...) and get request_id,
+// trace_id and span_id attached without doing anything.
 package telemetry
 
 import (
@@ -10,6 +10,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/example/go-enterprise/internal/config"
 )
@@ -40,7 +42,19 @@ func (h contextHandler) Handle(ctx context.Context, r slog.Record) error {
 	if id := RequestIDFromContext(ctx); id != "" {
 		r.AddAttrs(slog.String("request_id", id))
 	}
-	// Phase 5 adds trace_id and span_id here.
+
+	// IsValid is the load-bearing check, not IsRecording. A non-recording span
+	// still answers SpanContext(), and its identifiers are all zeroes: writing
+	// those would give every line in the system the same trace id, and anyone
+	// who pasted it into the trace backend would get an empty result instead
+	// of an obvious "there is no trace for this line".
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		r.AddAttrs(
+			slog.String("trace_id", sc.TraceID().String()),
+			slog.String("span_id", sc.SpanID().String()),
+		)
+	}
+
 	return h.Handler.Handle(ctx, r)
 }
 

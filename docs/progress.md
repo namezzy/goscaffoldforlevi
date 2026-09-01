@@ -89,6 +89,7 @@ ADR 模板里加了一条硬要求：**`When to Revisit` 必须是可观测的�
 | [0007](adr/0007-auth.md) | 认证授权 | JWT HS256 access 15min + opaque refresh 30d；**family 盗用检测**；Argon2id(64MB/t=3/p=4)；登录三种失败返回同一 401 |
 | [0008](adr/0008-rate-limiting.md) | 限流 | Redis Lua token bucket；**通用 fail-open，登录 fail-closed**；限流拆成两个中间件分列认证前后 |
 | [0009](adr/0009-messaging.md) | 消息与异步 | NATS JetStream，默认关闭；Outbox 纳入 v1；at-least-once + `processed_events` 幂等；DLQ 用数据库表 |
+| [0010](adr/0010-observability.md) | 可观测性接线 | `internal/telemetry` 是唯一 import OTel SDK/Prometheus 的包；业务包声明 Observer 接口；DB/Redis 走属性白名单；`/metrics` 独立端口 |
 
 ### `docs/architecture.md`
 
@@ -624,3 +625,109 @@ outbox 的 `payload` 用 `jsonb`，PostgreSQL 会规范化空白和键序，
 SIGTERM 后按 `subscription drained` → `relay stopped` → `worker stopped cleanly`
 顺序退出；110 条黑盒断言仍全绿，确认 `POST /users` 多包一层事务没有破坏
 Phase 3 的行为。
+
+## Phase 5：Observability
+
+### 想清楚的事
+
+**可观测性最容易变成"业务代码里到处是埋点"**。避免这一点的办法不是少埋，
+而是让业务包只声明自己需要的窄接口（`Observer`、`PoolStats`、`TracerProvider`），
+由组合根把 `*telemetry.Metrics` 传进去。`internal/telemetry` 因此是全项目
+唯一 import OTel SDK 与 Prometheus 的包——用 `go list` 验证过。
+
+`Observer` 的方法名带 `Messaging` 前缀看着啰嗦，是刻意的：这样
+`*telemetry.Metrics` 天然满足接口，不需要写适配器。适配器是标签被悄悄丢掉
+的地方。
+
+**没用 otelhttp，手写了 Tracing 中间件。** chi 的 route 模板要等
+`next.ServeHTTP` 返回后才读得到，otelhttp 拿不到，只能用原始路径——
+那正是高基数的来源。手写版本开 span 时先用临时名，出栈时 `SetName()`。
+
+**没用现成的 pgx / redis instrumentation。** 它们默认记 `db.statement`。
+在这个项目里，那就是 `rl:login:victim@example.com` 和 refresh token 本身。
+改成白名单：只记 sqlc 注释里的 query 名、只记 `cmd.Name()`。
+
+**指标放独立端口。** 三个方案的取舍写进了 `endpoint.go` 的注释：挂在 public
+端口，只差一条 ingress 规则就暴露到公网，而且会被自己的限流吃掉；挂在 admin
+端口，要和鉴权耦合；独立内网端口靠网络策略控制，而那正是 Prometheus 部署本来
+就需要的控制。listener 在**构造期**打开，端口被占必须让启动失败——否则它会
+变成一条日志，进程自称健康却什么都不导出。
+
+### 指标形状上的几个判断
+
+计数器的分母比分子重要。`login_total` 同时计成功与失败，因为用成功数当分母，
+在"全部登录失败"的事故里分母归零，告警永远不会触发。malformed 的登录请求不
+计入失败——否则任何人 POST 一个空 body 就能拉高认证失败率，把安全告警变成噪音。
+
+`user_registration_total` 计的是**事务提交**而不是尝试。计尝试会让注册曲线
+变成表单提交曲线：校验逻辑回归导致注册全挂时，图上反而是流量创纪录。
+
+`messaging_duplicate_total` 不折进 consumed。折进去之后，broker 全量重投会被
+读成"吞吐翻倍"而不是"broker 有问题"。
+
+`rate_limit_rejected_total` 在日志采样器**之外**计数。日志采样存在的意义是
+防止防御本身变成日志洪水；但计数器每次事件的成本是零，采样会让"攻击者发了
+两次"和"发了两百万次"读数完全相同。
+
+`outbox_pending_events` 在 `drain()` 结束时 defer 上报，没有用独立 ticker。
+独立 ticker 是第二个会停的东西——relay 卡死时它还在持续上报最后读到的值。
+（顺带，这是 Phase 4 写的 `PendingCount` 第一次真的被人调用。）
+
+### 变异测试抓到的
+
+- postgres 的 `span.SetStatus(codes.Error, err.Error())` 通过了全部测试，
+  因为测试里的错误文本是无害的。真实驱动错误长这样：
+  `DETAIL: Key (email)=(victim@example.com) already exists.`——最常见的那种
+  失败，错误消息里就带着失败的那个邮箱。**只用无害文本测脱敏等于没测。**
+  redis 有一模一样的问题，补了含 key 的 MOVED/CROSSSLOT 风格错误才抓到。
+- "重试耗尽却上报成功"这个变异**存活**了：唯一的死信测试走的是
+  `ErrPermanent` 分支，而"耗尽"才是生产上更常见的路径（依赖宕机）。
+- "无 span 时返回全零 traceparent"**存活**：所有测试都持有真实 span，
+  漏掉了 tracing 关闭这个**默认部署形态**。全零 traceparent 语法合法，
+  会让全系统共用同一个 trace id。
+- 有一个变异存活但是合理的：`ContextWithTraceParent` 的 `IsValid()` 守卫
+  删掉后测试全绿，因为 W3C propagator 本身已经拒绝了非法输入。保留它，
+  但把注释改诚实——它防的是将来换成 B3/Jaeger propagator 的情况。
+
+### 超出 prompt 范围做的
+
+仪表盘是本阶段唯一会**静默失效**的产物：查询一个不存在的指标名，渲染出来是
+一张空图，和"指标真的是 0"完全无法区分。写了 `dashboard_test.go` 解析仪表盘
+里的 PromQL、断言每个指标名在真实 registry 中存在，**首次运行就抓到 2 个错名**
+（`db_pool_connections`、`redis_operations_total`）。
+
+`leak_test.go`：一次请求同时在 body / header / query 里带上密码、access token、
+refresh token、cookie、api key，走完整中间件栈，然后在日志和 span 里同时搜。
+prompt 只要求做一次审计，但审计的结论会随下一个中间件失效。
+
+worker 的 metrics 端口自动 +1。API 与 worker 共用同一份 `.env`，不这样做两个
+进程会抢 9464，而失败发生在启动时——正是最容易被当成"端口冲突、重启一下"的
+地方。
+
+### 踩到的坑
+
+引入 OTLP gRPC exporter 后 `govulncheck` 报出 GO-2026-6061，升级
+`google.golang.org/grpc` v1.81.1 → v1.82.1 解决。
+
+`cmd/api` 的集成测试给 HTTP 挑随机端口，却把 metrics 留在固定的 9464，于是
+只要本机跑着服务它就失败——一个因为无关原因失败的测试，人们很快就学会忽略它。
+改成同样预留端口，顺手补上"metrics 端口不能落到应用路由"和"public 端口不能
+导出 registry"两条断言。
+
+端到端验证时 publish / consume span 死活不出现，而 worker 日志明确显示事件已
+处理。按 systematic-debugging 排查后发现代码没问题：`/tmp/goscaffold-worker`
+是 Phase 4 遗留的旧二进制，还在和新 worker 抢同一份 outbox 和同一个 JetStream
+consumer，而它没有 Phase 5 埋点。**验证可观测性时，最省时间的第一步是 `ps`
+而不是读代码。**
+
+排查过程中误杀了 OrbStack 的 vmgr helper 进程，Docker 整个掉线。按名字之外的
+东西 kill 之前，先 `ps -o command` 看清楚它是什么。
+
+### 验证
+
+`make check`（lint 0 issues、govulncheck 0）与 `make test-integration`（23 个包）
+全绿。起完整栈（Collector / Tempo / Prometheus / Grafana）实跑：注册一个用户
+得到跨 API 与 worker 两个进程的 12-span 完整 trace，
+`POST /api/v1/users → publish → consume → db.query` 父子链正确；Prometheus 两个
+target 均 up，各类指标均有值；写错前缀的 404 正确归并为 `POST unmatched`，
+没有产生高基数序列。110 条黑盒断言全绿，Phase 3/4 无回归。
