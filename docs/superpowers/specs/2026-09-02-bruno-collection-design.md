@@ -33,26 +33,26 @@
 ```
 api/bruno/
 ├── bruno.json                  集合定义(name / version / type)
-├── collection.bru              集合级 Bearer auth + 通用 header
-├── environments/
-│   └── local.bru               baseUrl;凭据走 process.env
+├── collection.bru              集合级 Bearer auth = {{accessToken}}
+├── environments/local.bru      baseUrl;凭据走 process.env
 ├── .env.example                （.env 被 .gitignore 覆盖）
-├── health/
-│   ├── health.bru  live.bru  ready.bru
-├── auth/
-│   ├── login.bru  refresh.bru  logout.bru
-│   └── errors/
-│       ├── wrong-password.bru  unknown-email.bru
-│       ├── disabled-account.bru  malformed-body.bru
-└── users/
-    ├── create.bru  list.bru  get.bru  update.bru
-    ├── disable.bru  change-password.bru  delete.bru
-    └── errors/
-        ├── no-token.bru  forbidden.bru  not-found.bru  tampered-token.bru
+├── health/    folder.bru seq 1  health, live, ready
+├── auth/      folder.bru seq 2  login, refresh, logout
+├── users/     folder.bru seq 3  create, get, list, update,
+│                                change-password, delete
+└── errors/    folder.bru seq 4  11 个失败路径 + 3 个 setup + 1 个 cleanup
 ```
 
-共 21 个请求:12 个覆盖 `openapi.yaml` 的全部 12 个 operation,1 个是 PATCH 的
-第二种用法(停用账号),8 个是失败路径。
+**为什么 `errors/` 是顶层文件夹而不是嵌在 `auth/` 与 `users/` 下面**——
+两个实测结论逼出来的:
+
+1. Bruno 的 `bru run -r` **先跑子文件夹再跑同级请求**。嵌套会让
+   `auth/errors/*` 跑在 `auth/login` 之前,变量还没被写入。
+2. 顺序只能靠每个文件夹里的 `folder.bru` 的 `meta { seq }` 控制。
+   扁平的四层顺序(health → auth → users → errors)才表达得清楚。
+
+共 24 个请求:12 个覆盖 `openapi.yaml` 的全部 12 个 operation,11 个失败路径
+与它们的 setup,1 个 cleanup。
 
 ## 变量流转
 
@@ -98,9 +98,15 @@ vars {
 密码错、邮箱不存在、账号被禁用。区分它们等于给攻击者一个账号枚举接口。
 这是集合里最值得存在的三个请求——三个响应必须逐字相同,肉眼一比就能看出来。
 
-第三种需要先构造:`users/create` → `users/disable`(PATCH `status=disabled`)
-→ 用该账号登录。因此 `users/disable.bru` 存在的目的不是演示 PATCH,而是让
-这条断言可点。
+第三种需要先构造,而**构造它的用户必须活着**。原设计打算复用 `users/` 里
+那个 CRUD 主体,但 `users/delete` 会先把它删掉——那样 `login-disabled-account`
+依然返回 401 `INVALID_CREDENTIALS`,走的却是"邮箱不存在"分支。**断言全绿,
+测的却是另一件事。**
+
+所以 `errors/` 自带一个成员用户的完整生命周期:
+`setup-member` → `login-as-member` → `users-forbidden`(403)
+→ `setup-disable-member` → `login-disabled-account`(401)→ `cleanup-member`。
+同一个用户同时支撑了 403 和禁用登录两条断言。
 
 ## 一致性测试
 
@@ -129,7 +135,9 @@ vars {
    漂移不在检查范围内——那是 `internal/openapitest` 的职责,它检查的是实现
    与 spec,而不是集合与 spec。
 2. **`bru run` 的顺序依赖变量流转。** 单独运行 `users/get` 而不先运行
-   `login` 与 `create` 会失败。Bruno 的 seq 保证集合整体运行时的顺序,
+   `login` 与 `create` 会失败。`folder.bru` 的 seq 保证整体运行时的顺序,
    但手工点选时需要自己注意。
-3. **没有 CI 集成。** 这份集合不进 `make check`;它需要一个跑着的服务和一份
+3. **一次完整运行会发起 5 次登录。** 登录的 IP 限流是 10 次 /15 分钟,
+   因此连着跑两遍就会打满,第三遍开始 429。这不是 bug,但排查时容易误判。
+4. **没有 CI 集成。** 这份集合不进 `make check`;它需要一个跑着的服务和一份
    凭据,而 CI 里已经有黑盒套件承担这件事。
