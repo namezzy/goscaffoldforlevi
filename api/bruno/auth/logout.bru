@@ -25,4 +25,9 @@ docs {
   expires, which is not a bug: access tokens are stateless by design
   (ADR-0007), and that is why they are short-lived. This is why the users/
   folder still works after this request runs.
+
+  The converse is worth knowing: refreshToken now points at a revoked
+  family. Re-running refresh on its own answers 401 and is recorded as a
+  replay, bumping refresh_reuse_detected_total — a real security signal
+  raised by an idle click. Run login again first.
 }

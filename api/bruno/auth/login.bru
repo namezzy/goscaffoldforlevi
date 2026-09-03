@@ -18,21 +18,35 @@ body:json {
 }
 
 script:post-response {
-  bru.setVar("accessToken", res.body.access_token);
-  bru.setVar("refreshToken", res.body.refresh_token);
+  // Bruno runs this for every response, not only 2xx. Unguarded, a refused
+  // login overwrites a working token with undefined and every later request
+  // answers 401 — with the real cause two requests upstream, which is the
+  // confusion this collection exists to remove.
+  if (res.getStatus() === 200) {
+    bru.setVar("accessToken", res.body.access_token);
+    bru.setVar("refreshToken", res.body.refresh_token);
+  }
 }
 
 assert {
   res.status: eq 200
   res.body.token_type: eq Bearer
-  res.body.expires_in: eq 900
+  res.body.expires_in: gt 0
 }
 
 docs {
   Run this first. It stores accessToken and refreshToken, and every request
   with `auth: inherit` picks accessToken up from collection.bru.
 
+  expires_in tracks AUTH_ACCESS_TTL, 15m by default, so it is asserted as a
+  shape rather than as 900. Pinning the number would turn "I lowered the TTL
+  to watch expiry" into a red assertion pointing at the collection.
+
   Login answers without X-RateLimit-* headers, unlike every other endpoint.
   A remaining count next to a refused login is a progress meter for whoever
   is guessing. Only Retry-After survives.
+
+  Two limits apply: 10 attempts per IP and 5 per email address, both per 15
+  minutes. Running the whole collection several times in a row will trip
+  them, and a 429 here is the limiter, not a broken service.
 }

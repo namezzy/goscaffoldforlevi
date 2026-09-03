@@ -17,8 +17,12 @@ body:json {
 }
 
 script:post-response {
-  bru.setVar("accessToken", res.body.access_token);
-  bru.setVar("refreshToken", res.body.refresh_token);
+  // Same guard as login: a 401 here means the family was revoked, and
+  // storing undefined would destroy the last working pair as well.
+  if (res.getStatus() === 200) {
+    bru.setVar("accessToken", res.body.access_token);
+    bru.setVar("refreshToken", res.body.refresh_token);
+  }
 }
 
 assert {
