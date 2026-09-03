@@ -27,4 +27,8 @@ docs {
   for different client behaviour: refresh and retry versus log in. Neither
   says which part of the token was wrong, because that would help someone
   iterate toward a valid one.
+
+  Only meaningful if auth/login ran in this session. With accessToken unset
+  the header goes out as the literal {{accessToken}}x, which is also 401
+  INVALID_TOKEN — green, while testing nothing about a broken signature.
 }

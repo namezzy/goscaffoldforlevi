@@ -2,3 +2,22 @@ meta {
   name: errors
   seq: 4
 }
+
+docs {
+  Failure paths. Runs last because it owns a member account from creation to
+  deletion and would otherwise leave one behind for the pagination examples
+  to trip over.
+
+  This folder spends five of the ten login attempts an IP gets per fifteen
+  minutes: wrong-password, unknown-email, malformed-body, as-member and
+  disabled-account. The malformed body still costs one, because the limiter
+  charges the IP before it discovers the body will not parse. With
+  auth/login that is six per full run, so a second run inside the same
+  window runs out partway through and answers 429 from login-as-member
+  onwards.
+
+  That is a limiter, not a fault. Clear it and run again:
+
+    docker exec goscaffold-redis redis-cli --scan --pattern 'rl:*' \
+      | xargs -r docker exec -i goscaffold-redis redis-cli del
+}
