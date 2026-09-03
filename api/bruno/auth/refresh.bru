@@ -1,0 +1,35 @@
+meta {
+  name: refresh
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/refresh
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "refresh_token": "{{refreshToken}}"
+  }
+}
+
+script:post-response {
+  bru.setVar("accessToken", res.body.access_token);
+  bru.setVar("refreshToken", res.body.refresh_token);
+}
+
+assert {
+  res.status: eq 200
+  res.body.token_type: eq Bearer
+}
+
+docs {
+  Refresh rotates: the token sent here is dead afterwards, so both variables
+  are overwritten. Replaying an already-used refresh token is treated as
+  theft and revokes the whole family (ADR-0007). The black-box suite covers
+  that; it is deliberately not a request here, because triggering it would
+  invalidate your session mid-run.
+}

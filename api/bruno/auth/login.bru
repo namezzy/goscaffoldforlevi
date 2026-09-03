@@ -1,0 +1,38 @@
+meta {
+  name: login
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "{{adminEmail}}",
+    "password": "{{process.env.BRUNO_ADMIN_PASSWORD}}"
+  }
+}
+
+script:post-response {
+  bru.setVar("accessToken", res.body.access_token);
+  bru.setVar("refreshToken", res.body.refresh_token);
+}
+
+assert {
+  res.status: eq 200
+  res.body.token_type: eq Bearer
+  res.body.expires_in: eq 900
+}
+
+docs {
+  Run this first. It stores accessToken and refreshToken, and every request
+  with `auth: inherit` picks accessToken up from collection.bru.
+
+  Login answers without X-RateLimit-* headers, unlike every other endpoint.
+  A remaining count next to a refused login is a progress meter for whoever
+  is guessing. Only Retry-After survives.
+}
