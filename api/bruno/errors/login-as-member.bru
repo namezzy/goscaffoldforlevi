@@ -1,0 +1,34 @@
+meta {
+  name: login as member
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "{{memberEmail}}",
+    "password": "{{memberPassword}}"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("memberAccessToken", res.body.access_token);
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  Writes memberAccessToken, deliberately not accessToken: overwriting the
+  administrator's token here would make every later request fail with 403
+  for reasons that have nothing to do with what they are testing.
+}

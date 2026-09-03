@@ -1,0 +1,27 @@
+meta {
+  name: setup disable member
+  type: http
+  seq: 7
+}
+
+patch {
+  url: {{baseUrl}}/api/v1/users/{{memberId}}
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "status": "disabled"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq disabled
+}
+
+docs {
+  auth: inherit, so this runs as the administrator. login-as-member stored
+  its token under a different name precisely so this still works.
+}

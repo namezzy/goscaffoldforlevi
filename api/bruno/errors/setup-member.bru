@@ -1,0 +1,46 @@
+meta {
+  name: setup member
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/users
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("memberEmail", "bruno-member-" + Date.now() + "@example.com");
+  bru.setVar("memberPassword", "correct horse battery staple");
+}
+
+body:json {
+  {
+    "email": "{{memberEmail}}",
+    "name": "Bruno Member",
+    "password": "{{memberPassword}}"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 201) {
+    bru.setVar("memberId", res.body.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.role: eq user
+}
+
+docs {
+  Setup, not an example. This folder needs a live non-administrator to show
+  both 403 and the disabled-account login, and it cannot borrow the one from
+  users/ because users/delete removes it first. Borrowing it would leave
+  login-disabled-account green while it actually exercised the unknown-email
+  branch.
+
+  role is omitted so the assertion tests the server's default rather than
+  echoing what was sent.
+}

@@ -1,0 +1,30 @@
+meta {
+  name: users tampered token
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/v1/users
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}x
+}
+
+assert {
+  res.status: eq 401
+  res.body.error.code: eq INVALID_TOKEN
+  res.body.error.message: eq invalid or expired token
+}
+
+docs {
+  One character appended to a valid token breaks the signature.
+
+  INVALID_TOKEN and UNAUTHENTICATED are different codes because they call
+  for different client behaviour: refresh and retry versus log in. Neither
+  says which part of the token was wrong, because that would help someone
+  iterate toward a valid one.
+}

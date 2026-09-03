@@ -1,0 +1,21 @@
+meta {
+  name: cleanup member
+  type: http
+  seq: 12
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/users/{{memberId}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  Without this every full run leaves a disabled account behind, and the user
+  list slowly fills with debris that makes the pagination examples harder to
+  read.
+}

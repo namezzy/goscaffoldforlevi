@@ -1,0 +1,28 @@
+meta {
+  name: users forbidden
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/v1/users
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{memberAccessToken}}
+}
+
+assert {
+  res.status: eq 403
+  res.body.error.code: eq FORBIDDEN
+}
+
+docs {
+  403, not 404. The member is authenticated and the collection exists; what
+  is missing is permission. Hiding it behind 404 would be lying to a client
+  that has every right to be told it lacks access.
+
+  Contrast with users-no-token.bru, which is 401: no identity at all.
+}
