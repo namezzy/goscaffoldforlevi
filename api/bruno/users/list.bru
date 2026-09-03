@@ -23,10 +23,10 @@ docs {
   A page past the end returns an empty items array with the real total, not
   a 404: asking for page 99999999 is a valid question with a boring answer.
 
-  Query string is written inline in url: only. A params:query block was
-  tried alongside it and mutation-tested with a different page_size value;
-  the request actually sent, and the response, still used the value from
-  url:, proving params:query is not honoured here when the same key is
-  already in the url string. Keeping both would leave a block that looks
-  editable but silently does nothing, so it is dropped.
+  Query string is written inline in url: only. The Bruno CLI builds the
+  request from url: verbatim and reads only path-type entries out of a
+  params block, so a params:query block is dropped entirely — not merged,
+  and not overridden by a clashing key. Adding a fresh key there would
+  disappear just the same. The GUI behaves differently: its params table
+  rewrites the URL bar, so the two stay in step there.
 }

@@ -21,8 +21,7 @@ body:json {
   {
     "email": "{{userEmail}}",
     "name": "Bruno User",
-    "password": "{{userPassword}}",
-    "role": "user"
+    "password": "{{userPassword}}"
   }
 }
 
@@ -43,7 +42,12 @@ assert {
 docs {
   Stores userId for the rest of this folder.
 
-  role is optional and defaults to `user`. It is spelled out here only to
-  show the field; leaving it out cannot create an administrator by accident,
-  which is the reason the default is the least privileged value.
+  role is omitted on purpose. It is an accepted field, but sending "user"
+  and then asserting the response says "user" would only prove the server
+  echoes what it was given. Leaving it out makes that assertion test the
+  thing worth testing: that the default is the least privileged value, so a
+  forgotten field cannot quietly produce an administrator.
+
+  status is not accepted from the client at all; it is set to active by the
+  service.
 }
