@@ -1,0 +1,32 @@
+meta {
+  name: update
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/v1/users/{{userId}}
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "name": "Bruno User Renamed"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.name: eq Bruno User Renamed
+  res.body.email: eq {{userEmail}}
+}
+
+docs {
+  PATCH, not PUT. There is no full replacement for a user, because with PUT
+  every omitted field becomes a deletion and a client that forgets one wipes
+  it silently (ADR-0004).
+
+  An empty body is rejected with 400 rather than answered 200: a patch that
+  changes nothing is a client bug, and a success would hide it.
+}

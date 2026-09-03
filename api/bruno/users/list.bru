@@ -1,0 +1,32 @@
+meta {
+  name: list
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/users?page=1&page_size=20
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.page_info.page: eq 1
+  res.body.page_info.page_size: eq 20
+}
+
+docs {
+  Listing requires the user:list permission, so a member gets 403 here.
+  errors/users-forbidden.bru is that same request with a member token.
+
+  A page past the end returns an empty items array with the real total, not
+  a 404: asking for page 99999999 is a valid question with a boring answer.
+
+  Query string is written inline in url: only. A params:query block was
+  tried alongside it and mutation-tested with a different page_size value;
+  the request actually sent, and the response, still used the value from
+  url:, proving params:query is not honoured here when the same key is
+  already in the url string. Keeping both would leave a block that looks
+  editable but silently does nothing, so it is dropped.
+}

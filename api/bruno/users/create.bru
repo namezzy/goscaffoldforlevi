@@ -1,0 +1,49 @@
+meta {
+  name: create
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/users
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  // A fixed address makes the second run fail with 409 and look like a bug
+  // in create rather than leftover state from the first run.
+  bru.setVar("userEmail", "bruno-user-" + Date.now() + "@example.com");
+  bru.setVar("userPassword", "correct horse battery staple");
+}
+
+body:json {
+  {
+    "email": "{{userEmail}}",
+    "name": "Bruno User",
+    "password": "{{userPassword}}",
+    "role": "user"
+  }
+}
+
+script:post-response {
+  // Runs for every response, not only 2xx. Storing undefined here would
+  // send the rest of the folder at a nonsense URL and hide the real cause.
+  if (res.getStatus() === 201) {
+    bru.setVar("userId", res.body.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.status: eq active
+  res.body.role: eq user
+}
+
+docs {
+  Stores userId for the rest of this folder.
+
+  role is optional and defaults to `user`. It is spelled out here only to
+  show the field; leaving it out cannot create an administrator by accident,
+  which is the reason the default is the least privileged value.
+}
