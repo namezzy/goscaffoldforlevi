@@ -184,6 +184,10 @@ func collectionRequests(t *testing.T) []request {
 		if err != nil {
 			return err
 		}
+		// environments/ holds vars, not requests.
+		if d.IsDir() && d.Name() == "environments" {
+			return filepath.SkipDir
+		}
 		if d.IsDir() || filepath.Ext(path) != ".bru" {
 			return nil
 		}
