@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -42,6 +43,19 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 
 var varRe = regexp.MustCompile(`\{\{[^}]*\}\}`)
 
+// seqRe matches the ordering key inside a meta block:
+//
+//	meta {
+//	  name: login
+//	  seq: 1
+var seqRe = regexp.MustCompile(`(?m)^\s*seq:\s*(\d+)\s*$`)
+
+// sequence is one .bru file reduced to its position among its siblings.
+type sequence struct {
+	file string
+	seq  int
+}
+
 func TestEveryRequestTargetsADocumentedOperation(t *testing.T) {
 	documented := documentedOperations(t)
 	requests := collectionRequests(t)
@@ -58,6 +72,55 @@ func TestEveryRequestTargetsADocumentedOperation(t *testing.T) {
 		if !documented[key] {
 			t.Errorf("%s targets %q, which api/openapi.yaml does not document", r.file, key)
 		}
+	}
+}
+
+// TestEveryDocumentedOperationHasARequest is the other direction, and it
+// guards a claim the README and STATE.md make out loud: that the collection
+// exercises every operation in the specification. Nothing else checks it, so
+// adding an endpoint would leave both documents quietly wrong.
+//
+// This is not a demand that the collection grow with the API. It is a demand
+// that the sentence stop claiming otherwise when it does not.
+func TestEveryDocumentedOperationHasARequest(t *testing.T) {
+	documented := documentedOperations(t)
+	requests := collectionRequests(t)
+
+	exercised := make(map[string]bool, len(requests))
+	for _, r := range requests {
+		exercised[r.method+" "+r.path] = true
+	}
+
+	for op := range documented {
+		if !exercised[op] {
+			t.Errorf("api/openapi.yaml documents %q, which no .bru request exercises", op)
+		}
+	}
+}
+
+// TestSeqIsUniqueAmongSiblings guards the ordering the whole collection rests
+// on. Requests hand each other userId, memberId and the tokens, so a repeated
+// seq leaves execution order undefined and surfaces as a 401 or a 404 in some
+// folder unrelated to the edit — indistinguishable, again, from the service
+// being broken.
+func TestSeqIsUniqueAmongSiblings(t *testing.T) {
+	seen := map[string]map[int]string{}
+
+	for _, s := range collectionSequences(t) {
+		group := filepath.Dir(s.file)
+		// A folder.bru orders its folder among the other folders, so it
+		// competes with its peers, not with the requests beside it.
+		if filepath.Base(s.file) == "folder.bru" {
+			group = "<folders>"
+		}
+		if seen[group] == nil {
+			seen[group] = map[int]string{}
+		}
+		if other, clash := seen[group][s.seq]; clash {
+			t.Errorf("%s and %s both claim seq %d; their order is undefined", other, s.file, s.seq)
+			continue
+		}
+		seen[group][s.seq] = s.file
 	}
 }
 
@@ -131,6 +194,48 @@ func collectionRequests(t *testing.T) []request {
 	})
 	if err != nil {
 		t.Fatalf("walk collection: %v", err)
+	}
+	return out
+}
+
+// collectionSequences walks the collection and reduces every .bru file that
+// carries an ordering key to that key. collection.bru has none, and the
+// environments directory holds variables rather than requests.
+func collectionSequences(t *testing.T) []sequence {
+	t.Helper()
+
+	var out []sequence
+	err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "environments" {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || filepath.Ext(path) != ".bru" || filepath.Base(path) == "collection.bru" {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		m := seqRe.FindStringSubmatch(string(raw))
+		if m == nil {
+			t.Errorf("%s declares no seq; its position among its siblings is undefined", path)
+			return nil
+		}
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			return err
+		}
+		out = append(out, sequence{file: path, seq: n})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk collection: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("no .bru files carried a seq; the check would have passed vacuously")
 	}
 	return out
 }

@@ -849,10 +849,14 @@ access token 从响应里复制出来、粘进下一个请求。token 15 分钟�
 `make test-integration`。集合里的断言只用来区分"环境坏了"和"你要调的东西
 坏了"。不要往里加回归用例。
 
-**`collection_test.go`** 断言每个请求的 `(method, path)` 存在于
-`openapi.yaml`,单向。理由与 `deployments/observability/dashboard_test.go`
-相同:指向已删除接口的请求返回 404,和服务挂掉长得一模一样,人会先去查
-服务。经 3 个变异验证(指向不存在的接口 / 关掉 UUID 归一化 / 让集合为空)。
+**`collection_test.go`** 断言每个请求的 `(method, path)` 与 `openapi.yaml`
+的 operation **双向**一一对应,并检查同级 `seq` 不重复。理由与
+`deployments/observability/dashboard_test.go` 相同:指向已删除接口的请求
+返回 404,和服务挂掉长得一模一样,人会先去查服务;`seq` 撞车则让执行顺序
+未定义,表现为某个无关文件夹里的间歇 401/404。上面那句"覆盖全部 12 个
+operation"也归它守着——否则加一个接口,这句话会静默失真。经 5 个变异验证
+(指向不存在的接口 / 关掉 UUID 归一化 / 让集合为空 / 重复 seq / 删掉某
+operation 的唯一请求)。
 
 **凭据不进仓库**:管理员密码走 `{{process.env.BRUNO_ADMIN_PASSWORD}}`,
 根 `.gitignore` 的 `.env` 规则(不带斜杠,任意层级生效)覆盖
@@ -875,7 +879,9 @@ access token 从响应里复制出来、粘进下一个请求。token 15 分钟�
 2. **一次完整运行花掉 6 次登录配额**(IP 10 次 /15 分钟)。连跑第二遍会从
    `login-as-member` 开始 429。这不是服务故障。
 3. **CLI 每次运行的变量从空开始,GUI 在会话内保留。** 所以 GUI 里陈旧
-   token 会让断言绿得毫无意义,CLI 不会。
+   token 或 id 会让断言绿得毫无意义,CLI 不会。凡是跨请求传递的变量
+   (`userId`/`memberId`/`memberAccessToken`)都在 `script:pre-request` 里
+   先清空再设置。
 
 设计文档:`docs/superpowers/specs/2026-09-02-bruno-collection-design.md`
 实现计划:`docs/superpowers/plans/2026-09-02-bruno-collection.md`

@@ -15,6 +15,11 @@ script:pre-request {
   // in create rather than leftover state from the first run.
   bru.setVar("userEmail", "bruno-user-" + Date.now() + "@example.com");
   bru.setVar("userPassword", "correct horse battery staple");
+  // A status check stops a failed create from storing undefined, but it does
+  // not stop the previous run's id from surviving. In the GUI, where
+  // variables outlive a request, that id would send change-password and
+  // delete — which assert nothing but a status — at an earlier user.
+  bru.setVar("userId", "");
 }
 
 body:json {
@@ -48,6 +53,6 @@ docs {
   thing worth testing: that the default is the least privileged value, so a
   forgotten field cannot quietly produce an administrator.
 
-  status is not accepted from the client at all; it is set to active by the
-  service.
+  status is not accepted on create; the service sets it to active. PATCH
+  does accept it, which is what errors/setup-disable-member uses.
 }

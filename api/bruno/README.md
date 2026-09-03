@@ -4,21 +4,33 @@
 
 ## 用法
 
-1. 复制凭据文件并填入管理员密码:
+1. 起服务(见根目录 Makefile),确认 `curl localhost:8080/live` 返回 200。
+
+2. 建管理员。地址必须是 `admin@example.com`——`environments/local.bru` 里的
+   `adminEmail` 写死的就是它,没有任何迁移或 fixture 会预先建好这个账号:
+
+   ```bash
+   make bootstrap-admin email=admin@example.com
+   ```
+
+   它需要数据库跑着,所以必须在第 1 步之后。密码只在这里打印一次,丢了就
+   换个地址再建一个,同时改 `environments/local.bru`。
+
+3. 把刚打印的密码写进凭据文件:
 
    ```bash
    cp api/bruno/.env.example api/bruno/.env
    # 编辑 .env,填 BRUNO_ADMIN_PASSWORD
    ```
 
-   密码由 `make bootstrap-admin` 打印,只显示一次。丢了就再建一个管理员。
+4. Bruno GUI:`Open Collection` 选 `api/bruno`,右上角环境选 `local`。
 
-2. 起服务(见根目录 Makefile),确认 `curl localhost:8080/live` 返回 200。
-
-3. Bruno GUI:`Open Collection` 选 `api/bruno`,右上角环境选 `local`。
-
-4. **先点 `auth/login`。** 它把 access token 存进变量,之后所有标了
+5. **先点 `auth/login`。** 它把 access token 存进变量,之后所有标了
    `auth: inherit` 的请求自动带上,不需要再手工复制。
+
+跳过第 2 步的话,`auth/login` 会返回 401。人的本能是重试,而每次重试都要
+花掉 10 次 /15 分钟的配额里的一次——于是第一次接触这套东西看到的就是限流,
+正是它本该帮你避开的那种误判。
 
 ## 整体跑一遍
 
@@ -72,17 +84,20 @@ npx --yes @usebruno/cli@latest run . --env local -r
   ```
 
 - **CLI 与 GUI 的变量作用域不同。** `bru run` 每次都是全新进程,运行时
-  变量从空开始;GUI 在一次会话里跨点击保留。所以 GUI 里一次失败的登录
-  可能留下上一轮的 token,让后面的请求拿着它继续绿。集合里凡是写变量的
-  脚本都带状态判断,`errors/login-as-member` 还会先清空
-  `memberAccessToken`。
+  变量从空开始;GUI 在一次会话里跨点击保留。所以 GUI 里一次失败的请求
+  可能留下上一轮的 token 或 id,让后面的请求拿着它继续绿。集合里凡是写
+  变量的脚本都带状态判断,并且在 `script:pre-request` 里**先清空再设置**
+  ——`users/create` 清 `userId`,`errors/setup-member` 清 `memberId`,
+  `errors/login-as-member` 清 `memberAccessToken`。
 
 - **查询串只写在 `url:` 里。** CLI 不读 `params:query`——它按 `url:`
   原样构造请求,params 块里只认 path 类型的条目。GUI 行为不同,它的
   params 表会改写地址栏。
 
-- **一致性检查只覆盖路径。** `collection_test.go` 断言每个请求的
-  `(method, path)` 存在于 `api/openapi.yaml`,但不检查请求体字段和响应
-  schema。后者是 `internal/openapitest` 的职责,它比对的是实现与文档。
+- **一致性检查只覆盖路径。** `collection_test.go` 双向断言每个请求的
+  `(method, path)` 与 `api/openapi.yaml` 的 operation 一一对应(上面那句
+  「全部 12 个」就靠它守着),另外检查同级 `seq` 不重复。但它不检查请求体
+  字段和响应 schema。后者是 `internal/openapitest` 的职责,它比对的是实现
+  与文档。
 
 - **不进 CI。** 需要跑着的服务和真实凭据。
