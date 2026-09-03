@@ -1,0 +1,22 @@
+meta {
+  name: live
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/live
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq ok
+}
+
+docs {
+  Liveness. This must not check dependencies: a liveness probe that fails
+  when the database is down makes the orchestrator restart a healthy process
+  during an outage, turning a database problem into an outage of everything.
+}

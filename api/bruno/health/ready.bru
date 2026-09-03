@@ -1,0 +1,22 @@
+meta {
+  name: ready
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/ready
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq ok
+  res.body.components.postgres: eq ok
+}
+
+docs {
+  Readiness. Unlike /live this does check dependencies, and it reports 503
+  during shutdown drain so a rolling deploy loses no requests.
+}

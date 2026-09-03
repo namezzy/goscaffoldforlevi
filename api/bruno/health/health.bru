@@ -1,0 +1,21 @@
+meta {
+  name: health
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/health
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq ok
+}
+
+docs {
+  Aggregate health. Unauthenticated on purpose: a probe that needs a token
+  cannot tell you the service is up when authentication is what broke.
+}
