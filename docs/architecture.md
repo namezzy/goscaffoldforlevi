@@ -17,6 +17,9 @@
 | 消息与异步 | [ADR-0009](./adr/0009-messaging.md) |
 | 可观测性接线 | [ADR-0010](./adr/0010-observability.md) |
 
+> 手工调试用 `api/bruno/`（Bruno 集合，登录一次后 token 自动流转）。
+> 自动化回归看 `test/blackbox/` 与 `make test-integration`。
+
 ---
 
 ## 1. 模块边界：以 User 为例

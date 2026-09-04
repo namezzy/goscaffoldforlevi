@@ -832,3 +832,56 @@ Phase 6 必须注意：
 3. **worker 与 api 是两个 Deployment**，各自的 metrics 端口不再冲突，
    `workerMetricsConfig()` 的 +1 逻辑在容器里是多余但无害的——不要因此删掉它，
    本地开发仍然依赖它。
+
+---
+
+# 调试工具:Bruno 集合(2026-09-02)
+
+`api/bruno/` 是一份 git 跟踪的 Bruno 集合,24 个请求,覆盖
+`api/openapi.yaml` 的全部 12 个 operation,外加失败路径。
+
+**它解决的是一个具体的浪费**:调认证后面的接口时,每次都要先登录、把
+access token 从响应里复制出来、粘进下一个请求。token 15 分钟过期,这个动作
+一天要重复几十次。集合里 `auth/login` 的 post-response 脚本把 token 写进
+变量,`collection.bru` 声明集合级 bearer 认证,请求写 `auth: inherit`。
+
+**它不是测试套件。** 门禁仍然是 `test/blackbox`(110 条)与
+`make test-integration`。集合里的断言只用来区分"环境坏了"和"你要调的东西
+坏了"。不要往里加回归用例。
+
+**`collection_test.go`** 断言每个请求的 `(method, path)` 与 `openapi.yaml`
+的 operation **双向**一一对应,并检查同级 `seq` 不重复。理由与
+`deployments/observability/dashboard_test.go` 相同:指向已删除接口的请求
+返回 404,和服务挂掉长得一模一样,人会先去查服务;`seq` 撞车则让执行顺序
+未定义,表现为某个无关文件夹里的间歇 401/404。上面那句"覆盖全部 12 个
+operation"也归它守着——否则加一个接口,这句话会静默失真。经 5 个变异验证
+(指向不存在的接口 / 关掉 UUID 归一化 / 让集合为空 / 重复 seq / 删掉某
+operation 的唯一请求)。
+
+**凭据不进仓库**:管理员密码走 `{{process.env.BRUNO_ADMIN_PASSWORD}}`,
+根 `.gitignore` 的 `.env` 规则(不带斜杠,任意层级生效)覆盖
+`api/bruno/.env`。
+
+**顺序由 `folder.bru` 的 `seq` 控制**:health → auth → users → errors。
+实测发现 `bru run -r` 会先跑子文件夹再跑同级请求,所以 `errors/` 是顶层
+文件夹而不是嵌在 `auth/` 与 `users/` 下面。
+
+**`errors/` 自带一个成员用户的生命周期**(setup-member → login-as-member →
+403 → setup-disable-member → 禁用登录 401 → cleanup-member),不复用
+`users/` 那个主体。复用会被 `users/delete` 先删掉,`login-disabled-account`
+于是走"邮箱不存在"分支——断言全绿,测的却是另一件事。
+
+维护这份集合时有三个坑是实测踩出来的,改之前先读:
+
+1. **`script:post-response` 对每个响应都会跑**,不只是 2xx。无保护的
+   `bru.setVar` 会在登录失败时把好 token 覆盖成 `undefined`,之后每个请求
+   都 401,而病因在两个请求之外。集合里所有写变量的脚本都带状态判断。
+2. **一次完整运行花掉 6 次登录配额**(IP 10 次 /15 分钟)。连跑第二遍会从
+   `login-as-member` 开始 429。这不是服务故障。
+3. **CLI 每次运行的变量从空开始,GUI 在会话内保留。** 所以 GUI 里陈旧
+   token 或 id 会让断言绿得毫无意义,CLI 不会。凡是跨请求传递的变量
+   (`userId`/`memberId`/`memberAccessToken`)都在 `script:pre-request` 里
+   先清空再设置。
+
+设计文档:`docs/superpowers/specs/2026-09-02-bruno-collection-design.md`
+实现计划:`docs/superpowers/plans/2026-09-02-bruno-collection.md`

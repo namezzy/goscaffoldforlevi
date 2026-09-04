@@ -1,0 +1,22 @@
+meta {
+  name: delete
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/users/{{userId}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  Runs last so the folder leaves nothing behind.
+
+  Disabling is usually preferable to deleting: a disabled account keeps the
+  audit trail intact and can be reversed. errors/ demonstrates that path.
+}

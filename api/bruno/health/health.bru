@@ -1,0 +1,26 @@
+meta {
+  name: health
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/health
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq ok
+}
+
+docs {
+  Process liveness and version. Despite the name this checks no dependency
+  and answers the same as /live; for the state of postgres and redis use
+  /ready. Reading a 200 here as "everything is healthy" is how you end up
+  looking in the wrong place.
+
+  Unauthenticated on purpose: a probe that needs a token cannot tell you the
+  service is up when authentication is what broke.
+}
