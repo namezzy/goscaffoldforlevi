@@ -7,7 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 func gather(t *testing.T, m *telemetry.Metrics) []*dto.MetricFamily {

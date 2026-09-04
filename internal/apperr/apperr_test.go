@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 func TestZeroKindIsInternal(t *testing.T) {

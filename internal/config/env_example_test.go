@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
 )
 
 // TestEnvExampleMatchesTheLoader keeps documentation and code from drifting.

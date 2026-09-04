@@ -47,7 +47,7 @@ func Load() (Config, error) {
 
 	cfg := Config{
 		App: App{
-			Name:        p.str("APP_NAME", "go-enterprise"),
+			Name:        p.str("APP_NAME", "goscaffoldforlevi"),
 			Environment: Environment(p.str("APP_ENV", string(EnvDevelopment))),
 			Version:     p.str("APP_VERSION", "dev"),
 			LogLevel:    p.logLevel("LOG_LEVEL", slog.LevelInfo),
@@ -87,8 +87,8 @@ func Load() (Config, error) {
 		},
 		Auth: Auth{
 			JWTSecret:  p.secret("AUTH_JWT_SECRET", ""),
-			Issuer:     p.str("AUTH_ISSUER", "go-enterprise"),
-			Audience:   p.str("AUTH_AUDIENCE", "go-enterprise-api"),
+			Issuer:     p.str("AUTH_ISSUER", "goscaffoldforlevi"),
+			Audience:   p.str("AUTH_AUDIENCE", "goscaffoldforlevi-api"),
 			AccessTTL:  p.dur("AUTH_ACCESS_TTL", 15*time.Minute),
 			RefreshTTL: p.dur("AUTH_REFRESH_TTL", 720*time.Hour),
 

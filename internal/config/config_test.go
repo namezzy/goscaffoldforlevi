@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/go-enterprise/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
 )
 
 const plaintext = "super-secret-value-that-must-not-leak"
@@ -66,7 +66,7 @@ func TestSecretRevealReturnsThePlaintext(t *testing.T) {
 func validConfig() config.Config {
 	return config.Config{
 		App: config.App{
-			Name:        "go-enterprise",
+			Name:        "goscaffoldforlevi",
 			Environment: config.EnvProduction,
 			Version:     "1.0.0",
 			LogLevel:    slog.LevelInfo,
@@ -105,8 +105,8 @@ func validConfig() config.Config {
 		},
 		Auth: config.Auth{
 			JWTSecret:  config.Secret("a-genuinely-random-32-byte-secret!!"),
-			Issuer:     "go-enterprise",
-			Audience:   "go-enterprise-api",
+			Issuer:     "goscaffoldforlevi",
+			Audience:   "goscaffoldforlevi-api",
 			AccessTTL:  900 * secondsUnit,
 			RefreshTTL: 2592000 * secondsUnit,
 

@@ -6,7 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/example/go-enterprise/internal/postgres/db"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/db"
 )
 
 // HealthCheck verifies that the pool can execute SQL.

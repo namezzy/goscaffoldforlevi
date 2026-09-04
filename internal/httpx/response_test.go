@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/httpx"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
 )
 
 // TestDecodeJSONRequiresAJSONContentType closes a gap found by posting a JSON

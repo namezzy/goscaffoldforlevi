@@ -6,10 +6,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/telemetry"
-	"github.com/example/go-enterprise/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
 )
 
 type countingObserver struct{ n atomic.Int64 }

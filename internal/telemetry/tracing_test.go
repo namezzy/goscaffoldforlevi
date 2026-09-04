@@ -9,15 +9,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/example/go-enterprise/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
 
-	"github.com/example/go-enterprise/internal/config"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 func testApp() config.App {
 	return config.App{
-		Name:        "go-enterprise",
+		Name:        "goscaffoldforlevi",
 		Environment: config.EnvProduction,
 		Version:     "1.2.3",
 	}
@@ -112,7 +112,7 @@ func TestTheResourceIdentifiesTheServiceEnvironmentAndVersion(t *testing.T) {
 	res := telemetry.Resource(testApp())
 
 	want := map[attribute.Key]string{
-		"service.name":           "go-enterprise",
+		"service.name":           "goscaffoldforlevi",
 		"service.version":        "1.2.3",
 		"deployment.environment": "production",
 	}
@@ -139,7 +139,7 @@ func TestTheResourceIgnoresAmbientResourceAttributes(t *testing.T) {
 	res := telemetry.Resource(testApp())
 
 	for _, kv := range res.Attributes() {
-		if kv.Key == "service.name" && kv.Value.String() != "go-enterprise" {
+		if kv.Key == "service.name" && kv.Value.String() != "goscaffoldforlevi" {
 			t.Errorf("service.name = %q, want the configured name to win",
 				kv.Value.String())
 		}

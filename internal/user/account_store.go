@@ -3,7 +3,7 @@ package user
 import (
 	"context"
 
-	"github.com/example/go-enterprise/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 )
 
 // AccountStore adapts the user repository to the narrow view authentication

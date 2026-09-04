@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/auth/authhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
 )
 
 // stubVerifier accepts exactly one token. Using a stub rather than the real

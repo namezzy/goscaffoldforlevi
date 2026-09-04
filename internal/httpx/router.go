@@ -6,9 +6,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/config"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 // chiRouter is the slice of chi.Router used for mounting routes, kept narrow

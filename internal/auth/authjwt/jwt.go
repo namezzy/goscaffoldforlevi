@@ -13,7 +13,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/example/go-enterprise/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 )
 
 // minSecretLen matches the HMAC-SHA256 block size. A shorter key does not make

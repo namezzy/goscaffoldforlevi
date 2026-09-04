@@ -11,10 +11,10 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
-const instrumentationName = "github.com/example/go-enterprise/internal/redis"
+const instrumentationName = "github.com/namezzy/goscaffoldforlevi/internal/redis"
 
 // Hook records the command name, its latency and whether it failed.
 //

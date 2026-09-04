@@ -9,9 +9,9 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:9464"]
         labels:
-          service: go-enterprise-api
+          service: goscaffoldforlevi-api
   - job_name: worker
     static_configs:
       - targets: ["host.docker.internal:9465"]
         labels:
-          service: go-enterprise-worker
+          service: goscaffoldforlevi-worker

@@ -1,9 +1,9 @@
 {
-  "uid": "go-enterprise-service",
+  "uid": "goscaffoldforlevi-service",
   "title": "Go Enterprise Service",
   "description": "Service overview: traffic, latency, errors, saturation, and the asynchronous path.",
   "tags": [
-    "go-enterprise"
+    "goscaffoldforlevi"
   ],
   "timezone": "browser",
   "schemaVersion": 39,

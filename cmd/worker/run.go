@@ -12,14 +12,14 @@ import (
 
 	"go.opentelemetry.io/otel"
 
-	"github.com/example/go-enterprise/internal/config"
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/messaging/messagingpg"
-	"github.com/example/go-enterprise/internal/messaging/natsmq"
-	"github.com/example/go-enterprise/internal/notify"
-	"github.com/example/go-enterprise/internal/postgres"
-	"github.com/example/go-enterprise/internal/telemetry"
-	"github.com/example/go-enterprise/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging/messagingpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging/natsmq"
+	"github.com/namezzy/goscaffoldforlevi/internal/notify"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
 )
 
 // run starts the relay and the consumer and serves until ctx is cancelled.

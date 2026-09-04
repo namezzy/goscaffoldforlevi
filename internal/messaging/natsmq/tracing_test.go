@@ -7,8 +7,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 func recordingProvider(t *testing.T) (telemetry.TracerProvider, *tracetest.SpanRecorder) {

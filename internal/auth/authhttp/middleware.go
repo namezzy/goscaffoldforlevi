@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/httpx"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
 )
 
 // Authenticate verifies a bearer token and attaches the Principal.

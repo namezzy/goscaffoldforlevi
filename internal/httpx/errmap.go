@@ -7,7 +7,7 @@ package httpx
 import (
 	"net/http"
 
-	"github.com/example/go-enterprise/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 // statusByKind is the single source of truth for translating an error Kind to

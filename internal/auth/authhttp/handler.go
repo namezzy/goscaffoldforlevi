@@ -6,8 +6,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/httpx"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
 )
 
 // loginRequest is the wire shape of a login. Request and response types are

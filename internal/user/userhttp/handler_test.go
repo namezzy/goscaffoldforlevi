@@ -13,13 +13,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/auth/authhttp"
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/openapitest"
-	"github.com/example/go-enterprise/internal/user"
-	"github.com/example/go-enterprise/internal/user/userhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/openapitest"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/user/userhttp"
 )
 
 // These tests exercise the handlers through a real chi router so that URL

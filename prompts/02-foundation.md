@@ -9,7 +9,7 @@
 ## 2.1 工程初始化
 
 ```text
-module: github.com/example/go-enterprise
+module: github.com/namezzy/goscaffoldforlevi
 ```
 
 按 ADR-0002 建立目录。禁止创建无用空目录。

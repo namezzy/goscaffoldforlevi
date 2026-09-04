@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/postgres/pgtest"
-	"github.com/example/go-enterprise/internal/user"
-	"github.com/example/go-enterprise/internal/user/userpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/user/userpg"
 )
 
 // These tests exist because the repository's job is to translate PostgreSQL's

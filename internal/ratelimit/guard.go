@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/example/go-enterprise/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 // FailMode is what to do when the limiter backend cannot answer.

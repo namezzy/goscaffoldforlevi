@@ -14,7 +14,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/example/go-enterprise/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
 )
 
 // TracerProvider is what the composition root holds: something that hands out

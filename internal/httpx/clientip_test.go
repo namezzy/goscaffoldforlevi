@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/httpx"
+	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
 )
 
 // TestClientIPIgnoresForwardedHeadersByDefault is the most important case here.

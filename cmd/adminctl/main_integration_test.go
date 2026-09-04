@@ -7,10 +7,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/postgres/pgtest"
-	"github.com/example/go-enterprise/internal/user"
-	"github.com/example/go-enterprise/internal/user/userpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/user/userpg"
 )
 
 // Cheap parameters. This test is about the bootstrap logic, not about the cost

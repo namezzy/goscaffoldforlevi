@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 // TestStatusByKindIsExhaustive fails when a Kind is added to apperr without a

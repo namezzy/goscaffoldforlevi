@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 // A dashboard is the one artefact that fails silently. A panel querying a

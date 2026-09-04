@@ -12,12 +12,12 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 
-	"github.com/example/go-enterprise/internal/config"
-	"github.com/example/go-enterprise/internal/httpx"
-	"github.com/example/go-enterprise/internal/postgres"
-	"github.com/example/go-enterprise/internal/ratelimit/ratelimithttp"
-	"github.com/example/go-enterprise/internal/redis"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
+	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit/ratelimithttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/redis"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 // run wires the application and serves until ctx is cancelled.

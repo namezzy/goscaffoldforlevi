@@ -13,9 +13,9 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/config"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 func discardLogger() *slog.Logger {

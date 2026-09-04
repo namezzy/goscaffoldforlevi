@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/example/go-enterprise/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 // Password length bounds (ADR-0007).

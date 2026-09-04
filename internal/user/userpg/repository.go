@@ -14,11 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/postgres"
-	"github.com/example/go-enterprise/internal/postgres/db"
-	"github.com/example/go-enterprise/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/db"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
 )
 
 // PostgreSQL error codes this repository interprets.

@@ -11,7 +11,7 @@ import (
 	"context"
 	"slices"
 
-	"github.com/example/go-enterprise/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 // Role is the label attached to an account and carried in an access token.

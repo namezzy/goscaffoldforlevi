@@ -10,10 +10,10 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
-const instrumentationName = "github.com/example/go-enterprise/internal/postgres"
+const instrumentationName = "github.com/namezzy/goscaffoldforlevi/internal/postgres"
 
 // Tracer implements pgx.QueryTracer.
 //

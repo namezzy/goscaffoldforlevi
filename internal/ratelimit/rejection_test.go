@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/go-enterprise/internal/ratelimit"
+	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit"
 )
 
 // The rejection counter must not be sampled.

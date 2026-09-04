@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/example/go-enterprise/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
 )
 
 // MetricsServer serves the Prometheus exposition on its own listener.

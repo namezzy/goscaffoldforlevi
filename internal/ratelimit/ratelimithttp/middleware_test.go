@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/ratelimit"
-	"github.com/example/go-enterprise/internal/ratelimit/ratelimithttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit"
+	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit/ratelimithttp"
 )
 
 func discardLogger() *slog.Logger {

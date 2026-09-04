@@ -7,8 +7,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/validate"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/validate"
 )
 
 // PasswordHasher is the subset of Argon2Hasher the service needs. Depending on

@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 // errorBody is the wire format for failures. Successful responses carry the

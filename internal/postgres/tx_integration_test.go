@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/postgres"
-	"github.com/example/go-enterprise/internal/postgres/pgtest"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
 )
 
 func TestWithTxCommitsOnSuccess(t *testing.T) {

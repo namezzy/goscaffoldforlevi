@@ -11,9 +11,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/auth/authhttp"
-	"github.com/example/go-enterprise/internal/user/userhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/user/userhttp"
 )
 
 // TestOpenAPIMatchesTheRouteTable compares the served routes against

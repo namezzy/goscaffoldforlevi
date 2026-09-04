@@ -1,6 +1,6 @@
 apiVersion: 1
 providers:
-  - name: go-enterprise
+  - name: goscaffoldforlevi
     folder: ""
     type: file
     disableDeletion: false

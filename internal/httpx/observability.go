@@ -12,13 +12,13 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 // instrumentationName identifies this package as the source of its spans, so
 // that a trace backend can tell instrumentation apart from application spans.
-const instrumentationName = "github.com/example/go-enterprise/internal/httpx"
+const instrumentationName = "github.com/namezzy/goscaffoldforlevi/internal/httpx"
 
 // Tracing starts a server span for every request.
 //

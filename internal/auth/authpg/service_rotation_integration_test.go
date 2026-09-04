@@ -16,16 +16,16 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/auth/authhttp"
-	"github.com/example/go-enterprise/internal/auth/authjwt"
-	"github.com/example/go-enterprise/internal/auth/authpg"
-	"github.com/example/go-enterprise/internal/openapitest"
-	"github.com/example/go-enterprise/internal/postgres"
-	"github.com/example/go-enterprise/internal/postgres/pgtest"
-	"github.com/example/go-enterprise/internal/user"
-	"github.com/example/go-enterprise/internal/user/userpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth/authjwt"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth/authpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/openapitest"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/user/userpg"
 )
 
 // This file wires the real service to the real database, because the property

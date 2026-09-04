@@ -3,7 +3,7 @@ package auth
 import (
 	"context"
 
-	"github.com/example/go-enterprise/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 // Principal is the authenticated caller as far as the rest of the application

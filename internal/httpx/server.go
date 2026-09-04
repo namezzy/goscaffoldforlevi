@@ -3,7 +3,7 @@ package httpx
 import (
 	"net/http"
 
-	"github.com/example/go-enterprise/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
 )
 
 // NewServer builds the HTTP server.

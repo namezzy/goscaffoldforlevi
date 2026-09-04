@@ -5,7 +5,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-MODULE      := github.com/example/go-enterprise
+MODULE      := github.com/namezzy/goscaffoldforlevi
 BINARY      := bin/api
 GOBIN       := $(shell go env GOPATH)/bin
 MIGRATIONS  := migrations

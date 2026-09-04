@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/go-enterprise/internal/postgres/pgtest"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
 )
 
 // TestRunServesAndShutsDownGracefully exercises the composition root end to

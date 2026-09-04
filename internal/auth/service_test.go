@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 )
 
 // The fakes below are hand-written rather than generated. Each is a few lines,

@@ -5,8 +5,8 @@ package userhttp
 import (
 	"time"
 
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
 )
 
 // userResponse is the public representation of a user.

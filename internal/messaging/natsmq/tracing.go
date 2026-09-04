@@ -6,12 +6,12 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 // tracerName identifies this instrumentation in the trace backend.
-const tracerName = "github.com/example/go-enterprise/internal/messaging/natsmq"
+const tracerName = "github.com/namezzy/goscaffoldforlevi/internal/messaging/natsmq"
 
 // startPublishSpan opens the producer span for one event.
 //

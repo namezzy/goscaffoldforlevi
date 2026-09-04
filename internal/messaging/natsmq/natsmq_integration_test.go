@@ -18,8 +18,8 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/messaging/natsmq"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging/natsmq"
 )
 
 func discardLogger() *slog.Logger {

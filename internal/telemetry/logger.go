@@ -13,7 +13,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/example/go-enterprise/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
 )
 
 type ctxKey int

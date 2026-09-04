@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/user"
 )
 
 // fakeRepository is an in-memory stand-in for the database.

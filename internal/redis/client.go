@@ -12,7 +12,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"github.com/example/go-enterprise/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/config"
 )
 
 // NewClient creates a client and verifies connectivity.

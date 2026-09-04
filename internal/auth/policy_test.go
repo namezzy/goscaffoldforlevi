@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 )
 
 func TestRolePermissions(t *testing.T) {

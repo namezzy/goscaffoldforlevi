@@ -18,11 +18,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
-	"github.com/example/go-enterprise/internal/httpx"
-	"github.com/example/go-enterprise/internal/ratelimit"
-	"github.com/example/go-enterprise/internal/validate"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
+	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit"
+	"github.com/namezzy/goscaffoldforlevi/internal/validate"
 )
 
 // ByIP limits unauthenticated traffic.

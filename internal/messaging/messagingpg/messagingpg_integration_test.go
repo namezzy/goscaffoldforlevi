@@ -14,10 +14,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/messaging/messagingpg"
-	"github.com/example/go-enterprise/internal/postgres"
-	"github.com/example/go-enterprise/internal/postgres/pgtest"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging/messagingpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
+	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
 )
 
 func newEvent(t *testing.T, payload string) messaging.Event {

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 )
 
 // testParams keep the tests fast. They are below the production floor on

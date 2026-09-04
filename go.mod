@@ -1,4 +1,4 @@
-module github.com/example/go-enterprise
+module github.com/namezzy/goscaffoldforlevi
 
 go 1.27.0
 

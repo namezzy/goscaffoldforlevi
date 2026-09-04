@@ -22,8 +22,8 @@ import (
 
 	"go.opentelemetry.io/otel/codes"
 
-	"github.com/example/go-enterprise/internal/messaging"
-	"github.com/example/go-enterprise/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
 // Config describes the connection and the stream.

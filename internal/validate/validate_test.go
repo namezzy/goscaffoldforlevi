@@ -3,8 +3,8 @@ package validate_test
 import (
 	"testing"
 
-	"github.com/example/go-enterprise/internal/apperr"
-	"github.com/example/go-enterprise/internal/validate"
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
+	"github.com/namezzy/goscaffoldforlevi/internal/validate"
 )
 
 func TestViolationsAccumulate(t *testing.T) {

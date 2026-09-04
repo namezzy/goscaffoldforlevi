@@ -53,7 +53,7 @@ linters:
               desc: "messaging belongs behind an interface defined by the business package"
             - pkg: "go.opentelemetry.io/otel"
               desc: "instrumentation belongs in the adapter layers"
-            - pkg: "github.com/example/go-enterprise/internal/httpx"
+            - pkg: "github.com/namezzy/goscaffoldforlevi/internal/httpx"
               desc: "the dependency direction is httpx -> business, never the reverse"
 
         # The transport layer must not reach past the service into the database.
@@ -65,7 +65,7 @@ linters:
           deny:
             - pkg: "github.com/jackc/pgx/v5"
               desc: "handlers must go through a service, not the database"
-            - pkg: "github.com/example/go-enterprise/internal/postgres"
+            - pkg: "github.com/namezzy/goscaffoldforlevi/internal/postgres"
               desc: "handlers must go through a service, not the connection pool"
 
         # Anything can be imported from main; that is what a composition root is
@@ -133,4 +133,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/example/go-enterprise
+        - github.com/namezzy/goscaffoldforlevi
