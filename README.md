@@ -553,15 +553,21 @@ Recorded honestly, because "it deploys" is a claim worth being precise about.
 | Graceful shutdown (SIGTERM → drain → exit) | ✅ `/ready` reports `draining` for 5 s, exit code 0 |
 | `kubectl kustomize` on all four overlays | ✅ renders |
 | Manifests against Kubernetes 1.33 schemas | ✅ `kubeconform -strict`, 0 invalid |
-| `actionlint` on both workflows | ✅ clean |
+| `actionlint` on both workflows | ✅ clean (with shellcheck, as CI runs it) |
 | Guard test mutation-verified | ✅ 5 mutations, all caught |
+| Both workflows on a GitHub runner | ✅ green — CI and Docker, third attempt |
 | **Deployed to a real cluster** | ⛔ **not done — no cluster available** |
-| **GitHub Actions run on a runner** | ⛔ **not yet observed** |
 
 `kubectl apply --dry-run=client` could not be used: it downloads the OpenAPI
 schema from a cluster, and there is none. `kubeconform` validates the same
 manifests offline against the published 1.33 schemas, in strict mode, which
 rejects unknown fields — the class of typo a dry run is usually wanted for.
+
+The workflows needed two fixes before they were green, and both were invisible
+locally: `golangci-lint-action@v6` only understands golangci-lint v1 while this
+repository declares `version: "2"`, and `actionlint` calls shellcheck on every
+`run:` block — which a machine without shellcheck installed silently skips.
+`make actionlint` now says so rather than passing quietly.
 
 ## Not implemented yet
 

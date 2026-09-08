@@ -506,14 +506,19 @@ lint）、`test`（build、`go test -race`、govulncheck）、`integration`
 | 优雅关停（SIGTERM → 排空 → 退出） | ✅ `/ready` 报 `draining` 约 5 秒，退出码 0 |
 | 四个 overlay 的 `kubectl kustomize` | ✅ 均可渲染 |
 | manifests 对 Kubernetes 1.33 schema 校验 | ✅ `kubeconform -strict`，0 invalid |
-| 两个 workflow 的 `actionlint` | ✅ 无问题 |
+| 两个 workflow 的 `actionlint` | ✅ 无问题（带 shellcheck，与 CI 一致） |
 | 守卫测试的变异验证 | ✅ 5 个变异，全部被抓 |
+| 两个 workflow 在 GitHub Runner 上 | ✅ 全绿——CI 与 Docker，第三次尝试 |
 | **在真实集群上部署** | ⛔ **未做——没有可用集群** |
-| **GitHub Actions 在 Runner 上跑过** | ⛔ **尚未观察到** |
 
 `kubectl apply --dry-run=client` 用不了：它要从集群下载 OpenAPI schema，而本机
 没有集群。`kubeconform` 用官方发布的 1.33 schema 离线校验同一批 manifest，且开
 strict 模式（拒绝未知字段）——正是大家想用 dry run 抓的那类笔误。
+
+两个 workflow 前后修了两次才全绿，而两个问题在本机都看不见：
+`golangci-lint-action@v6` 只支持 golangci-lint v1，而本仓库声明的是
+`version: "2"`；`actionlint` 会对每个 `run:` 块调用 shellcheck，本机没装就
+静默跳过这一半检查。`make actionlint` 现在会明说这件事，而不是悄悄通过。
 
 ## 尚未实现
 

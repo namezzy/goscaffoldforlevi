@@ -1036,8 +1036,33 @@ Kustomize:一个 base、四个 overlay(local / development / staging / productio
 | `kubeconform -strict -kubernetes-version 1.33.0` | 四个 overlay 全部 Valid,0 Invalid |
 | `actionlint .github/workflows/*.yml` | 无问题 |
 | `go test ./deployments/k8s/` | 绿,并经 5 个变异验证会红 |
+| `make actionlint`(带 shellcheck) | 无问题 |
+| **GitHub Actions 在 Runner 上执行** | **CI 与 Docker 均 success**(第三次尝试,见下节) |
 | **在真实集群上 apply** | **SKIPPED:无可用集群** |
-| **GitHub Actions 在 Runner 上执行** | **SKIPPED:workflow 本次随代码首次推送,结果尚未观察** |
+
+### D3 的 SKIPPED 已解除,代价是两个只在 Runner 上才出现的缺陷
+
+设计文档把 CI 标为永久 SKIPPED,理由是没有远端仓库。远端已建立,于是这条
+从"不可能跑"变成"跑了并且看到了结果"——**头两次都是红的**,而两个原因在本机
+都无法察觉:
+
+1. **`golangci-lint-action@v6` 不认 v2 配置。** 该 action 的 v6 线只支持
+   golangci-lint v1,本仓库 `.golangci.yml` 声明 `version: "2"`。v8.0.0 的
+   发布说明明确写着 "Requires golangci-lint version >= v2.1.0"。失败发生在
+   解析配置阶段,读起来像配置写坏了,而不像 action 版本选错了。
+
+2. **`actionlint` 在本机和在 CI 上是两个强度的检查。** actionlint 会对每个
+   `run:` 块调用 shellcheck,而 shellcheck 不是 Go 工具、不在 `make tools`
+   里。本机没装 → 静默跳过一半检查 → 本地绿、CI 红。真实告警是 SC2086:
+   `go install ...@${SQLC_VERSION}` 未加引号。
+
+第 2 条同时暴露了一个更值得记的问题:仓库一直宣称"CI 跑的每条命令都有对应的
+Makefile target",但 actionlint 此前没有。已补 `make actionlint`,且它在缺
+shellcheck 时**明确提示本次检查比 CI 弱**,而不是假装通过。复现只需官方静态
+二进制:`actionlint -shellcheck <path>`,不必装进系统。
+
+这两次失败正是 §0.5 存在的理由。设计阶段写下的 "SKIPPED:未在 Runner 上跑过"
+如果一直留着,这两个缺陷会留在仓库里,直到第一个 clone 它的人撞上。
 
 ## 本阶段做的超范围的事
 
