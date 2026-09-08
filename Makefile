@@ -33,6 +33,28 @@ GOLANGCI_LINT_VERSION := v2.13.2
 SQLC_VERSION          := v1.31.1
 MIGRATE_VERSION       := v4.19.0
 GOVULNCHECK_VERSION   := latest
+ACTIONLINT_VERSION    := latest
+
+# Build stamp. VERSION prefers an exact tag and otherwise describes the nearest
+# one, so a binary built between releases still says where it came from. Every
+# value falls back to something printable: an empty -X value produces a blank
+# field in a health response, which reads as a broken report rather than as an
+# unstamped build.
+VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT     ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# The -X paths must match the variables in internal/buildinfo. The linker
+# ignores an -X flag whose path does not resolve, silently, so a typo here
+# shows up only as a binary that reports "dev" in production.
+BUILDINFO := github.com/namezzy/goscaffoldforlevi/internal/buildinfo
+LDFLAGS   := -s -w \
+	-X $(BUILDINFO).Version=$(VERSION) \
+	-X $(BUILDINFO).Commit=$(COMMIT) \
+	-X $(BUILDINFO).BuildTime=$(BUILD_TIME)
+
+IMAGE     ?= goscaffoldforlevi
+IMAGE_TAG ?= $(VERSION)
 
 .PHONY: help
 help: ## Show this help
@@ -47,7 +69,11 @@ run: ## Run the API server
 
 .PHONY: build
 build: ## Build the API binary into bin/
-	go build -trimpath -ldflags "-s -w" -o $(BINARY) ./cmd/api
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/api
+
+.PHONY: build-worker
+build-worker: ## Build the worker binary into bin/
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/worker ./cmd/worker
 
 .PHONY: clean
 clean: ## Remove build and coverage output
@@ -186,6 +212,27 @@ dlq-replay: ## Put one dead letter back in the outbox: make dlq-replay id=<dead_
 	  SELECT event_id, event_type, payload, traceparent, now() FROM letter \
 	  ON CONFLICT (id) DO NOTHING;"
 
+# --------------------------------------------------------------------- docker
+
+.PHONY: docker-build
+docker-build: ## Build the api and worker images with a build stamp
+	docker build --target api --tag $(IMAGE):$(IMAGE_TAG) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) .
+	docker build --target worker --tag $(IMAGE)-worker:$(IMAGE_TAG) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) .
+
+.PHONY: docker-up
+docker-up: ## Start the development dependencies (postgres, redis)
+	docker compose up -d
+
+.PHONY: docker-down
+docker-down: ## Stop the stack. Volumes survive; add `-v` by hand to wipe data
+	docker compose --profile full --profile messaging --profile observability down
+
 # ----------------------------------------------------------------------- tools
 
 .PHONY: tools
@@ -195,3 +242,4 @@ tools: ## Install the pinned developer tools into GOPATH/bin
 	go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION)
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	go install golang.org/x/tools/cmd/goimports@latest
+	go install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)

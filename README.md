@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/namezzy/goscaffoldforlevi/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/namezzy/goscaffoldforlevi/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white">
   <img alt="Tests" src="https://img.shields.io/badge/tests-21%20packages%20green-3fb950">
   <img alt="Test ratio" src="https://img.shields.io/badge/test%20code-53%25-3fb950">
@@ -71,14 +72,14 @@ of record is [`STATE.md`](STATE.md).
 | 3 | Users, auth, RBAC, rate limiting, OpenAPI | ✅ Complete |
 | 4 | Messaging — outbox, NATS JetStream, idempotency, DLQ | ✅ Complete |
 | 5 | Observability — traces, metrics, log correlation, Grafana stack | ✅ Complete |
-| 6 | Dockerfile, CI, Kubernetes manifests | ◻︎ Designed, not implemented |
+| 6 | Dockerfile, CI, Kubernetes manifests | ✅ Complete |
 | 7 | `goscaffold` CLI | ◻︎ Not started |
 | 8 | Documentation and final audit | ◻︎ In progress |
 
-**Read this before deploying anything:** the Phase 6 artefacts do not exist yet.
-There is no Dockerfile, no CI workflow, and no Kubernetes manifest in this
-repository. `docker-compose.yml` provisions local dependencies only and is not a
-deployment artefact. See [Not implemented yet](#not-implemented-yet).
+**Read this before deploying anything:** the manifests have been validated, not
+run. There is no cluster behind them yet — see
+[Verification status](#verification-status) for exactly what was and was not
+executed.
 
 ## Features
 
@@ -168,8 +169,11 @@ api/
   bruno/               24-request debugging collection (not a test suite)
 migrations/            golang-migrate SQL, up and down
 queries/               sqlc source queries
+Dockerfile             three targets: api, worker, migrate
+.github/workflows/     CI gate and image publishing
 deployments/
   observability/       OTel Collector, Prometheus, Tempo, Grafana + dashboard guard
+  k8s/                 Kustomize base + four overlays, with a guard test
 test/blackbox/         adversarial HTTP tests run against a live service
 docs/                  architecture.md · adr/ · progress.md
 prompts/               the phased build contract this repository was produced under
@@ -403,13 +407,171 @@ Database errors are translated to `apperr` **only in `*pg` packages**. If a
 service layer seems to need a driver error code, a translation is missing one
 layer down; fix the repository, not the service.
 
+## Deployment
+
+### Images
+
+One Dockerfile, three targets. They share every layer up to the final copy, so
+building all three costs one compilation of the dependency graph.
+
+```sh
+make docker-build                       # api + worker, stamped from git
+docker build --target migrate -t m .    # the migration image
+```
+
+| Target | Base | Size | Contains |
+|---|---|---|---|
+| `api` | `gcr.io/distroless/static:nonroot` | 40.8 MB | the HTTP server |
+| `worker` | `gcr.io/distroless/static:nonroot` | 35.1 MB | the outbox relay and consumer |
+| `migrate` | `migrate/migrate:v4.19.1` | — | the golang-migrate CLI with this repo's SQL baked in |
+
+distroless was chosen because nothing here needs libc — pgx and the Argon2
+implementation are pure Go — so `CGO_ENABLED=0` produces a static binary and
+alpine's musl problems never arise.
+
+> [!IMPORTANT]
+> There is no shell in the final image, so `kubectl exec` does not work. The
+> first person to debug a production pod will conclude the image is broken.
+> Use an ephemeral container instead:
+> `kubectl debug -it <pod> --image=busybox --target=api`.
+
+Version, commit and build time are injected at link time into
+`internal/buildinfo` and surface in three places: the startup log line, every
+`/health` and `/ready` response, and the `APP_VERSION` default. A binary built
+without the flags reports `dev` and `unknown` rather than an empty string,
+because a blank version reads as a broken report rather than an unstamped build.
+
+### Compose profiles
+
+```sh
+docker compose up -d                              # postgres + redis
+docker compose --profile messaging up -d          # + NATS JetStream
+docker compose --profile observability up -d      # + collector, Prometheus, Tempo, Grafana
+docker compose --profile full up -d               # + the api and worker containers
+```
+
+`api` and `worker` sit behind the `full` profile rather than starting by
+default. Running the API from compose turns "edit, restart in a second, attach a
+debugger" into "edit, rebuild an image, recreate a container" — an order of
+magnitude slower, with no debugger. The normal loop stays `make run`.
+
+### Kubernetes
+
+Kustomize, with one base and four overlays. Helm's value is distributing a chart
+to third parties; this is a scaffold you copy, and that layer of Go templating
+buys nothing here.
+
+```sh
+kubectl kustomize deployments/k8s/overlays/production      # render
+kubectl apply -k deployments/k8s/overlays/production       # apply
+```
+
+Order matters, and it is not automated on purpose:
+
+```sh
+# 1. Secrets, out of band. Never in git; secret.example.yaml lists the keys.
+kubectl create secret generic goscaffold-secrets \
+  --from-literal=DATABASE_URL='postgres://...?sslmode=require' \
+  --from-literal=AUTH_JWT_SECRET="$(openssl rand -base64 48)" \
+  --from-literal=REDIS_PASSWORD='...'
+
+# 2. Migrate, and wait for it. A failure here must stop the release.
+kubectl apply -k deployments/k8s/overlays/production
+kubectl wait --for=condition=complete job/goscaffold-migrate --timeout=5m
+
+# 3. Watch the rollout.
+kubectl rollout status deploy/goscaffold-api
+```
+
+Migration runs as a Job, never as an initContainer: an initContainer executes
+once per pod, so a three-replica rollout would run the same DDL three times
+concurrently, and again on every restart forever.
+
+Four settings in these manifests are load-bearing and each has a guard test in
+`deployments/k8s/manifests_test.go`, because none of them fail in a way that
+points at itself:
+
+| Setting | Why it matters |
+|---|---|
+| `terminationGracePeriodSeconds: 45` | The app's shutdown budget is 30 s. "Just over 30" looks right and fails under load: SIGTERM delivery is not instant, and a thin margin becomes SIGKILL — intermittent 502s during deploys, only in production. |
+| liveness → `/live`, readiness → `/ready` | `/live` never touches the database. If it did, a few seconds of failover would fail every replica at once, kill them together, and have them cold-start into the recovering database — a restart storm the database cannot escape. |
+| `METRICS_ADDR: ":9464"` | The application default binds loopback, which inside a pod is reachable by nothing, including Prometheus. It fails by producing no data rather than an error. |
+| `runAsNonRoot` + `readOnlyRootFilesystem` + `drop: [ALL]` + `seccompProfile` | Losing one costs nothing observable. The workload keeps running with more privilege than it needs, and no symptom ever points here. |
+
+Overlays may only reference immutable image tags (`sha-<commit>` or an exact
+release). A moving tag like `v1` makes the same YAML deploy different code on
+different days, and that drift leaves no trace in git. A test enforces this.
+
+### Configuration in a cluster
+
+Non-sensitive values live in `configmap.yaml`; `DATABASE_URL`,
+`AUTH_JWT_SECRET` and `REDIS_PASSWORD` live in a Secret created out of band.
+The application reads both as ordinary environment variables and does not care
+where they came from, so a secrets operator can replace step 1 without any code
+change.
+
+The base ConfigMap sets `APP_ENV: production` deliberately, so that a missing
+overlay fails safe: the production guards refuse an example JWT secret, a
+wildcard CORS origin, and a metrics listener on a public address.
+
+### Rollback
+
+```sh
+kubectl rollout undo deploy/goscaffold-api        # or --to-revision=N
+```
+
+Schema first, and this is the part that bites: a rollback of the code is not a
+rollback of the database. Every migration in `migrations/` has a `.down.sql`,
+but running it discards whatever the new version wrote. Prefer forward-only
+recovery, and design migrations so the previous release can still run against
+the new schema — add columns before writing them, drop them a release later.
+
+### CI/CD
+
+`ci.yml` runs on every pull request in three jobs, split by duration so the
+first red X arrives in about a minute: `quality` (gofmt, vet, golangci-lint,
+`sqlc diff`, actionlint, OpenAPI lint), `test` (build, `go test -race`,
+govulncheck), and `integration` (testcontainers). Every command also exists as a
+Makefile target — a check that only runs in CI is a check nobody can reproduce
+before pushing.
+
+`docker.yml` publishes to `ghcr.io` on pushes to `master` and on `v*` tags,
+tagging `sha-<commit>`, and for releases `v1.2.3`, `v1.2` and `v1`. The moving
+tags exist for a human trying a release by hand; the manifests may not use them.
+
+### Verification status
+
+Recorded honestly, because "it deploys" is a claim worth being precise about.
+
+| Check | Result |
+|---|---|
+| `make check` | ✅ passes |
+| `make test-integration` | ✅ passes (PostgreSQL 17, testcontainers) |
+| `docker build` (all three targets) | ✅ built |
+| Image run against real Postgres and Redis | ✅ `/ready` 200, correct commit reported |
+| `docker compose --profile full up -d` | ✅ 9 services, `/live` 200 |
+| Graceful shutdown (SIGTERM → drain → exit) | ✅ `/ready` reports `draining` for 5 s, exit code 0 |
+| `kubectl kustomize` on all four overlays | ✅ renders |
+| Manifests against Kubernetes 1.33 schemas | ✅ `kubeconform -strict`, 0 invalid |
+| `actionlint` on both workflows | ✅ clean |
+| Guard test mutation-verified | ✅ 5 mutations, all caught |
+| **Deployed to a real cluster** | ⛔ **not done — no cluster available** |
+| **GitHub Actions run on a runner** | ⛔ **not yet observed** |
+
+`kubectl apply --dry-run=client` could not be used: it downloads the OpenAPI
+schema from a cluster, and there is none. `kubeconform` validates the same
+manifests offline against the published 1.33 schemas, in strict mode, which
+rejects unknown fields — the class of typo a dry run is usually wanted for.
+
 ## Not implemented yet
 
 Stated plainly, because a scaffold that overstates its readiness is worse than
 one that under-delivers.
 
-- **No Dockerfile, no CI workflow, no Kubernetes manifests.** Phase 6 is designed and locked (`docs/superpowers/specs/2026-09-04-phase6-infrastructure-design.md` — distroless, Kustomize, build-time version injection) but not built.
 - **No `goscaffold` CLI.** Phase 7.
+- **Nothing has run in a real cluster.** The manifests render and validate; they have never been applied. See [Verification status](#verification-status).
+- **No NetworkPolicy, ServiceMonitor or PrometheusRule.** Alerting and SLOs are outside Phase 6, and a NetworkPolicy without a CNI that enforces it is decoration.
+- **No image scanning.** `govulncheck` covers the Go dependencies; a scanner adds little on a distroless image with almost no OS packages.
 - **No mail provider.** See the warning above.
 - **No self-service registration.** Creating a user requires `user:create`. This is a scope decision, not an omission.
 - **Request bodies are not schema-checked against OpenAPI.** Responses are. The authoritative definition of a request lives in the `validate` rules, and reconciling the two needs a mapping layer that does not exist yet.

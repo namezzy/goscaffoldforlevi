@@ -1,0 +1,40 @@
+# Everything that must not reach the build context. Two reasons, and the second
+# is the one that bites: a large context is slow, but a context containing .env
+# or .git bakes credentials and history into a layer that ships.
+
+.git
+.github
+
+# Local configuration. .env holds real credentials; .env.example is committed
+# and carries only placeholders, but neither is read at build time.
+.env
+**/.env
+
+# Build output and coverage artefacts from the host. Copying a darwin binary
+# into a linux image produces an exec format error at the least useful moment.
+bin/
+coverage.out
+coverage.html
+
+# Nothing below is compiled into the binary. migrations/ is deliberately absent
+# from this list: it is not linked into the api or the worker, but the migrate
+# stage copies it, and the build context is shared by all three targets.
+docs/
+prompts/
+test/
+api/bruno/
+deployments/
+README.md
+README.zh-CN.md
+STATE.md
+LICENSE
+Makefile
+docker-compose.yml
+.golangci.yml
+sqlc.yaml
+
+**/*_test.go
+**/testdata/
+**/__pycache__/
+.DS_Store
+**/.DS_Store

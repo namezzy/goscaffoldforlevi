@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/namezzy/goscaffoldforlevi/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/namezzy/goscaffoldforlevi/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.27%2B-00ADD8?logo=go&logoColor=white">
   <img alt="Tests" src="https://img.shields.io/badge/tests-21%20packages%20green-3fb950">
   <img alt="Test ratio" src="https://img.shields.io/badge/test%20code-53%25-3fb950">
@@ -64,13 +65,12 @@ import `net/http`、`chi`、`pgx`、`go-redis`、`nats.go`、`otel`。理由不�
 | 3 | 用户、认证、RBAC、限流、OpenAPI | ✅ 完成 |
 | 4 | 消息 —— outbox、NATS JetStream、幂等、DLQ | ✅ 完成 |
 | 5 | 可观测性 —— trace、metrics、日志关联、Grafana 栈 | ✅ 完成 |
-| 6 | Dockerfile、CI、Kubernetes manifests | ◻︎ 已设计，未实现 |
+| 6 | Dockerfile、CI、Kubernetes manifests | ✅ 完成 |
 | 7 | `goscaffold` CLI | ◻︎ 未开始 |
 | 8 | 文档与终审 | ◻︎ 进行中 |
 
-**部署前必读**：Phase 6 的产物尚不存在。仓库里**没有** Dockerfile、没有 CI
-workflow、没有任何 Kubernetes manifest。`docker-compose.yml` 只负责拉起本地依赖，
-不是部署制品。见[尚未实现](#尚未实现)。
+**部署前必读**：manifests 是**校验过的，不是跑过的**。它们背后还没有任何集群
+——哪些验证真做了、哪些没做，见[验证状态](#验证状态)。
 
 ## 能力
 
@@ -150,8 +150,11 @@ api/
   bruno/               24 个请求的调试集合（不是测试套件）
 migrations/            golang-migrate 的 up / down SQL
 queries/               sqlc 的源查询
+Dockerfile             三个 target：api、worker、migrate
+.github/workflows/     CI 门禁与镜像发布
 deployments/
   observability/       OTel Collector、Prometheus、Tempo、Grafana 及面板守卫测试
+  k8s/                 Kustomize base + 四个 overlay，带守卫测试
 test/blackbox/         对运行中的服务发起的对抗性 HTTP 测试
 docs/                  architecture.md · adr/ · progress.md
 prompts/               本仓库据以产出的分阶段执行契约
@@ -370,12 +373,156 @@ make openapi-lint                  # 需要 npx；刻意不纳入 make check
 数据库错误到 `apperr` 的翻译**只能出现在 `*pg` 包**。如果 service 层看起来需要
 判断驱动的错误码，说明下一层漏了一次翻译：改仓储，不要改 service。
 
+## 部署
+
+### 镜像
+
+一份 Dockerfile，三个 target。它们共享到最后一次 COPY 为止的全部层，所以构建
+三个只付一次依赖图的编译成本。
+
+```sh
+make docker-build                       # api + worker，版本信息取自 git
+docker build --target migrate -t m .    # 迁移镜像
+```
+
+| Target | 基础镜像 | 大小 | 内容 |
+|---|---|---|---|
+| `api` | `gcr.io/distroless/static:nonroot` | 40.8 MB | HTTP 服务 |
+| `worker` | `gcr.io/distroless/static:nonroot` | 35.1 MB | outbox relay 与消费者 |
+| `migrate` | `migrate/migrate:v4.19.1` | — | golang-migrate CLI，本仓库的 SQL 已烤进镜像 |
+
+选 distroless 的理由是本项目不需要 libc——pgx 与 Argon2 实现都是纯 Go——所以
+`CGO_ENABLED=0` 能静态编译，alpine 的 musl 兼容问题从一开始就不存在。
+
+> [!IMPORTANT]
+> 最终镜像里没有 shell，`kubectl exec` 进不去。第一个上线排查的人会以为镜像坏了。
+> 改用临时容器：`kubectl debug -it <pod> --image=busybox --target=api`。
+
+版本、commit、构建时间在链接期注入 `internal/buildinfo`，出现在三个地方：启动
+日志、每个 `/health` 与 `/ready` 响应、以及 `APP_VERSION` 的默认值。不带 flag
+构建出的二进制报告 `dev` 与 `unknown` 而不是空字符串——空版本号看起来像报告
+坏了，而不像一个没打戳的构建。
+
+### Compose profile
+
+```sh
+docker compose up -d                              # postgres + redis
+docker compose --profile messaging up -d          # + NATS JetStream
+docker compose --profile observability up -d      # + collector、Prometheus、Tempo、Grafana
+docker compose --profile full up -d               # + api 与 worker 容器
+```
+
+`api` 与 `worker` 归在 `full` profile 下而不是默认启动。从 compose 里跑 API 会
+把「改代码 → 一秒重启 → 断点可用」变成「改代码 → 重建镜像 → 重建容器」，慢一个
+数量级且丢掉调试器。日常循环仍然是 `make run`。
+
+### Kubernetes
+
+Kustomize，一个 base 加四个 overlay。Helm 的价值在于把 chart 分发给第三方；这是
+一份你直接拷走用的脚手架，那层 Go template 间接性买不到东西。
+
+```sh
+kubectl kustomize deployments/k8s/overlays/production      # 渲染
+kubectl apply -k deployments/k8s/overlays/production       # 应用
+```
+
+顺序是有讲究的，且刻意没有自动化：
+
+```sh
+# 1. Secret 走带外创建。绝不进 git；secret.example.yaml 只列出键名。
+kubectl create secret generic goscaffold-secrets \
+  --from-literal=DATABASE_URL='postgres://...?sslmode=require' \
+  --from-literal=AUTH_JWT_SECRET="$(openssl rand -base64 48)" \
+  --from-literal=REDIS_PASSWORD='...'
+
+# 2. 迁移，并等它完成。这里失败必须阻断发布。
+kubectl apply -k deployments/k8s/overlays/production
+kubectl wait --for=condition=complete job/goscaffold-migrate --timeout=5m
+
+# 3. 盯住滚动。
+kubectl rollout status deploy/goscaffold-api
+```
+
+迁移用 Job 而不是 initContainer：initContainer 每个 Pod 跑一次，三副本发布会把
+同一份 DDL 并发执行三遍，而且此后每次重启都再跑一遍，永远如此。
+
+这些 manifest 里有四处是承重的，每一处都有 `deployments/k8s/manifests_test.go`
+守着——因为它们出错时都不会指向自己：
+
+| 设置 | 为什么要紧 |
+|---|---|
+| `terminationGracePeriodSeconds: 45` | 应用自己的关停预算是 30 秒。「刚好大于 30」看起来对，负载高时就错：SIGTERM 的送达不是瞬时的，余量太薄就变成 SIGKILL——表现为发布期间偶发 502，只在生产出现。 |
+| liveness → `/live`，readiness → `/ready` | `/live` 绝不碰数据库。碰了的话，几秒的主库切换会让所有副本同时探针失败、同时被杀、同时冷启动打向正在恢复的数据库——数据库再也爬不出来的重启风暴。 |
+| `METRICS_ADDR: ":9464"` | 应用默认绑 loopback，在 Pod 里等于谁也抓不到，包括 Prometheus。它的失败形式是「没有数据」而不是「报错」。 |
+| `runAsNonRoot` + `readOnlyRootFilesystem` + `drop: [ALL]` + `seccompProfile` | 少一项没有任何可观测代价。负载照常运行，只是权限比它需要的多，而且没有任何症状会指向这里。 |
+
+overlay 只允许引用不可变镜像 tag（`sha-<commit>` 或确切版本号）。`v1` 这类可变
+tag 会让同一份 YAML 在不同时间部署出不同的东西，而这种漂移在 git 里不留痕迹。
+有测试强制这一条。
+
+### 集群里的配置
+
+非敏感值放 `configmap.yaml`；`DATABASE_URL`、`AUTH_JWT_SECRET`、`REDIS_PASSWORD`
+放带外创建的 Secret。应用把两者都当作普通环境变量读，不关心它们从哪来——所以换成
+密钥管理 operator 可以直接替掉第 1 步，不需要改任何代码。
+
+base 的 ConfigMap 刻意写死 `APP_ENV: production`，让「漏配 overlay」失败在安全的
+一侧：生产守卫会拒绝示例 JWT 密钥、通配符 CORS、以及绑在公开地址上的 metrics。
+
+### 回滚
+
+```sh
+kubectl rollout undo deploy/goscaffold-api        # 或 --to-revision=N
+```
+
+先想 schema，这也是最容易咬人的地方：**回滚代码不等于回滚数据库**。
+`migrations/` 里每条迁移都有 `.down.sql`，但执行它会丢掉新版本写入的数据。优先
+向前修复，并且把迁移设计成「上一个版本仍能在新 schema 上运行」——先加列、下个
+版本再写、再下个版本才删。
+
+### CI/CD
+
+`ci.yml` 在每个 PR 上跑三个 job，按耗时而不是按主题拆分，让第一个红叉在一分钟
+左右出现：`quality`（gofmt、vet、golangci-lint、`sqlc diff`、actionlint、OpenAPI
+lint）、`test`（build、`go test -race`、govulncheck）、`integration`
+（testcontainers）。每条命令都同时是一个 Makefile target——只存在于 CI 里的检查，
+是没人能在推送前复现的检查。
+
+`docker.yml` 在推 `master` 和打 `v*` tag 时发布到 `ghcr.io`，产出 `sha-<commit>`，
+发版时另出 `v1.2.3`、`v1.2`、`v1`。可变 tag 是给手动尝鲜的人用的，manifest 里
+禁止使用。
+
+### 验证状态
+
+如实记录，因为「能部署」是一句值得说准确的话。
+
+| 检查 | 结果 |
+|---|---|
+| `make check` | ✅ 通过 |
+| `make test-integration` | ✅ 通过（PostgreSQL 17，testcontainers） |
+| `docker build`（三个 target） | ✅ 构建成功 |
+| 镜像连真实 Postgres 与 Redis 运行 | ✅ `/ready` 200，commit 报告正确 |
+| `docker compose --profile full up -d` | ✅ 9 个服务，`/live` 200 |
+| 优雅关停（SIGTERM → 排空 → 退出） | ✅ `/ready` 报 `draining` 约 5 秒，退出码 0 |
+| 四个 overlay 的 `kubectl kustomize` | ✅ 均可渲染 |
+| manifests 对 Kubernetes 1.33 schema 校验 | ✅ `kubeconform -strict`，0 invalid |
+| 两个 workflow 的 `actionlint` | ✅ 无问题 |
+| 守卫测试的变异验证 | ✅ 5 个变异，全部被抓 |
+| **在真实集群上部署** | ⛔ **未做——没有可用集群** |
+| **GitHub Actions 在 Runner 上跑过** | ⛔ **尚未观察到** |
+
+`kubectl apply --dry-run=client` 用不了：它要从集群下载 OpenAPI schema，而本机
+没有集群。`kubeconform` 用官方发布的 1.33 schema 离线校验同一批 manifest，且开
+strict 模式（拒绝未知字段）——正是大家想用 dry run 抓的那类笔误。
+
 ## 尚未实现
 
 明确写出来，因为一个夸大自身就绪度的脚手架，比一个少给了东西的脚手架更糟。
 
-- **没有 Dockerfile、没有 CI workflow、没有 Kubernetes manifest。** Phase 6 已完成设计并锁定决策（`docs/superpowers/specs/2026-09-04-phase6-infrastructure-design.md` —— distroless、Kustomize、构建期版本注入），但尚未落地。
 - **没有 `goscaffold` CLI。** 属于 Phase 7。
+- **没有任何东西在真实集群上跑过。** manifests 能渲染、能通过 schema 校验，但从未被 apply。见[验证状态](#验证状态)。
+- **没有 NetworkPolicy、ServiceMonitor、PrometheusRule。** 告警与 SLO 在 Phase 6 范围之外；而没有 CNI 真正执行的 NetworkPolicy 只是装饰。
+- **没有镜像扫描。** `govulncheck` 已覆盖 Go 依赖；在几乎没有 OS 包的 distroless 镜像上，再加一个扫描器的增量价值很低。
 - **没有接入邮件服务商。** 见上方警告。
 - **没有自助注册。** 建用户需要 `user:create` 权限。这是范围决定，不是遗漏。
 - **请求体尚无 OpenAPI schema 自动校验**（响应体已有）。请求体的权威定义在 `validate` 规则里，比对两者需要另一套还不存在的映射。

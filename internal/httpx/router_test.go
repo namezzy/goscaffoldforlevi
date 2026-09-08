@@ -28,7 +28,7 @@ func newTestRouter(t *testing.T, checkers ...Checker) http.Handler {
 			RequestTimeout: 5_000_000_000,
 		}},
 		Logger: logger,
-		Health: NewHealth(logger, "test", checkers...),
+		Health: NewHealth(logger, Build{Version: "test", Commit: "testcommit"}, checkers...),
 	})
 }
 
@@ -110,7 +110,7 @@ func TestReadyTolerantOfOptionalDependencies(t *testing.T) {
 // or the load balancer keeps routing to a closing socket.
 func TestReadyFailsWhileDraining(t *testing.T) {
 	logger := discardLogger()
-	health := NewHealth(logger, "test", CheckFunc{
+	health := NewHealth(logger, Build{Version: "test", Commit: "testcommit"}, CheckFunc{
 		ComponentName: "postgres",
 		IsRequired:    true,
 		Probe:         func(context.Context) error { return nil },
@@ -193,7 +193,7 @@ func TestMethodNotAllowedAdvertisesTheAllowedMethods(t *testing.T) {
 	router := NewRouter(RouterDeps{
 		Config: config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
 		Logger: logger,
-		Health: NewHealth(logger, "test"),
+		Health: NewHealth(logger, Build{Version: "test", Commit: "testcommit"}),
 		Register: func(v1 chi.Router) {
 			v1.Route("/things", func(r chi.Router) {
 				r.Get("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -263,7 +263,7 @@ func TestTheRouterPutsTheRequestTraceOnTheContext(t *testing.T) {
 	router := NewRouter(RouterDeps{
 		Config: config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
 		Logger: logger,
-		Health: NewHealth(logger, "test"),
+		Health: NewHealth(logger, Build{Version: "test", Commit: "testcommit"}),
 		Register: func(v1 chi.Router) {
 			v1.Get("/traced", func(w http.ResponseWriter, r *http.Request) {
 				seen = messaging.TraceParentFromContext(r.Context())
@@ -298,7 +298,7 @@ func TestTheRouterRecordsMetricsForEveryRequest(t *testing.T) {
 	router := NewRouter(RouterDeps{
 		Config:  config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
 		Logger:  logger,
-		Health:  NewHealth(logger, "test"),
+		Health:  NewHealth(logger, Build{Version: "test", Commit: "testcommit"}),
 		Metrics: metrics,
 		Register: func(v1 chi.Router) {
 			v1.Get("/counted", func(w http.ResponseWriter, r *http.Request) {
@@ -328,7 +328,7 @@ func TestRateLimitedRequestsAreStillCounted(t *testing.T) {
 	router := NewRouter(RouterDeps{
 		Config:  config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
 		Logger:  logger,
-		Health:  NewHealth(logger, "test"),
+		Health:  NewHealth(logger, Build{Version: "test", Commit: "testcommit"}),
 		Metrics: metrics,
 		RateLimitByIP: func(http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -362,7 +362,7 @@ func TestTheRouterWorksWithoutObservabilityWiredIn(t *testing.T) {
 	router := NewRouter(RouterDeps{
 		Config: config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
 		Logger: logger,
-		Health: NewHealth(logger, "test"),
+		Health: NewHealth(logger, Build{Version: "test", Commit: "testcommit"}),
 		Register: func(v1 chi.Router) {
 			v1.Get("/plain", func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)

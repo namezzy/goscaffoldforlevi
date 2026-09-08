@@ -1,0 +1,108 @@
+# kind or minikube on a laptop.
+#
+# This overlay is the only one that carries credentials, and they are not
+# secrets: they are the same throwaway values docker-compose.yml already uses,
+# for a database that lives inside the same laptop. The application refuses
+# them when APP_ENV=production, which is what keeps this file from becoming a
+# production foot-gun — but do not copy it as a starting point for a real
+# environment. Copy staging.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goscaffold-local
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/namezzy/goscaffoldforlevi
+    newTag: local
+  - name: ghcr.io/namezzy/goscaffoldforlevi-worker
+    newTag: local
+  - name: ghcr.io/namezzy/goscaffoldforlevi-migrate
+    newTag: local
+
+patches:
+  - target:
+      kind: Deployment
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      # A locally built image is not in any registry, and IfNotPresent would
+      # send the kubelet looking for it there.
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 50m
+
+  - target:
+      kind: Deployment
+      name: goscaffold-worker
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+
+  - target:
+      kind: Job
+      name: goscaffold-migrate
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: Never
+
+  # No ingress controller, no metrics-server, and one replica. Reach the API
+  # with `kubectl port-forward svc/goscaffold-api 8080:80` instead.
+  - target:
+      kind: Ingress
+      name: goscaffold-api
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: goscaffold-api
+
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: goscaffold-api
+    patch: |
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: goscaffold-api
+
+  - target:
+      kind: PodDisruptionBudget
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+
+configMapGenerator:
+  - name: goscaffold-config
+    behavior: merge
+    literals:
+      - APP_ENV=development
+      - LOG_LEVEL=debug
+      - HTTP_CORS_ALLOWED_ORIGINS=*
+      - HTTP_TRUSTED_PROXY_COUNT=0
+      - MESSAGING_ENABLED=false
+      - OTEL_ENABLED=false
+
+secretGenerator:
+  - name: goscaffold-secrets
+    behavior: create
+    literals:
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/goscaffold?sslmode=disable
+      - AUTH_JWT_SECRET=local-kind-development-secret-000000000000
+      - REDIS_PASSWORD=
+
+generatorOptions:
+  disableNameSuffixHash: true

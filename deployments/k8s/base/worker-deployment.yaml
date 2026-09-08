@@ -1,0 +1,105 @@
+# The outbox relay and the event consumer, deployed separately from the API.
+#
+# They are separate because they fail, scale and restart for different reasons:
+# the API is sized by request rate and must never be delayed by a slow handler,
+# while the worker is sized by backlog and may spend minutes on one event.
+# Running them in one pod means one of the two is always mis-sized.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goscaffold-worker
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+    app.kubernetes.io/component: worker
+spec:
+  # One replica by default. The relay and the consumer are both safe to run
+  # concurrently — the outbox claim is row-locked and consumption is idempotent
+  # through processed_events — but more replicas only help when there is a
+  # backlog, and a backlog is a signal worth seeing before it is absorbed.
+  replicas: 1
+
+  strategy:
+    # Recreate, not RollingUpdate.
+    #
+    # Delivery is at-least-once and consumers are idempotent, so an overlap
+    # would be correct. It would also double the number of in-flight handlers
+    # during every deploy, and duplicate work is the specific thing the dedupe
+    # log is meant to absorb on failure, not to normalise on every release.
+    type: Recreate
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goscaffoldforlevi
+      app.kubernetes.io/component: worker
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goscaffoldforlevi
+        app.kubernetes.io/component: worker
+    spec:
+      # The worker's shutdown budget is dominated by MESSAGING_HANDLER_TIMEOUT
+      # (30s): a handler that is mid-flight when SIGTERM arrives is allowed to
+      # finish, so that its message is acknowledged rather than redelivered.
+      terminationGracePeriodSeconds: 45
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: worker
+          image: ghcr.io/namezzy/goscaffoldforlevi-worker:REPLACED_BY_OVERLAY
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            # 9465, not 9464. The worker adds one to METRICS_ADDR so that an
+            # api and a worker sharing a host do not collide. In Kubernetes
+            # they never share a network namespace, so the offset is redundant
+            # here — but it is load-bearing for local development, and the port
+            # named here must match what the process actually binds.
+            - name: metrics
+              containerPort: 9465
+
+          envFrom:
+            - configMapRef:
+                name: goscaffold-config
+            - secretRef:
+                name: goscaffold-secrets
+
+          env:
+            # The worker exists to process messages; running it with messaging
+            # disabled would produce a pod that starts, logs nothing and does
+            # nothing, which reads exactly like a broken deployment.
+            - name: MESSAGING_ENABLED
+              value: "true"
+
+          # There is no HTTP API to probe, and no readiness concept: nothing
+          # routes traffic here. Liveness is a TCP connect to the metrics
+          # listener, which proves the process is scheduling goroutines and
+          # accepting connections. It deliberately does not check the broker or
+          # the database — the same restart-storm reasoning as the API.
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

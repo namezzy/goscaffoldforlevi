@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goscaffold-api
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+    app.kubernetes.io/component: api
+spec:
+  # Overridden per environment. Three is the smallest number that survives one
+  # pod being evicted while another is rolling.
+  replicas: 3
+
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # maxUnavailable: 0 means capacity never dips below the declared replica
+      # count during a rollout. The cost is that a rollout needs room for one
+      # extra pod; the alternative is a deploy that quietly halves capacity at
+      # the moment a bad version is being introduced.
+      maxUnavailable: 0
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goscaffoldforlevi
+      app.kubernetes.io/component: api
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goscaffoldforlevi
+        app.kubernetes.io/component: api
+    spec:
+      # 45, not 31.
+      #
+      # The application's own budget is HTTP_SHUTDOWN_TIMEOUT (30s) plus the
+      # readiness drain delay inside it. A grace period of "just over 30" looks
+      # correct and fails under load: SIGTERM is not delivered the instant the
+      # kubelet decides to send it, and a margin that thin turns scheduling
+      # delay into SIGKILL. A killed pod drops its in-flight requests, which
+      # surfaces as intermittent 502s during deploys — a fault that appears
+      # only in production and cannot be reproduced locally.
+      terminationGracePeriodSeconds: 45
+
+      securityContext:
+        runAsNonRoot: true
+        # 65532 is `nonroot` in the distroless images. Stated here as well as in
+        # the Dockerfile so that the guarantee does not depend on which image
+        # the deployment happens to reference.
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: api
+          # Replaced by the overlays with an immutable reference. A moving tag
+          # here would let the same manifest deploy different code on different
+          # days, leaving no record of the change.
+          image: ghcr.io/namezzy/goscaffoldforlevi:REPLACED_BY_OVERLAY
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9464
+
+          envFrom:
+            - configMapRef:
+                name: goscaffold-config
+            - secretRef:
+                name: goscaffold-secrets
+
+          # /live must not touch the database.
+          #
+          # If liveness checked PostgreSQL, a few seconds of failover would fail
+          # the probe on every replica at once. Every replica would be killed,
+          # every replica would restart together, and the cold starts would hit
+          # the database exactly as it came back — which fails the probe again.
+          # That is a restart storm: the database recovers and the cluster keeps
+          # beating itself up. Dependency health belongs in readiness, where the
+          # consequence is "stop sending traffic" rather than "destroy the pod".
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            # One failed check is a blip, not an outage. Two consecutive ones
+            # withdraw the pod, and it returns as soon as a check passes again.
+            failureThreshold: 2
+
+          # A slow start must not be mistaken for a dead process. Until this
+          # probe succeeds the liveness probe is not evaluated at all, which is
+          # what makes the aggressive liveness settings above safe.
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 3
+            failureThreshold: 20
+
+          resources:
+            requests:
+              cpu: 100m
+              # Argon2id is configured for 64 MiB per hash and logins run
+              # concurrently, so the floor is set well above the idle footprint.
+              # A limit below this does not slow logins down; it OOM-kills them.
+              memory: 256Mi
+            limits:
+              # No CPU limit. Throttling a request-serving process adds latency
+              # exactly when it is busiest, and the requests value already gives
+              # the scheduler what it needs. Memory is limited because a leak
+              # must kill one pod rather than starve the node.
+              memory: 512Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            # The process writes nothing to disk: logs go to stdout and there
+            # is no local cache or temporary file. That is what makes this
+            # setting possible rather than merely desirable.
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

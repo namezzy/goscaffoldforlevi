@@ -51,7 +51,7 @@ func (c CheckFunc) Check(ctx context.Context) error { return c.Probe(ctx) }
 type Health struct {
 	logger   *slog.Logger
 	checkers []Checker
-	version  string
+	build    Build
 
 	// draining is set at the start of shutdown so that /ready fails while the
 	// server is still serving in-flight requests. Without this gap the load
@@ -59,18 +59,39 @@ type Health struct {
 	draining atomic.Bool
 }
 
+// Build identifies the running binary. It is passed in rather than read from
+// internal/buildinfo directly so that a test can state the values it expects
+// instead of depending on how the test binary happened to be linked.
+type Build struct {
+	Version string
+	Commit  string
+}
+
 // NewHealth builds the health handler.
-func NewHealth(logger *slog.Logger, version string, checkers ...Checker) *Health {
-	return &Health{logger: logger, checkers: checkers, version: version}
+func NewHealth(logger *slog.Logger, build Build, checkers ...Checker) *Health {
+	return &Health{logger: logger, checkers: checkers, build: build}
 }
 
 // StartDraining makes /ready report failure. Called first during shutdown.
 func (h *Health) StartDraining() { h.draining.Store(true) }
 
 type healthResponse struct {
-	Status     string            `json:"status"`
-	Version    string            `json:"version"`
+	Status  string `json:"status"`
+	Version string `json:"version"`
+
+	// Commit is what makes the report actionable. Two deployments can report
+	// the same version while running different code — during development the
+	// version does not move at all — so the SHA is the only field that answers
+	// "which build is this?" without ambiguity. It names a public commit and
+	// discloses nothing an attacker cannot read in the repository.
+	Commit string `json:"commit"`
+
 	Components map[string]string `json:"components,omitempty"`
+}
+
+// report fills in the fields every probe response shares.
+func (h *Health) report(status string) healthResponse {
+	return healthResponse{Status: status, Version: h.build.Version, Commit: h.build.Commit}
 }
 
 // Handler mounts the probes on r.
@@ -81,21 +102,18 @@ func (h *Health) routes(r chiRouter) {
 }
 
 func (h *Health) handleHealth(w http.ResponseWriter, r *http.Request) {
-	WriteJSON(r.Context(), w, h.logger, http.StatusOK,
-		healthResponse{Status: "ok", Version: h.version})
+	WriteJSON(r.Context(), w, h.logger, http.StatusOK, h.report("ok"))
 }
 
 func (h *Health) handleLive(w http.ResponseWriter, r *http.Request) {
 	// Reaching this line proves the process is scheduling goroutines and
 	// serving HTTP. That is the entire meaning of liveness.
-	WriteJSON(r.Context(), w, h.logger, http.StatusOK,
-		healthResponse{Status: "ok", Version: h.version})
+	WriteJSON(r.Context(), w, h.logger, http.StatusOK, h.report("ok"))
 }
 
 func (h *Health) handleReady(w http.ResponseWriter, r *http.Request) {
 	if h.draining.Load() {
-		WriteJSON(r.Context(), w, h.logger, http.StatusServiceUnavailable,
-			healthResponse{Status: "draining", Version: h.version})
+		WriteJSON(r.Context(), w, h.logger, http.StatusServiceUnavailable, h.report("draining"))
 		return
 	}
 
@@ -130,6 +148,7 @@ func (h *Health) handleReady(w http.ResponseWriter, r *http.Request) {
 		label = "unavailable"
 	}
 
-	WriteJSON(r.Context(), w, h.logger, status,
-		healthResponse{Status: label, Version: h.version, Components: components})
+	resp := h.report(label)
+	resp.Components = components
+	WriteJSON(r.Context(), w, h.logger, status, resp)
 }

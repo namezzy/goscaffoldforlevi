@@ -1,0 +1,69 @@
+# A shared development cluster: one replica, verbose logs, no autoscaling.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goscaffold-development
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/namezzy/goscaffoldforlevi
+    newTag: sha-0000000000000000000000000000000000000000
+  - name: ghcr.io/namezzy/goscaffoldforlevi-worker
+    newTag: sha-0000000000000000000000000000000000000000
+  - name: ghcr.io/namezzy/goscaffoldforlevi-migrate
+    newTag: sha-0000000000000000000000000000000000000000
+
+patches:
+  - target:
+      kind: Deployment
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 1
+
+  - target:
+      kind: Ingress
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.dev.goscaffold.example.com
+
+  # A single replica cannot satisfy minAvailable: 2, and a PDB that can never
+  # be satisfied blocks every node drain in the namespace — an easy way to
+  # wedge a cluster nobody is watching closely.
+  - target:
+      kind: PodDisruptionBudget
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/minAvailable
+        value: 0
+
+  # Autoscaling needs metrics-server and is noise at this size.
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: goscaffold-api
+    patch: |
+      $patch: delete
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: goscaffold-api
+
+configMapGenerator:
+  - name: goscaffold-config
+    behavior: merge
+    literals:
+      - APP_ENV=development
+      - LOG_LEVEL=debug
+      - HTTP_CORS_ALLOWED_ORIGINS=*
+      - MESSAGING_ENABLED=true
+      - OTEL_ENABLED=true
+      - OTEL_SAMPLING_RATIO=1.0
+
+generatorOptions:
+  disableNameSuffixHash: true

@@ -45,7 +45,7 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: goscaffold-nats
-    profiles: ["messaging"]
+    profiles: ["messaging", "full"]
     # JetStream is not on by default, and without it every stream operation
     # fails with an error that does not mention the flag.
     command:
@@ -72,7 +72,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.115.1
     container_name: goscaffold-otelcol
-    profiles: ["observability"]
+    profiles: ["observability", "full"]
     # The collector sits between the application and the backends so that
     # changing where traces are stored is a collector config change rather
     # than an application redeploy and restart.
@@ -88,7 +88,7 @@ services:
   tempo:
     image: grafana/tempo:2.6.1
     container_name: goscaffold-tempo
-    profiles: ["observability"]
+    profiles: ["observability", "full"]
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     volumes:
       - ./deployments/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
@@ -99,7 +99,7 @@ services:
   prometheus:
     image: prom/prometheus:v3.0.1
     container_name: goscaffold-prometheus
-    profiles: ["observability"]
+    profiles: ["observability", "full"]
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=24h"
@@ -117,7 +117,7 @@ services:
   grafana:
     image: grafana/grafana:11.4.0
     container_name: goscaffold-grafana
-    profiles: ["observability"]
+    profiles: ["observability", "full"]
     environment:
       # Anonymous admin access, local only. This container is bound to
       # localhost and holds nothing but dashboards; a password prompt on every
@@ -134,6 +134,72 @@ services:
     depends_on:
       - prometheus
       - tempo
+
+  # The application itself, behind the `full` profile.
+  #
+  # Defined here so that `--profile full` means what section 6.3 says it means,
+  # but not started by default, and the reason is the inner development loop.
+  # Running the API from compose turns "edit, restart in a second, attach a
+  # debugger" into "edit, rebuild an image, recreate a container" — an order of
+  # magnitude slower, with no debugger. The normal workflow stays `make run`.
+  #
+  # The cost of having them here is that these definitions must be kept in step
+  # with the Dockerfile and with .env.example.
+  api:
+    build:
+      context: .
+      target: api
+      args:
+        VERSION: compose
+        COMMIT: unknown
+        BUILD_TIME: unknown
+    container_name: goscaffold-api
+    profiles: ["full"]
+    environment:
+      # Service names, not localhost: inside the network the dependencies are
+      # reachable by the names compose gives them.
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/goscaffold?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MESSAGING_ENABLED: "true"
+      MESSAGING_NATS_URLS: nats://nats:4222
+      # Local development only. Startup refuses this value when APP_ENV is
+      # production, which is the guard that makes writing it here safe.
+      AUTH_JWT_SECRET: compose-local-development-secret-000000
+      # The default binds loopback, which inside a container means nothing
+      # outside the container can ever reach it — including Prometheus.
+      METRICS_ADDR: ":9464"
+      OTEL_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      target: worker
+      args:
+        VERSION: compose
+        COMMIT: unknown
+        BUILD_TIME: unknown
+    container_name: goscaffold-worker
+    profiles: ["full"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/goscaffold?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MESSAGING_ENABLED: "true"
+      MESSAGING_NATS_URLS: nats://nats:4222
+      AUTH_JWT_SECRET: compose-local-development-secret-000000
+      METRICS_ADDR: ":9465"
+      OTEL_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
 
 volumes:
   postgres-data:

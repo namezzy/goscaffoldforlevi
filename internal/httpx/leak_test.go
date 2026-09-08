@@ -56,7 +56,7 @@ func TestNoSecretReachesTheLogsOrTheSpans(t *testing.T) {
 	router := httpx.NewRouter(httpx.RouterDeps{
 		Config:  config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
 		Logger:  logger,
-		Health:  httpx.NewHealth(logger, "test"),
+		Health:  httpx.NewHealth(logger, httpx.Build{Version: "test", Commit: "testcommit"}),
 		Tracer:  tp,
 		Metrics: metrics,
 		Register: func(r chi.Router) {

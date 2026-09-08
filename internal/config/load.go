@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+
+	"github.com/namezzy/goscaffoldforlevi/internal/buildinfo"
 )
 
 // InsecureJWTSecrets are the placeholder values shipped in .env.example.
@@ -49,8 +51,13 @@ func Load() (Config, error) {
 		App: App{
 			Name:        p.str("APP_NAME", "goscaffoldforlevi"),
 			Environment: Environment(p.str("APP_ENV", string(EnvDevelopment))),
-			Version:     p.str("APP_VERSION", "dev"),
-			LogLevel:    p.logLevel("LOG_LEVEL", slog.LevelInfo),
+			// The build stamp is the default, not a hardcoded string: an image built
+			// by CI reports its real version without anyone setting an environment
+			// variable, while APP_VERSION stays available to override it (compose
+			// uses that). Commit and build time have no environment counterpart —
+			// they can only be true if the linker set them.
+			Version:  p.str("APP_VERSION", buildinfo.Version),
+			LogLevel: p.logLevel("LOG_LEVEL", slog.LevelInfo),
 		},
 		HTTP: HTTP{
 			Host:                p.str("HTTP_HOST", "0.0.0.0"),

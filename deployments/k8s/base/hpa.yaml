@@ -1,0 +1,54 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: goscaffold-api
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: goscaffold-api
+
+  minReplicas: 3
+  maxReplicas: 10
+
+  metrics:
+    # CPU is the starting metric because it needs no extra infrastructure, not
+    # because it is the right one.
+    #
+    # When to replace it: as soon as CPU stops tracking load. This service
+    # spends much of its time waiting on PostgreSQL and Redis, so a saturated
+    # instance can sit at modest CPU while latency climbs. The signals that
+    # actually describe the API are requests per second and p95 latency, both
+    # already exported — switch to them once a metrics adapter exists.
+    #
+    # Login is the exception worth knowing about: Argon2id is deliberately CPU
+    # and memory expensive, so a login burst does move CPU. Do not tune this
+    # threshold around that case; the login rate limiter is what bounds it.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+  behavior:
+    scaleUp:
+      # React quickly to load: being slow to add capacity is a user-visible
+      # outage, while being slightly over-provisioned for a minute is not.
+      stabilizationWindowSeconds: 60
+    scaleDown:
+      # Retreat slowly. Removing pods during a lull that turns out to be the
+      # gap between two bursts produces a thrash that looks like instability.
+      stabilizationWindowSeconds: 300
+
+# There is deliberately no HorizontalPodAutoscaler for the worker.
+#
+# CPU is close to meaningless for it: a worker with a large backlog may be
+# almost idle, because it is waiting on the database and on outbound calls —
+# and that is precisely the moment more replicas are needed. The correct signal
+# is NATS consumer lag (the number of unacknowledged messages in the stream),
+# which requires a custom metrics adapter. Until that exists, scale the worker
+# by hand and watch the outbox depth; `make outbox-status` reports it.

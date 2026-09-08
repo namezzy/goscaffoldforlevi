@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 
+	"github.com/namezzy/goscaffoldforlevi/internal/buildinfo"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging/messagingpg"
@@ -42,6 +43,8 @@ func run(ctx context.Context) error {
 	}
 
 	logger.InfoContext(ctx, "worker starting",
+		slog.String("commit", buildinfo.Commit),
+		slog.String("build_time", buildinfo.BuildTime),
 		slog.String("consumer", cfg.Messaging.ConsumerName),
 		slog.Any("nats_urls", cfg.Messaging.NATSURLs),
 		slog.Bool("otel_enabled", cfg.OTel.Enabled),

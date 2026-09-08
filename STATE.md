@@ -885,3 +885,206 @@ operation 的唯一请求)。
 
 设计文档:`docs/superpowers/specs/2026-09-02-bruno-collection-design.md`
 实现计划:`docs/superpowers/plans/2026-09-02-bruno-collection.md`
+
+---
+
+# Phase 6 — Infrastructure / Docker / CI / Kubernetes（2026-09-09）
+
+设计文档:`docs/superpowers/specs/2026-09-04-phase6-infrastructure-design.md`。
+六个锁定决策(D1 distroless / D2 Kustomize / D3 CI 写完整 / D4 compose full
+profile / D5 版本走 /health / D6 禁止可变 tag 进 manifest)全部按原样落地,
+另有三处与设计文档不符,见「与设计文档的偏差」。
+
+## Infrastructure Files
+
+```text
+Dockerfile                              三个 target:api / worker / migrate
+.dockerignore
+internal/buildinfo/buildinfo.go         ldflags 注入点
+.github/workflows/ci.yml                PR 门禁,三个 job
+.github/workflows/docker.yml            master / tag 构建推送 ghcr.io
+deployments/k8s/
+  base/{kustomization,configmap,secret.example,api-deployment,api-service,
+        worker-deployment,migrate-job,ingress,hpa,pdb}.yaml
+  overlays/{local,development,staging,production}/kustomization.yaml
+  manifests_test.go                     守卫测试,5 个变异验证过
+```
+
+修改:`docker-compose.yml`(api/worker + full profile)、`Makefile`
+(LDFLAGS、docker-* 三个目标、build-worker、actionlint 进 tools)、
+`internal/config/load.go`(APP_VERSION 默认值改为 `buildinfo.Version`)、
+`internal/httpx/health.go`(`Build` 结构体,`/health` 与 `/ready` 增加
+`commit` 字段)、`cmd/api/run.go` 与 `cmd/worker/run.go`(启动日志打 commit
+与 build_time)、`api/openapi.yaml`(两个 schema 增加 `commit`)、README 双语。
+
+## Docker Architecture
+
+单文件多 target,三者共享到最后一次 COPY 为止的全部层。
+
+| Target | 基础镜像 | 大小 | 说明 |
+|---|---|---|---|
+| `api` | `gcr.io/distroless/static:nonroot` | 40.8 MB | |
+| `worker` | 同上 | 35.1 MB | |
+| `migrate` | `migrate/migrate:v4.19.1` | — | 本仓库的 SQL 烤进镜像 |
+
+**distroless 的代价已写进 README**:没有 shell,`kubectl exec` 进不去,
+必须用 `kubectl debug` 的临时容器。这条不写下来,会在最糟的时刻被发现。
+
+构建期注入 `internal/buildinfo` 的三个变量。`-X` 路径写错时链接器**静默
+忽略**,所以 Makefile 与 Dockerfile 里的路径必须一致——已实跑确认注入生效
+(容器 `/health` 返回真实 SHA)。
+
+## CI Pipeline
+
+`ci.yml` 三个 job,按**耗时**而不是按主题拆分,目的是让第一个红叉在一分钟
+左右出现:
+
+- `quality` — gofmt / vet / golangci-lint / `sqlc diff` / actionlint / OpenAPI lint
+- `test` — build / `go test -race` / govulncheck
+- `integration` — `go test -tags=integration`(testcontainers)
+
+**集成测试沿用 testcontainers 而不是 Service Container**(§6.6 要求做选择):
+仓库本地已用 testcontainers,两套机制会让同一份依赖在一处过、另一处挂,而
+差异永远不在人第一眼看的地方。
+
+`docker.yml` 推 `master` 与 `v*` tag 时发布到 `ghcr.io/${{ github.repository }}`,
+产出 `sha-<commit>` 与发版的 `v1.2.3 / v1.2 / v1`。
+
+## Kubernetes Strategy
+
+Kustomize:一个 base、四个 overlay(local / development / staging / production)。
+
+- **迁移用独立 Job**,不用 initContainer。initContainer 每 Pod 跑一次,
+  三副本发布会并发执行同一份 DDL,且此后每次重启都再跑一遍
+- **liveness 只打 `/live`,不碰任何依赖**;readiness 打 `/ready` 查
+  PostgreSQL 与 Redis。理由是重启风暴:liveness 若查库,一次几秒的主库切换
+  会让所有副本同时失败、同时被杀、同时冷启动打向正在恢复的库
+- **`terminationGracePeriodSeconds: 45`**,不是刚好大于 30 的 31
+- **`METRICS_ADDR: ":9464"`**,不是应用默认的 loopback
+- **HPA 只给 API**,基于 CPU 70%。worker 没有 HPA,因为 CPU 对它几乎永远
+  是错的指标:积压时它在等 I/O,CPU 很低,而那正是最该扩容的时刻。正确信号
+  是 NATS consumer lag,需要 custom metrics adapter。这条写在 manifest 注释里
+  而不只是 README——改 HPA 的人不会去读 README
+
+## Security Decisions
+
+- 三个工作负载(api / worker / migrate)统一:`runAsNonRoot` + `runAsUser:
+  65532` + `readOnlyRootFilesystem` + `allowPrivilegeEscalation: false` +
+  `capabilities.drop: [ALL]` + `seccompProfile: RuntimeDefault`
+- `readOnlyRootFilesystem: true` 成立的前提是进程不写盘:日志走 stdout、
+  无本地缓存与临时文件。这个前提一旦变化,应挂 emptyDir 而不是放宽设置
+- Service **不暴露 9464**。指标名枚举了每个路由模板、依赖和构建版本;抓取
+  方应直连 Pod IP,限制访问面是 NetworkPolicy 的事
+- 仓库只放 `secret.example.yaml`,且它**不在** base 的 `resources` 里——
+  applied 出一个值为 `REPLACE_ME` 的 Secret,比缺 Secret 更难读
+- base ConfigMap 写死 `APP_ENV: production`,让漏配 overlay 失败在安全一侧
+
+## 与设计文档的偏差
+
+三处,均按 §0.3 明示而非静默修改。
+
+1. **D2 的论据错了,结论仍成立。** 设计称 Kustomize 是「本机唯一能真
+   `--dry-run=client` 验证的方案」。实测 `kubectl apply --dry-run=client`
+   要从集群下载 OpenAPI schema,本机无集群时直接报
+   `failed to download openapi`——四个 overlay 全部失败。改用 `kubeconform
+   -strict` 对官方 1.33 schema 离线校验,strict 会拒绝未知字段,正是想用
+   dry run 抓的那类笔误。选 Kustomize 的其余理由(零新依赖、比 Helm 简单)
+   不受影响。
+
+2. **D3 的前提已失效。** 设计写「仓库当前没有 git remote,workflow 不会被
+   触发」,据此把 CI 标为永久 SKIPPED。远端仓库已于 2026-09-08 建立并推送,
+   workflow **会**在下次 push 时真实触发。因此 SKIPPED 的理由从「不可能
+   跑」降级为「尚未观察到结果」。
+
+3. **迁移 Job 的承载方式设计文档没定。** 备选是 configMapGenerator 从
+   `migrations/` 生成 ConfigMap,否决理由有两条:ConfigMap 与目录会漂移;
+   且 kustomize 默认的 load restrictor 不允许 base 目录向上读文件,启用
+   `LoadRestrictionsNone` 会让 `kubectl apply -k` 需要额外 flag。改为在
+   Dockerfile 增加第三个 target,把 SQL 烤进 `migrate/migrate` 镜像——镜像
+   不可变且与代码同 commit,「这个版本期望哪份 schema」有确切答案。
+
+## 测试与变异验证
+
+`deployments/k8s/manifests_test.go` 读 **base YAML** 而不是 `kustomize build`
+的输出:测试不该依赖 CI 上未必存在的二进制,而这些约束都在 base 层定义。
+若将来 overlay 开始覆盖它们,应扩展测试而不是改成调用 kustomize。
+
+五个变异全部让测试变红,且每条都点名了具体文件与原因:
+
+| 变异 | 被哪个测试抓到 |
+|---|---|
+| `terminationGracePeriodSeconds` 45 → 20 | `TestGracePeriodOutlastsTheShutdownBudget` |
+| livenessProbe `/live` → `/healthz` | `TestProbesPointAtPathsTheServiceServes` |
+| 删掉 `readOnlyRootFilesystem` | `TestWorkloadsAreHardened` |
+| `METRICS_ADDR` → `127.0.0.1:9464` | `TestMetricsAddressIsNotLoopback` |
+| production overlay 改用 `:latest` | `TestNoManifestReferencesAMovingTag` |
+
+余量断言值得单独说明:测试不只要求 grace period **大于** shutdown timeout,
+还要求余量 ≥ 10 秒。「刚好大于」是同一个 bug 的隐蔽版本。
+
+## 运行验证（2026-09-09）
+
+| 命令 | 结果 |
+|---|---|
+| `make check` | 全绿 |
+| `make test-integration` | 全绿(PostgreSQL 17,testcontainers) |
+| `docker build --target api / worker / migrate` | 三个均成功 |
+| 镜像连真实 Postgres/Redis 运行 | `/ready` 200,`commit` 返回真实 SHA |
+| `docker compose --profile full up -d` | 9 个服务起来,`/live` 200 |
+| SIGTERM 关停时序 | `/ready` 转 `draining` 503 约 5 秒 → 监听器关闭 → 退出码 0 |
+| `kubectl kustomize` 四个 overlay | 均渲染成功(local/dev 8 对象,staging/prod 9 对象) |
+| `kubeconform -strict -kubernetes-version 1.33.0` | 四个 overlay 全部 Valid,0 Invalid |
+| `actionlint .github/workflows/*.yml` | 无问题 |
+| `go test ./deployments/k8s/` | 绿,并经 5 个变异验证会红 |
+| **在真实集群上 apply** | **SKIPPED:无可用集群** |
+| **GitHub Actions 在 Runner 上执行** | **SKIPPED:workflow 本次随代码首次推送,结果尚未观察** |
+
+## 本阶段做的超范围的事
+
+三件,均记录理由:
+
+1. **`internal/httpx.Build` 结构体**替代原来的 `version string` 参数。
+   §6.2 只要求暴露版本信息;改签名是为了不引入第二个位置参数(两个相邻
+   string 参数极易调换且编译器不报错),代价是 8 处测试调用点机械更新。
+2. **`cmd/worker/run.go` 的启动日志**也打 commit 与 build_time。§6.2 没提
+   worker;不加会出现「api 能说自己是哪个构建、worker 不能」的不对称。
+3. **`kubeconform` 与 `actionlint` 两个新工具**。前者是 D2 论据失效后的
+   替代验证手段,后者是设计文档验证计划里就列出的。actionlint 已加入
+   `make tools`;kubeconform 没有加,它只在有 manifest 变更时才需要。
+
+**没有做**:Trivy、NetworkPolicy、ServiceMonitor、PrometheusRule、真实
+Secret、Helm——设计文档的「明确不做」清单原样执行。
+
+## Known Limitations（Phase 6 新增）
+
+| 妥协 | 理由 |
+|------|------|
+| manifests 从未在真实集群 apply 过 | 无可用集群。schema 校验能抓字段与类型错误,抓不到调度、准入控制器、CNI 层面的问题 |
+| `secret.example.yaml` 不在 base 的 resources 里,首次部署必然缺 Secret | 这是刻意的:Pod 因缺 Secret 起不来,比起来一个值为 `REPLACE_ME` 的 Secret 让服务启动后自我拒绝要好读得多 |
+| `local` overlay 里带了开发用凭据 | 与 `docker-compose.yml` 同性质的本机口令,`APP_ENV=development` 下有效、production 下被启动守卫拒绝。文件里已写明「要抄就抄 staging,不要抄 local」 |
+| overlay 的镜像 tag 是占位 SHA(全 0) | 仓库没有已发布镜像。真实部署时由 CI 或人替换;`TestNoManifestReferencesAMovingTag` 只禁可变 tag,不校验 SHA 是否存在 |
+| HPA 用 CPU,worker 无 HPA | custom metrics adapter 不在本阶段范围。触发条件已写进 manifest 注释 |
+| `migrate` 镜像的 CLI 版本与 go.mod 手工对齐 | 两者不一致时,Job 与 `make migrate-up` 可能以不同方式解释同一个目录。目前靠注释约束,没有测试守卫 |
+
+## Next Phase Entry Conditions
+
+Phase 7 (`goscaffold` CLI) 开始前已成立:
+
+- [x] `make check` 与 `make test-integration` 全绿
+- [x] 三个镜像可构建,且以非 root 运行
+- [x] 构建期版本信息端到端连通(ldflags → buildinfo → config → /health)
+- [x] compose 的四个 profile 划分与 §6.3 一致,`full` 名副其实
+- [x] 四个 overlay 渲染并通过严格 schema 校验
+- [x] 关停时序实测与设计一致
+- [x] 承重的部署约束有守卫测试,且经变异验证
+
+Phase 7 必须注意:
+
+1. **`goscaffold new` 生成的项目要不要带 Phase 6 的产物**,是第一个要定的
+   问题。带上则模板里出现 `ghcr.io/namezzy/...` 这类本仓库特有的字面量,
+   必须一并参数化;不带则生成出的项目缺一整层。
+2. **模板里的 Dockerfile 与本仓库的会漂移。** 本仓库改了 Dockerfile 而
+   模板没改,生成出的项目就带着一份过时的构建定义。需要一个守卫测试,或者
+   明确接受漂移并写进文档。
+3. §7.5 的「绝对禁止覆盖已有文件」是硬约束。第一版可以不做 `--force`,
+   但不能默认覆盖。

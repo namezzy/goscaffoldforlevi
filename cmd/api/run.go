@@ -12,6 +12,7 @@ import (
 	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 
+	"github.com/namezzy/goscaffoldforlevi/internal/buildinfo"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
 	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
@@ -35,7 +36,12 @@ func run(ctx context.Context) error {
 	}
 
 	logger := telemetry.NewLogger(cfg.App, telemetry.LoggerOptions{Level: cfg.App.LogLevel})
+	// The build stamp is logged once, at the top, because it is the first
+	// question asked of a misbehaving deployment and the answer must be in the
+	// logs before anything else has had a chance to fail.
 	logger.InfoContext(ctx, "starting",
+		slog.String("commit", buildinfo.Commit),
+		slog.String("build_time", buildinfo.BuildTime),
 		slog.String("addr", cfg.HTTP.Addr()),
 		slog.Bool("otel_enabled", cfg.OTel.Enabled),
 		slog.Bool("metrics_enabled", cfg.Metrics.Enabled),
@@ -113,7 +119,8 @@ func run(ctx context.Context) error {
 		defer func() { _ = cache.Close() }()
 	}
 
-	health := httpx.NewHealth(logger, cfg.App.Version, checkers(pool, cache, cfg.Redis.Required)...)
+	build := httpx.Build{Version: cfg.App.Version, Commit: buildinfo.Commit}
+	health := httpx.NewHealth(logger, build, checkers(pool, cache, cfg.Redis.Required)...)
 
 	features, err := buildFeatures(cfg, pool, cache, txManager, logger, metrics)
 	if err != nil {

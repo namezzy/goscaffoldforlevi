@@ -1,0 +1,121 @@
+# Pull request and push gate.
+#
+# Every command here also exists as a Makefile target, and that is deliberate:
+# a check that only exists in CI is a check a developer cannot reproduce before
+# pushing, which turns the pipeline into the place where problems are
+# discovered rather than confirmed.
+#
+# Three jobs, split by how long they take rather than by subject matter. The
+# point of the split is the first red X: `quality` fails in about a minute on
+# the mistakes that are most common, without waiting for containers to start.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+# A second push to the same branch makes the first run irrelevant. Cancelling
+# it frees a runner instead of spending it on an answer nobody will read.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Must match the versions pinned in the Makefile. An unpinned linter changes
+  # its opinion between runs, and the resulting failure looks like a code
+  # problem rather than a tooling one.
+  GOLANGCI_LINT_VERSION: v2.13.2
+  SQLC_VERSION: v1.31.1
+
+jobs:
+  quality:
+    name: Format, vet, lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # The toolchain is read from go.mod so that CI cannot drift from the
+          # version the module declares.
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: sqlc diff
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION}
+          sqlc diff
+
+      - name: actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          actionlint
+
+      - name: OpenAPI lint
+        run: npx --yes @redocly/cli@latest lint api/openapi.yaml
+
+  test:
+    name: Unit tests and vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      # The race detector is not optional here. This service starts goroutines
+      # for the outbox relay, the consumer and graceful shutdown; a data race in
+      # any of them is invisible in a single-threaded test run.
+      - name: Test with the race detector
+        run: go test -race ./...
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # testcontainers rather than a service container, because the repository
+      # already uses testcontainers locally (internal/postgres/pgtest). Two
+      # mechanisms for the same dependency means the suite can pass in one
+      # place and fail in the other, and the difference is never where anyone
+      # looks first. The GitHub runner ships a working Docker daemon, so the
+      # same code path runs in both places.
+      - name: Integration tests
+        run: go test -tags=integration ./...

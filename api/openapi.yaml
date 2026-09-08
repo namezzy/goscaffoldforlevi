@@ -641,6 +641,13 @@ components:
           type: string
         version:
           type: string
+        commit:
+          type: string
+          description: |
+            The git SHA this binary was built from, injected at link time.
+            `unknown` in a binary that was not built through the Makefile or
+            the Dockerfile. It identifies a build unambiguously where `version`
+            cannot: the version does not move between development builds.
 
     ReadinessStatus:
       type: object
@@ -650,6 +657,9 @@ components:
           type: string
         version:
           type: string
+        commit:
+          type: string
+          description: The git SHA this binary was built from. See HealthStatus.
         components:
           type: object
           additionalProperties:

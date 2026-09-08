@@ -1,0 +1,33 @@
+# The public entry point. The host is a placeholder that every overlay
+# replaces; applying the base directly would publish the service at a domain
+# nobody owns.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: goscaffold-api
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+    app.kubernetes.io/component: api
+  annotations:
+    # The application enforces its own body limit (HTTP_MAX_BODY_BYTES, 1 MiB).
+    # The proxy is told the same number so that an oversized upload is refused
+    # at the edge instead of being streamed across the cluster first.
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    # Must stay above HTTP_REQUEST_TIMEOUT, or the proxy gives up first and the
+    # client sees a 504 from nginx instead of the application's own timeout
+    # response — with no request_id, which is the only thing that makes an
+    # incident traceable.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "20"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: goscaffold-api
+                port:
+                  name: http
