@@ -1,0 +1,66 @@
+# __PROJECT_NAME__
+
+Generated from [goscaffoldforlevi](https://github.com/namezzy/goscaffoldforlevi).
+
+## Quick start
+
+Requires Go 1.27+ and Docker.
+
+```sh
+cp .env.example .env      # every value is a working default
+make tools                # pinned golangci-lint, sqlc, migrate, govulncheck
+docker compose up -d      # postgres + redis
+make migrate-up
+make run
+```
+
+Then `curl localhost:8080/ready` reports each dependency by name.
+
+Create the first administrator — the API cannot bootstrap itself, because
+`POST /users` requires the `user:create` permission:
+
+```sh
+make bootstrap-admin email=you@example.com
+```
+
+## What you inherited
+
+| Area | What is already here |
+|---|---|
+| HTTP | chi, strict JSON decoding, PATCH-only updates, one error shape, `X-Request-ID` on every response |
+| Persistence | pgx pool, sqlc queries, golang-migrate, transactions hidden behind a context key |
+| Auth | Argon2id, JWT access tokens, opaque rotating refresh tokens with theft detection, RBAC |
+| Rate limiting | Redis token bucket; general scopes fail open, login fails closed |
+| Messaging | Transactional outbox and a NATS consumer, off until `MESSAGING_ENABLED=true` |
+| Observability | OpenTelemetry traces, Prometheus metrics on a separate port, `trace_id` in every log line |
+| Delivery | Dockerfile (distroless), GitHub Actions, Kustomize manifests for four environments |
+
+The reasoning behind each of these is in `docs/adr/` — ten decisions, with the
+alternatives that were rejected and the conditions that should make you revisit
+them. `docs/architecture.md` covers what did not need an ADR.
+
+## Adding a feature
+
+```sh
+goscaffold module order          # domain, service, ports, HTTP adapter, tests
+goscaffold migration create_orders
+```
+
+The generator writes new files and never touches existing ones, so wiring the
+module into `cmd/api/features.go`, registering its permissions in
+`internal/auth/policy.go` and documenting it in `api/openapi.yaml` are yours to
+do. It prints the list when it finishes.
+
+## Gates
+
+```sh
+make check              # fmt, vet, lint, test -race, govulncheck, sqlc-check
+make test-integration   # testcontainers; needs Docker
+```
+
+Several conventions in this project are enforced by tests rather than by
+documentation: the dependency direction, the error-kind to HTTP-status table,
+`.env.example` staying in step with the config loader, the router and
+`api/openapi.yaml` agreeing in both directions, and the Kubernetes manifests
+keeping their shutdown budget and probe paths. When one of them fails, the
+message says which rule and why it exists.

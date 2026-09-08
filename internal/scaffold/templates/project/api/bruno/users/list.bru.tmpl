@@ -1,0 +1,32 @@
+meta {
+  name: list
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/users?page=1&page_size=20
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.page_info.page: eq 1
+  res.body.page_info.page_size: eq 20
+}
+
+docs {
+  Listing requires the user:list permission, so a member gets 403 here.
+  errors/users-forbidden.bru is that same request with a member token.
+
+  A page past the end returns an empty items array with the real total, not
+  a 404: asking for page 99999999 is a valid question with a boring answer.
+
+  Query string is written inline in url: only. The Bruno CLI builds the
+  request from url: verbatim and reads only path-type entries out of a
+  params block, so a params:query block is dropped entirely — not merged,
+  and not overridden by a clashing key. Adding a fresh key there would
+  disappear just the same. The GUI behaves differently: its params table
+  rewrites the URL bar, so the two stay in step there.
+}

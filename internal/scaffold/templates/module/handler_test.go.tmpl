@@ -1,0 +1,150 @@
+package __PKG__http
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+
+	"__MODULE_PATH__/internal/auth"
+	"__MODULE_PATH__/internal/__PKG__"
+)
+
+type stubRepository struct {
+	stored __PKG__.__TYPE__
+}
+
+func (s *stubRepository) Create(_ context.Context, v __PKG__.__TYPE__) (__PKG__.__TYPE__, error) {
+	s.stored = v
+	return v, nil
+}
+
+func (s *stubRepository) GetByID(_ context.Context, id __PKG__.ID) (__PKG__.__TYPE__, error) {
+	return __PKG__.__TYPE__{ID: id, Name: "existing"}, nil
+}
+
+func (s *stubRepository) List(_ context.Context, _, _ int32) ([]__PKG__.__TYPE__, error) {
+	return []__PKG__.__TYPE__{s.stored}, nil
+}
+
+func (s *stubRepository) Count(_ context.Context) (int64, error) { return 1, nil }
+
+func (s *stubRepository) Update(_ context.Context, id __PKG__.ID, _ __PKG__.Patch) (__PKG__.__TYPE__, error) {
+	return __PKG__.__TYPE__{ID: id, Name: "updated"}, nil
+}
+
+func (s *stubRepository) Delete(_ context.Context, _ __PKG__.ID) error { return nil }
+
+// newTestRouter mounts the handler with authorisation disabled.
+//
+// These tests are about the transport layer: decoding, status codes and the
+// response shape. Whether the policy grants a permission is decided in
+// internal/auth and tested there; repeating it here would test the stub.
+func newTestRouter(t *testing.T) http.Handler {
+	t.Helper()
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	svc := __PKG__.NewService(&stubRepository{}, log)
+	h := NewHandler(svc, log)
+
+	allow := func(auth.Permission) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler { return next }
+	}
+
+	r := chi.NewRouter()
+	r.Route("/__PKGS__", h.Routes(allow))
+	return r
+}
+
+func do(t *testing.T, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, target, reader)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	newTestRouter(t).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestCreateAnswers201WithALocation(t *testing.T) {
+	rec := do(t, http.MethodPost, "/__PKGS__", `{"name":"a __PKG__"}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status %d, want 201. body: %s", rec.Code, rec.Body)
+	}
+
+	var got __VAR__Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Name != "a __PKG__" {
+		t.Errorf("name %q, want %q", got.Name, "a __PKG__")
+	}
+	if want := "/api/v1/__PKGS__/" + got.ID; rec.Header().Get("Location") != want {
+		t.Errorf("Location %q, want %q", rec.Header().Get("Location"), want)
+	}
+}
+
+func TestCreateRejectsAnUnknownField(t *testing.T) {
+	// The decoder is strict on purpose: a client sending "nmae" has a bug, and
+	// silently ignoring the field turns that bug into missing data discovered
+	// much later.
+	rec := do(t, http.MethodPost, "/__PKGS__", `{"name":"ok","nmae":"typo"}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 for an unknown field. body: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestGetRejectsAMalformedID(t *testing.T) {
+	rec := do(t, http.MethodGet, "/__PKGS__/not-a-uuid", "")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400. body: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestListReturnsAnArrayAndItsTotals(t *testing.T) {
+	rec := do(t, http.MethodGet, "/__PKGS__", "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200. body: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"items"`) {
+		t.Errorf("body has no items field: %s", rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"page_info"`) {
+		t.Errorf("body has no page_info field: %s", rec.Body)
+	}
+}
+
+func TestListRejectsANonNumericPage(t *testing.T) {
+	rec := do(t, http.MethodGet, "/__PKGS__?page=abc", "")
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400. body: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestDeleteAnswers204(t *testing.T) {
+	rec := do(t, http.MethodDelete, "/__PKGS__/"+__PKG__.NewID().String(), "")
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status %d, want 204. body: %s", rec.Code, rec.Body)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("204 carried a body: %s", rec.Body)
+	}
+}

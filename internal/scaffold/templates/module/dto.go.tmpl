@@ -1,0 +1,95 @@
+// Package __PKG__http is the HTTP adapter for the __PKG__ feature: request and
+// response types, and the handlers that map between them and the service.
+package __PKG__http
+
+import (
+	"time"
+
+	"__MODULE_PATH__/internal/__PKG__"
+)
+
+// __VAR__Response is the public representation.
+//
+// It exists separately from __PKG__.__TYPE__ so that adding an internal field
+// to the entity does not publish it by accident. The entity is free to carry
+// things a client must never see; here, such a field simply has nowhere to go.
+type __VAR__Response struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func toResponse(v __PKG__.__TYPE__) __VAR__Response {
+	return __VAR__Response{
+		ID:        v.ID.String(),
+		Name:      v.Name,
+		CreatedAt: v.CreatedAt,
+		UpdatedAt: v.UpdatedAt,
+	}
+}
+
+// create__TYPE__Request is the body of POST /__PKGS__.
+type create__TYPE__Request struct {
+	Name string `json:"name"`
+}
+
+func (r create__TYPE__Request) toInput() __PKG__.CreateInput {
+	return __PKG__.CreateInput{Name: r.Name}
+}
+
+// update__TYPE__Request is the body of PATCH /__PKGS__/{id}.
+//
+// Every field is a pointer so that "absent" and "present but empty" are
+// distinguishable. Without that, clearing a field and not mentioning it look
+// identical on the wire, and PATCH becomes PUT with extra steps.
+type update__TYPE__Request struct {
+	Name *string `json:"name"`
+}
+
+func (r update__TYPE__Request) toPatch() __PKG__.Patch {
+	return __PKG__.Patch{Name: r.Name}
+}
+
+// pageInfo is the pagination metadata carried alongside a list.
+type pageInfo struct {
+	Page       int   `json:"page"`
+	PageSize   int   `json:"page_size"`
+	Total      int64 `json:"total"`
+	TotalPages int   `json:"total_pages"`
+}
+
+// listResponse wraps a page.
+//
+// This is the one place a wrapper appears. Single resources are returned bare
+// (ADR-0004); a list needs somewhere to put the totals, and inventing a global
+// envelope to serve that one case would tax every other endpoint.
+type listResponse struct {
+	Items    []__VAR__Response `json:"items"`
+	PageInfo pageInfo          `json:"page_info"`
+}
+
+func toListResponse(p __PKG__.Page) listResponse {
+	// The slice is allocated even when empty so that the response carries []
+	// and not null: a client iterating the result should not have to
+	// null-check.
+	items := make([]__VAR__Response, 0, len(p.Items))
+	for _, v := range p.Items {
+		items = append(items, toResponse(v))
+	}
+
+	totalPages := 0
+	if p.PageSize > 0 {
+		totalPages = int((p.Total + int64(p.PageSize) - 1) / int64(p.PageSize))
+	}
+
+	return listResponse{
+		Items: items,
+		PageInfo: pageInfo{
+			Page:       p.Page,
+			PageSize:   p.PageSize,
+			Total:      p.Total,
+			TotalPages: totalPages,
+		},
+	}
+}

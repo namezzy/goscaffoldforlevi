@@ -73,7 +73,7 @@ of record is [`STATE.md`](STATE.md).
 | 4 | Messaging — outbox, NATS JetStream, idempotency, DLQ | ✅ Complete |
 | 5 | Observability — traces, metrics, log correlation, Grafana stack | ✅ Complete |
 | 6 | Dockerfile, CI, Kubernetes manifests | ✅ Complete |
-| 7 | `goscaffold` CLI | ◻︎ Not started |
+| 7 | `goscaffold` CLI | ✅ Complete |
 | 8 | Documentation and final audit | ◻︎ In progress |
 
 **Read this before deploying anything:** the manifests have been validated, not
@@ -169,8 +169,10 @@ api/
   bruno/               24-request debugging collection (not a test suite)
 migrations/            golang-migrate SQL, up and down
 queries/               sqlc source queries
+cmd/goscaffold/        the CLI: new, module, migration
+internal/scaffold/     generators, and the templates they embed
 Dockerfile             three targets: api, worker, migrate
-.github/workflows/     CI gate and image publishing
+.github/workflows/     CI gate, image publishing, generated-project check
 deployments/
   observability/       OTel Collector, Prometheus, Tempo, Grafana + dashboard guard
   k8s/                 Kustomize base + four overlays, with a guard test
@@ -407,6 +409,75 @@ Database errors are translated to `apperr` **only in `*pg` packages**. If a
 service layer seems to need a driver error code, a translation is missing one
 layer down; fix the repository, not the service.
 
+## The goscaffold CLI
+
+```sh
+make scaffold      # installs it into GOPATH/bin
+
+goscaffold new billing --module github.com/acme/billing
+cd billing
+goscaffold module invoice
+goscaffold migration create_invoices
+```
+
+| Command | What it writes |
+|---|---|
+| `new <name> --module <path>` | The whole scaffold, with the module path and service name substituted throughout |
+| `module <name>` | Domain, service and ports, HTTP adapter, PostgreSQL stub, tests — the three-package shape from ADR-0002 |
+| `migration <name>` | An up/down pair with a collision-free version |
+| `version` | The build stamp |
+
+`--dry-run` lists what would be written and writes nothing. `--output` and
+`--dir` choose where.
+
+### Nothing is ever overwritten
+
+Every command builds the complete set of files first, checks all of them
+against the disk, and only then writes — with `O_EXCL`, so the file system, not
+a prior check, has the final say. If anything is in the way, it names every
+conflict and writes nothing at all. A generator that writes as it goes and
+stops halfway leaves a directory that is neither the old state nor the new one,
+which is the one outcome you cannot recover from by re-running it.
+
+There is no `--force`. The seam for adding one is a single conditional, but the
+command is usually pointed at a directory someone has already put work into.
+
+### How template drift is prevented
+
+This is the hard problem in any scaffold CLI, and the answer here is that
+**there is only one copy of the code**.
+
+`internal/scaffold/templates/project/` is not maintained by hand. It is a
+derived copy of this repository, produced by `make templates` and verified by
+`TestProjectTemplatesMatchTheRepository`. Edit `internal/httpx/router.go`
+without regenerating, and `make check` fails, naming the file. It is the same
+mechanism as `make sqlc-check`, pointed at a different generated artefact —
+mutation-verified three ways: an edited source file, a missing template, and a
+template whose source was deleted.
+
+The module templates are the exception, and they cannot be derived from
+anything: they describe a module that does not exist yet. What keeps them
+honest is the `Scaffold` workflow, which generates a project, generates a
+module inside it, and compiles and tests the result. If a change to `apperr` or
+`httpx` breaks the shape the template assumes, that job goes red.
+
+Generated Go is run through `go/format` before it is written, so a template
+laid out around `__TYPE__` does not produce misaligned code around `Order` —
+and a template that is not valid Go fails at generation time rather than at
+`go build`.
+
+### What it deliberately does not do
+
+- **No `--with-redis` / `--with-observability` flags.** Redis is a hard dependency of rate limiting (ADR-0008), and `internal/telemetry` is threaded through every constructor (ADR-0010); a flag that removed either would emit a project that does not compile.
+- **No `--with-messaging` flag.** ADR-0009 already made messaging default-off at runtime: with `MESSAGING_ENABLED=false` there is no outbox row, no broker and no worker. A flag would only delete files that already cost nothing.
+- **No config file, no plugin system.** Four commands and three flags do not need `.goscaffold.yaml`, and a config file that changed what `new` produces would reintroduce the drift the templates were designed to remove. The extension point for a different template source is `readTemplateTree`; it is one function.
+- **It never edits existing files**, so wiring a new module into `cmd/api/features.go`, registering its permissions in `internal/auth/policy.go`, adding it to the depguard rule and documenting it in `api/openapi.yaml` remain yours. The command prints the list when it finishes.
+
+Generated endpoints answer **403 until you register their permissions**. The
+policy map is the only source of permissions and an unregistered one is never
+granted — so a generated endpoint is unreachable before anyone has decided who
+may reach it.
+
 ## Deployment
 
 ### Images
@@ -553,6 +624,7 @@ Recorded honestly, because "it deploys" is a claim worth being precise about.
 | Graceful shutdown (SIGTERM → drain → exit) | ✅ `/ready` reports `draining` for 5 s, exit code 0 |
 | `kubectl kustomize` on all four overlays | ✅ renders |
 | Manifests against Kubernetes 1.33 schemas | ✅ `kubeconform -strict`, 0 invalid |
+| Generated project: build, vet, test, gofmt | ✅ 24 packages pass, 0 unformatted |
 | `actionlint` on both workflows | ✅ clean (with shellcheck, as CI runs it) |
 | Guard test mutation-verified | ✅ 5 mutations, all caught |
 | Both workflows on a GitHub runner | ✅ green — CI and Docker, third attempt |
@@ -574,7 +646,6 @@ repository declares `version: "2"`, and `actionlint` calls shellcheck on every
 Stated plainly, because a scaffold that overstates its readiness is worse than
 one that under-delivers.
 
-- **No `goscaffold` CLI.** Phase 7.
 - **Nothing has run in a real cluster.** The manifests render and validate; they have never been applied. See [Verification status](#verification-status).
 - **No NetworkPolicy, ServiceMonitor or PrometheusRule.** Alerting and SLOs are outside Phase 6, and a NetworkPolicy without a CNI that enforces it is decoration.
 - **No image scanning.** `govulncheck` covers the Go dependencies; a scanner adds little on a distroless image with almost no OS packages.

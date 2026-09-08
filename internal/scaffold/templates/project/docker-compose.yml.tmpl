@@ -1,0 +1,208 @@
+# Local development dependencies.
+#
+# The broker sits behind a profile because messaging is off by default
+# (MESSAGING_ENABLED=false): someone working on the HTTP API should not have to
+# run, or wait for, a queue they are not using. `docker compose up` starts the
+# database and cache; `docker compose --profile messaging up` adds NATS.
+#
+# This file is for development only. It has no resource limits, no secrets
+# management and no restart policy, and nothing here should be taken as a
+# deployment artefact.
+
+name: goscaffold
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: goscaffold-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: goscaffold
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready returns success while the server is still starting, so the
+      # check names the database and user it will actually be used with.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d goscaffold"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: goscaffold-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: goscaffold-nats
+    profiles: ["messaging", "full"]
+    # JetStream is not on by default, and without it every stream operation
+    # fails with an error that does not mention the flag.
+    command:
+      - "--jetstream"
+      - "--store_dir=/data"
+      - "--http_port=8222"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Observability stack. Started only with --profile observability, because it
+  # is roughly a gigabyte of memory and nothing in the application needs it:
+  # with OTEL_ENABLED=false the services run exactly as they do without it.
+  # ---------------------------------------------------------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    container_name: goscaffold-otelcol
+    profiles: ["observability", "full"]
+    # The collector sits between the application and the backends so that
+    # changing where traces are stored is a collector config change rather
+    # than an application redeploy and restart.
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deployments/observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - tempo
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: goscaffold-tempo
+    profiles: ["observability", "full"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./deployments/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: goscaffold-prometheus
+    profiles: ["observability", "full"]
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=24h"
+    volumes:
+      - ./deployments/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    # host.docker.internal is how the scraper reaches an API running on the
+    # developer's machine rather than in a container, which is the normal
+    # local workflow: `make run` in one terminal, the stack in another.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: goscaffold-grafana
+    profiles: ["observability", "full"]
+    environment:
+      # Anonymous admin access, local only. This container is bound to
+      # localhost and holds nothing but dashboards; a password prompt on every
+      # `docker compose up` is friction that teaches people to disable the
+      # stack rather than to use it.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./deployments/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deployments/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+
+  # The application itself, behind the `full` profile.
+  #
+  # Defined here so that `--profile full` means what section 6.3 says it means,
+  # but not started by default, and the reason is the inner development loop.
+  # Running the API from compose turns "edit, restart in a second, attach a
+  # debugger" into "edit, rebuild an image, recreate a container" — an order of
+  # magnitude slower, with no debugger. The normal workflow stays `make run`.
+  #
+  # The cost of having them here is that these definitions must be kept in step
+  # with the Dockerfile and with .env.example.
+  api:
+    build:
+      context: .
+      target: api
+      args:
+        VERSION: compose
+        COMMIT: unknown
+        BUILD_TIME: unknown
+    container_name: goscaffold-api
+    profiles: ["full"]
+    environment:
+      # Service names, not localhost: inside the network the dependencies are
+      # reachable by the names compose gives them.
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/goscaffold?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MESSAGING_ENABLED: "true"
+      MESSAGING_NATS_URLS: nats://nats:4222
+      # Local development only. Startup refuses this value when APP_ENV is
+      # production, which is the guard that makes writing it here safe.
+      AUTH_JWT_SECRET: compose-local-development-secret-000000
+      # The default binds loopback, which inside a container means nothing
+      # outside the container can ever reach it — including Prometheus.
+      METRICS_ADDR: ":9464"
+      OTEL_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      target: worker
+      args:
+        VERSION: compose
+        COMMIT: unknown
+        BUILD_TIME: unknown
+    container_name: goscaffold-worker
+    profiles: ["full"]
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/goscaffold?sslmode=disable
+      REDIS_ADDR: redis:6379
+      MESSAGING_ENABLED: "true"
+      MESSAGING_NATS_URLS: nats://nats:4222
+      AUTH_JWT_SECRET: compose-local-development-secret-000000
+      METRICS_ADDR: ":9465"
+      OTEL_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  nats-data:
+  tempo-data:
+  prometheus-data:

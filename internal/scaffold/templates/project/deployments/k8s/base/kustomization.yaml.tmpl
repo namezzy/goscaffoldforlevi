@@ -1,0 +1,36 @@
+# The environment-independent definition. It is not directly applicable: the
+# image tags are placeholders and the Ingress host is example.com, so an
+# accidental `kubectl apply -k base` fails loudly instead of publishing
+# something half-configured.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - configmap.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - worker-deployment.yaml
+  - migrate-job.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
+
+# secret.example.yaml is deliberately absent from that list. It documents the
+# keys the application needs; applying it would create a Secret whose values are
+# the literal string REPLACE_ME, and the resulting failure — a pod that starts
+# and then rejects its own configuration — is much harder to read than a
+# missing Secret.
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: goscaffoldforlevi
+      app.kubernetes.io/managed-by: kustomize
+
+images:
+  - name: ghcr.io/namezzy/goscaffoldforlevi
+    newTag: REPLACED_BY_OVERLAY
+  - name: ghcr.io/namezzy/goscaffoldforlevi-worker
+    newTag: REPLACED_BY_OVERLAY
+  - name: ghcr.io/namezzy/goscaffoldforlevi-migrate
+    newTag: REPLACED_BY_OVERLAY

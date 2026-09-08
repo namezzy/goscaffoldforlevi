@@ -79,6 +79,20 @@ build-worker: ## Build the worker binary into bin/
 clean: ## Remove build and coverage output
 	rm -rf bin coverage.out coverage.html
 
+# ------------------------------------------------------------------- scaffold
+
+.PHONY: scaffold
+scaffold: ## Install the goscaffold CLI into GOPATH/bin
+	go install -ldflags "$(LDFLAGS)" ./cmd/goscaffold
+
+.PHONY: templates
+templates: ## Refresh the embedded project templates from this repository
+	@# The templates are a derived copy of this repository, not a second one to
+	@# maintain. TestProjectTemplatesMatchTheRepository fails when they fall
+	@# behind, so this is run in response to that failure rather than from
+	@# memory.
+	go run ./internal/scaffold/gentemplates
+
 # ---------------------------------------------------------------------- tests
 
 .PHONY: test
@@ -167,7 +181,12 @@ migrate-status: ## Show the current schema version
 .PHONY: migrate-create
 migrate-create: ## Create a migration: make migrate-create name=add_users
 	@test -n "$(name)" || { echo "usage: make migrate-create name=<snake_case_name>"; exit 1; }
-	$(GOBIN)/migrate create -ext sql -dir $(MIGRATIONS) -seq $(name)
+	@# goscaffold rather than `migrate create -seq`. Sequential numbering
+	@# collides the moment two branches each add a migration, and the collision
+	@# is only discovered at merge time. goscaffold issues a fixed-width
+	@# millisecond timestamp, and both files arrive with the project's own
+	@# conventions already in them.
+	go run ./cmd/goscaffold migration $(name)
 
 # ----------------------------------------------------------------------- admin
 

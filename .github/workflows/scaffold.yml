@@ -1,0 +1,63 @@
+# Verification for the scaffold CLI's output.
+#
+# It lives in its own file rather than as a job in ci.yml for a concrete
+# reason: ci.yml is copied into every generated project, and a generated
+# project has no cmd/goscaffold. A job that tried to run it there would fail on
+# the new project's very first push, which is a poor way to meet a scaffold.
+# This file is excluded from the template manifest in internal/scaffold.
+name: Scaffold
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: scaffold-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generated:
+    name: Generated project builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The scaffold's real output is a project, so this is the only check that
+      # tests what it actually produces. Everything else verifies the generator;
+      # this verifies the thing generated.
+      #
+      # The module and migration commands are part of the sequence on purpose.
+      # The module template cannot be derived from this repository — it
+      # describes a module that does not exist yet — so compiling it against
+      # the current internal packages is what keeps it from drifting away from
+      # the architecture it claims to follow.
+      - name: Generate a project, a module and a migration
+        run: |
+          go run ./cmd/goscaffold new demo \
+            --module github.com/example/demo \
+            --output "${RUNNER_TEMP}/demo"
+          go run ./cmd/goscaffold module order --dir "${RUNNER_TEMP}/demo"
+          go run ./cmd/goscaffold migration create_orders --dir "${RUNNER_TEMP}/demo"
+
+      - name: The generated project must stand on its own
+        working-directory: ${{ runner.temp }}/demo
+        run: |
+          go mod tidy
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "the generator produced files that are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+          go vet ./...
+          go build ./...
+          go test ./...

@@ -1,0 +1,78 @@
+# Schema migration, run as a one-shot Job.
+#
+# Not an initContainer on the Deployment. An initContainer runs once per pod,
+# so a three-replica rollout would execute the same DDL three times
+# concurrently — and would run it again on every restart, forever. Migration is
+# a single serialised event whose failure must stop the release; a Deployment is
+# a continuous, replicated, rolling thing. They do not belong in one object.
+#
+# Run it before the Deployment is updated:
+#
+#   kubectl apply -k deployments/k8s/overlays/production --prune ... # or
+#   kubectl create job --from=cronjob/... # in a pipeline
+#
+# The image carries the SQL. It is tagged with the same commit as the
+# application image, so "which schema does this release expect?" has an exact
+# answer rather than an inferred one.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: goscaffold-migrate
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+    app.kubernetes.io/component: migrate
+spec:
+  # Keep the finished Job, and its logs, for an hour. Deleting it immediately
+  # removes the record of what ran at the moment someone starts asking why the
+  # schema looks the way it does.
+  ttlSecondsAfterFinished: 3600
+
+  # Two attempts, not six. Migrations are not flaky in a way retries fix: a
+  # failure is almost always a bad migration or an unreachable database, and
+  # repeating it just delays the alert.
+  backoffLimit: 2
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: goscaffoldforlevi
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: migrate
+          image: ghcr.io/namezzy/goscaffoldforlevi-migrate:REPLACED_BY_OVERLAY
+          imagePullPolicy: IfNotPresent
+
+          # The image's entrypoint already supplies -path /migrations. $(VAR)
+          # is expanded by the kubelet from the env below, so the connection
+          # string never appears in the manifest.
+          args: ["-database", "$(DATABASE_URL)", "up"]
+
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: goscaffold-secrets
+                  key: DATABASE_URL
+
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

@@ -1,0 +1,22 @@
+meta {
+  name: users not found
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/api/v1/users/01a05c5c-0000-7000-8000-000000000000
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq USER_NOT_FOUND
+}
+
+docs {
+  A well-formed UUID that resolves to nothing gives 404. A malformed one
+  gives 400 with INVALID_USER_ID, because the request was never answerable
+  and saying "not found" would suggest the client should go looking.
+}

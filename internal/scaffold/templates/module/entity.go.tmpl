@@ -1,0 +1,94 @@
+// Package __PKG__ holds the __PKG__ domain: the entity, its invariants, and
+// the service that enforces them. It knows nothing about HTTP or SQL — those
+// live in __PKG__http and __PKG__pg, which depend on this package and never
+// the other way around (ADR-0002).
+package __PKG__
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+
+	"__MODULE_PATH__/internal/apperr"
+)
+
+// ID is a distinct type rather than a bare uuid.UUID so that passing some
+// other entity's ID where a __PKG__ ID is expected fails to compile, instead
+// of failing at runtime as a puzzling "not found".
+type ID uuid.UUID
+
+// NewID mints a UUIDv7. Generation lives here, not in handlers: an entity must
+// have its identity before it reaches the database (ADR-0006).
+func NewID() ID { return ID(uuid.Must(uuid.NewV7())) }
+
+// ParseID converts external input into an ID, so that handlers never have to
+// decide what a malformed identifier means.
+func ParseID(s string) (ID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return ID{}, apperr.Invalid("INVALID___CODE___ID", "__PKG__ id must be a UUID")
+	}
+	return ID(u), nil
+}
+
+func (id ID) String() string { return uuid.UUID(id).String() }
+
+// UUID exposes the underlying value for the persistence layer.
+func (id ID) UUID() uuid.UUID { return uuid.UUID(id) }
+
+// IsZero reports whether the ID was never assigned.
+func (id ID) IsZero() bool { return uuid.UUID(id) == uuid.Nil }
+
+// MarshalText makes ID render as a plain string in JSON rather than as an
+// array of sixteen numbers, which is the default encoding of a [16]byte.
+func (id ID) MarshalText() ([]byte, error) { return uuid.UUID(id).MarshalText() }
+
+// UnmarshalText parses the textual form written by MarshalText.
+func (id *ID) UnmarshalText(b []byte) error {
+	var u uuid.UUID
+	if err := u.UnmarshalText(b); err != nil {
+		return apperr.Invalid("INVALID___CODE___ID", "__PKG__ id must be a UUID")
+	}
+	*id = ID(u)
+	return nil
+}
+
+// __TYPE__ is the entity.
+//
+// Replace Name with the fields this domain actually has. The timestamps are
+// filled by the database, not by this process: two application replicas do not
+// agree on what time it is, and the row is the only place that can.
+type __TYPE__ struct {
+	ID        ID
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// CreateInput is what the service needs to create one. It is separate from
+// __TYPE__ because the caller does not supply an ID or timestamps, and a
+// struct that pretends otherwise invites a handler to set them.
+type CreateInput struct {
+	Name string
+}
+
+// Patch is a partial update. Every field is a pointer so that "absent" and
+// "set to the zero value" are distinguishable — without that, a PATCH cannot
+// express clearing a field, and every omitted field silently becomes one
+// (ADR-0004).
+type Patch struct {
+	Name *string
+}
+
+// IsEmpty reports whether the patch would change nothing.
+func (p Patch) IsEmpty() bool { return p.Name == nil }
+
+// Page is one page of results together with the totals a client needs to
+// render pagination. It lives in the domain package because the numbers are
+// the service's answer, not a presentation detail.
+type Page struct {
+	Items    []__TYPE__
+	Page     int
+	PageSize int
+	Total    int64
+}

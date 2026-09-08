@@ -1,0 +1,139 @@
+package __PKG__
+
+import (
+	"context"
+	"log/slog"
+
+	"__MODULE_PATH__/internal/apperr"
+	"__MODULE_PATH__/internal/validate"
+)
+
+// Repository is the persistence port.
+//
+// It is defined here, next to its consumer, and lists exactly the operations
+// this service performs. A generic Repository[T] with Find/Save/Delete would
+// hide which of those the service actually needs, force every implementation
+// to support operations nobody calls, and make the compiler useless as a guide
+// when a query has to change.
+type Repository interface {
+	Create(ctx context.Context, __VAR__ __TYPE__) (__TYPE__, error)
+	GetByID(ctx context.Context, id ID) (__TYPE__, error)
+	List(ctx context.Context, limit, offset int32) ([]__TYPE__, error)
+	Count(ctx context.Context) (int64, error)
+	Update(ctx context.Context, id ID, p Patch) (__TYPE__, error)
+	Delete(ctx context.Context, id ID) error
+}
+
+// Pagination bounds (ADR-0004). The maximum exists so that a client cannot
+// turn one request into a full table scan by asking for a page of a million.
+const (
+	DefaultPageSize = 20
+	MaxPageSize     = 100
+
+	// maxOffset is the largest OFFSET this service will issue. It is far above
+	// any realistic table size and far below the int32 limit, which is what
+	// makes the conversion in List provably safe.
+	maxOffset = 1 << 30
+)
+
+// Service holds the __PKG__ use cases.
+type Service struct {
+	repo Repository
+	log  *slog.Logger
+}
+
+// NewService builds the service. Dependencies are passed in rather than
+// constructed here, so that a test can supply a fake repository without a
+// database.
+func NewService(repo Repository, log *slog.Logger) *Service {
+	return &Service{repo: repo, log: log}
+}
+
+// Create validates the input and stores a new __PKG__.
+func (s *Service) Create(ctx context.Context, in CreateInput) (__TYPE__, error) {
+	var v validate.Violations
+	v.Required("name", in.Name)
+	v.RuneLen("name", in.Name, 1, 200)
+	v.NoControlChars("name", in.Name)
+	if v.Any() {
+		return __TYPE__{}, v.Err("VALIDATION_FAILED", "the request body is not valid")
+	}
+
+	return s.repo.Create(ctx, __TYPE__{ID: NewID(), Name: in.Name})
+}
+
+// Get returns one __PKG__.
+func (s *Service) Get(ctx context.Context, id ID) (__TYPE__, error) {
+	if id.IsZero() {
+		return __TYPE__{}, apperr.Invalid("INVALID___CODE___ID", "__PKG__ id must be a UUID")
+	}
+	return s.repo.GetByID(ctx, id)
+}
+
+// List returns one page.
+//
+// Page and size are clamped rather than rejected: a client asking for page 0
+// means the first page, and refusing it teaches nothing. An offset beyond
+// maxOffset is refused, because at that point the request is either a mistake
+// or an attempt to make the database do unbounded work — and the clamp is what
+// makes the int32 conversions below provably safe.
+func (s *Service) List(ctx context.Context, page, size int) (Page, error) {
+	if page < 1 {
+		page = 1
+	}
+	switch {
+	case size < 1:
+		size = DefaultPageSize
+	case size > MaxPageSize:
+		size = MaxPageSize
+	}
+
+	offset := (page - 1) * size
+	if offset < 0 || offset > maxOffset {
+		return Page{}, apperr.Invalid("PAGE_OUT_OF_RANGE", "the requested page is too far into the collection")
+	}
+
+	total, err := s.repo.Count(ctx)
+	if err != nil {
+		return Page{}, err
+	}
+	items, err := s.repo.List(ctx, int32(size), int32(offset))
+	if err != nil {
+		return Page{}, err
+	}
+	return Page{Items: items, Page: page, PageSize: size, Total: total}, nil
+}
+
+// Update applies a partial change.
+func (s *Service) Update(ctx context.Context, id ID, p Patch) (__TYPE__, error) {
+	if id.IsZero() {
+		return __TYPE__{}, apperr.Invalid("INVALID___CODE___ID", "__PKG__ id must be a UUID")
+	}
+	if p.IsEmpty() {
+		// Not an error the client can act on by retrying differently, but not
+		// a silent success either: an empty PATCH is almost always a bug in
+		// the caller, and reporting it is cheaper than the investigation that
+		// follows a change which appeared to work.
+		return __TYPE__{}, apperr.Invalid("EMPTY_PATCH", "the request changes nothing")
+	}
+
+	var v validate.Violations
+	if p.Name != nil {
+		v.Required("name", *p.Name)
+		v.RuneLen("name", *p.Name, 1, 200)
+		v.NoControlChars("name", *p.Name)
+	}
+	if v.Any() {
+		return __TYPE__{}, v.Err("VALIDATION_FAILED", "the request body is not valid")
+	}
+
+	return s.repo.Update(ctx, id, p)
+}
+
+// Delete removes one __PKG__.
+func (s *Service) Delete(ctx context.Context, id ID) error {
+	if id.IsZero() {
+		return apperr.Invalid("INVALID___CODE___ID", "__PKG__ id must be a UUID")
+	}
+	return s.repo.Delete(ctx, id)
+}

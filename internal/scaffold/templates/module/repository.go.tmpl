@@ -1,0 +1,75 @@
+// Package __PKG__pg is the PostgreSQL adapter for the __PKG__ feature.
+//
+// The bodies below are stubs, and they are stubs on purpose. Generating a
+// working repository would mean generating SQL for a table that does not exist
+// yet, and generated SQL that nobody has read is exactly the code that turns
+// out to be wrong under load. The steps are:
+//
+//  1. goscaffold migration create___PKGS__   — then write the DDL
+//  2. write the queries in queries/__PKG__.sql
+//  3. make sqlc                              — regenerates internal/postgres/db
+//  4. replace each body below with a call into the generated queries
+//
+// Translation of driver errors into apperr belongs here and nowhere else
+// (ADR-0003): if the service ever seems to need a pgx error code, a
+// translation is missing from this file.
+package __PKG__pg
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"__MODULE_PATH__/internal/apperr"
+	"__MODULE_PATH__/internal/__PKG__"
+)
+
+// errNotImplemented is deliberately loud. A repository that silently returned
+// zero values would let the service, the handler and their tests all pass
+// while the feature does nothing.
+var errNotImplemented = errors.New("__PKG__pg: repository method not implemented yet")
+
+// Repository implements __PKG__.Repository against PostgreSQL.
+type Repository struct {
+	pool *pgxpool.Pool
+}
+
+// New builds the repository.
+func New(pool *pgxpool.Pool) *Repository { return &Repository{pool: pool} }
+
+// Ensure the adapter and the port cannot drift apart: this fails to compile the
+// moment the interface gains a method this type does not have.
+var _ __PKG__.Repository = (*Repository)(nil)
+
+func (r *Repository) Create(ctx context.Context, record __PKG__.__TYPE__) (__PKG__.__TYPE__, error) {
+	// The real implementation looks like:
+	//
+	//	q := db.New(postgres.Querier(ctx, r.pool))
+	//	row, err := q.Create__TYPE__(ctx, db.Create__TYPE__Params{...})
+	//
+	// Until then the pool is unused, and saying so here is clearer than
+	// letting a linter report it.
+	_ = r.pool
+	return __PKG__.__TYPE__{}, apperr.Internal(errNotImplemented)
+}
+
+func (r *Repository) GetByID(ctx context.Context, id __PKG__.ID) (__PKG__.__TYPE__, error) {
+	return __PKG__.__TYPE__{}, apperr.Internal(errNotImplemented)
+}
+
+func (r *Repository) List(ctx context.Context, limit, offset int32) ([]__PKG__.__TYPE__, error) {
+	return nil, apperr.Internal(errNotImplemented)
+}
+
+func (r *Repository) Count(ctx context.Context) (int64, error) {
+	return 0, apperr.Internal(errNotImplemented)
+}
+
+func (r *Repository) Update(ctx context.Context, id __PKG__.ID, p __PKG__.Patch) (__PKG__.__TYPE__, error) {
+	return __PKG__.__TYPE__{}, apperr.Internal(errNotImplemented)
+}
+
+func (r *Repository) Delete(ctx context.Context, id __PKG__.ID) error {
+	return apperr.Internal(errNotImplemented)
+}

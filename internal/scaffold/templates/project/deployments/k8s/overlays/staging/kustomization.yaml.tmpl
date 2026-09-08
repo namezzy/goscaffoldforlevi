@@ -1,0 +1,71 @@
+# Staging mirrors production's shape at a smaller size. Anything that differs
+# structurally — a disabled feature, a different broker topology — makes staging
+# stop predicting how production will behave, which is its only purpose.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goscaffold-staging
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/namezzy/goscaffoldforlevi
+    newTag: sha-0000000000000000000000000000000000000000
+  - name: ghcr.io/namezzy/goscaffoldforlevi-worker
+    newTag: sha-0000000000000000000000000000000000000000
+  - name: ghcr.io/namezzy/goscaffoldforlevi-migrate
+    newTag: sha-0000000000000000000000000000000000000000
+
+patches:
+  - target:
+      kind: Deployment
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+
+  - target:
+      kind: Ingress
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.staging.goscaffold.example.com
+
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 2
+      - op: replace
+        path: /spec/maxReplicas
+        value: 6
+
+  - target:
+      kind: PodDisruptionBudget
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/minAvailable
+        value: 1
+
+configMapGenerator:
+  - name: goscaffold-config
+    behavior: merge
+    literals:
+      - APP_ENV=staging
+      - LOG_LEVEL=debug
+      - HTTP_CORS_ALLOWED_ORIGINS=https://app.staging.goscaffold.example.com
+      - MESSAGING_ENABLED=true
+      - OTEL_ENABLED=true
+      # Sample everything. Staging traffic is small enough that full sampling
+      # costs nothing, and a trace that was not recorded is the usual reason a
+      # staging investigation stalls.
+      - OTEL_SAMPLING_RATIO=1.0
+
+generatorOptions:
+  disableNameSuffixHash: true

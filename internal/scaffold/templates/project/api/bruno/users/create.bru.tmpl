@@ -1,0 +1,58 @@
+meta {
+  name: create
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/users
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  // A fixed address makes the second run fail with 409 and look like a bug
+  // in create rather than leftover state from the first run.
+  bru.setVar("userEmail", "bruno-user-" + Date.now() + "@example.com");
+  bru.setVar("userPassword", "correct horse battery staple");
+  // A status check stops a failed create from storing undefined, but it does
+  // not stop the previous run's id from surviving. In the GUI, where
+  // variables outlive a request, that id would send change-password and
+  // delete — which assert nothing but a status — at an earlier user.
+  bru.setVar("userId", "");
+}
+
+body:json {
+  {
+    "email": "{{userEmail}}",
+    "name": "Bruno User",
+    "password": "{{userPassword}}"
+  }
+}
+
+script:post-response {
+  // Runs for every response, not only 2xx. Storing undefined here would
+  // send the rest of the folder at a nonsense URL and hide the real cause.
+  if (res.getStatus() === 201) {
+    bru.setVar("userId", res.body.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.status: eq active
+  res.body.role: eq user
+}
+
+docs {
+  Stores userId for the rest of this folder.
+
+  role is omitted on purpose. It is an accepted field, but sending "user"
+  and then asserting the response says "user" would only prove the server
+  echoes what it was given. Leaving it out makes that assertion test the
+  thing worth testing: that the default is the least privileged value, so a
+  forgotten field cannot quietly produce an administrator.
+
+  status is not accepted on create; the service sets it to active. PATCH
+  does accept it, which is what errors/setup-disable-member uses.
+}

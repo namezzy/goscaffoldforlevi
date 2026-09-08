@@ -1,0 +1,31 @@
+meta {
+  name: login malformed body
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: text
+  auth: none
+}
+
+body:text {
+  {
+}
+
+headers {
+  Content-Type: application/json
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq REQUEST_BODY_INVALID
+}
+
+docs {
+  400, not 401. A request that never parsed cannot have failed
+  authentication, and counting it as an authentication failure would let
+  anyone raise the auth failure rate by posting garbage, turning the
+  security alert into noise.
+}

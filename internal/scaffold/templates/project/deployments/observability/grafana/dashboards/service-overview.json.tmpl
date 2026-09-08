@@ -1,0 +1,376 @@
+{
+  "uid": "goscaffoldforlevi-service",
+  "title": "Go Enterprise Service",
+  "description": "Service overview: traffic, latency, errors, saturation, and the asynchronous path.",
+  "tags": [
+    "goscaffoldforlevi"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate",
+      "type": "timeseries",
+      "description": "Traffic. Read together with the latency and error panels: latency without traffic is a stalled service, not a fast one.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (method, route) (rate(http_requests_total[1m]))",
+          "legendFormat": "{{method}} {{route}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "title": "Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "description": "Quantiles, not an average. An average hides the tail, and the tail is what users describe when they say the site is slow.",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "5xx rate",
+      "type": "timeseries",
+      "description": "Only 5xx counts as an error. A 4xx is the API working: a client that mistypes a URL is not an incident, and alerting on it teaches people to ignore alerts.",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_errors_total[1m]))",
+          "legendFormat": "5xx",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(http_requests_total{status=\"4xx\"}[1m]))",
+          "legendFormat": "4xx (informational)",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Database connections",
+      "type": "timeseries",
+      "description": "Acquired approaching total is a queue forming in front of the database. It is the first thing to check when latency rises and nothing was deployed.",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "db_pool_acquired_conns",
+          "legendFormat": "acquired",
+          "refId": "A"
+        },
+        {
+          "expr": "db_pool_idle_conns",
+          "legendFormat": "idle",
+          "refId": "B"
+        },
+        {
+          "expr": "db_pool_total_conns",
+          "legendFormat": "total",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Login attempts and failures",
+      "type": "timeseries",
+      "description": "Failures are plotted against attempts, not against successes. During a total authentication outage the success rate is zero, and any ratio with successes underneath it stops reporting exactly when it is needed.",
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "rate(login_total[5m])",
+          "legendFormat": "attempts",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(login_failure_total[5m])",
+          "legendFormat": "failures",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(rate_limit_rejected_total[5m])) by (scope)",
+          "legendFormat": "rate limited {{scope}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "User registrations",
+      "type": "timeseries",
+      "description": "Counted after the transaction commits, so this graph matches the users table rather than the number of forms submitted.",
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "increase(user_registration_total[1h])",
+          "legendFormat": "registrations/hour",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Consumer throughput and backlog",
+      "type": "timeseries",
+      "description": "Published rising above consumed is a backlog forming. The outbox gauge is the same story seen from the producer's side, before the broker is involved.",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (event_type, consumer) (rate(messaging_consumed_total[1m]))",
+          "legendFormat": "consumed {{consumer}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (event_type) (rate(messaging_published_total[1m]))",
+          "legendFormat": "published {{event_type}}",
+          "refId": "B"
+        },
+        {
+          "expr": "outbox_pending_events",
+          "legendFormat": "outbox pending",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Retries, duplicates and dead letters",
+      "type": "timeseries",
+      "description": "Retries mean a dependency is flapping; duplicates mean the broker is redelivering; dead letters mean events were given up on. Any dead letter is worth a look \u2014 they do not resolve themselves.",
+      "gridPos": {
+        "x": 8,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (consumer) (rate(messaging_retry_total[5m]))",
+          "legendFormat": "retries {{consumer}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (consumer) (rate(messaging_duplicate_total[5m]))",
+          "legendFormat": "duplicates {{consumer}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (consumer) (increase(messaging_dlq_total[1h]))",
+          "legendFormat": "dead letters/hour {{consumer}}",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, consumer) (rate(messaging_consume_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 handler {{consumer}}",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 9,
+      "title": "Redis operations",
+      "type": "timeseries",
+      "description": "Labelled by command, never by key. A key label would create one series per user and per IP address, which is a memory leak anyone on the internet can trigger.",
+      "gridPos": {
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (command, outcome) (rate(redis_operation_total[1m]))",
+          "legendFormat": "{{command}} {{outcome}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(redis_operation_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 latency",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 8
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

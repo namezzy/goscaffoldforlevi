@@ -1,0 +1,27 @@
+# Build output
+/bin/
+/dist/
+*.exe
+
+# Local configuration. .env.example is committed; .env is not, because it is
+# where real credentials end up.
+.env
+.env.local
+.env.*.local
+
+# Test and profiling output
+*.test
+*.out
+coverage.*
+/coverage/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Access tokens written by the black-box suite's bootstrap step. They are real
+# credentials for a running service and have no business in the history.
+test/blackbox/tok.json
+__pycache__/

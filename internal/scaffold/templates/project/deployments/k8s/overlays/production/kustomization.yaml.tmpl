@@ -1,0 +1,93 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: goscaffold-production
+
+resources:
+  - ../../base
+
+# Immutable references only.
+#
+# A tag like `v1` or `latest` would let this identical file deploy different
+# code on different days, with nothing in git recording the change. The commit
+# SHA form is what CI publishes for every build; a release tag (v1.2.3) is
+# equally acceptable because it is never rewritten.
+images:
+  - name: ghcr.io/namezzy/goscaffoldforlevi
+    newTag: sha-0000000000000000000000000000000000000000
+  - name: ghcr.io/namezzy/goscaffoldforlevi-worker
+    newTag: sha-0000000000000000000000000000000000000000
+  - name: ghcr.io/namezzy/goscaffoldforlevi-migrate
+    newTag: sha-0000000000000000000000000000000000000000
+
+patches:
+  - target:
+      kind: Deployment
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 5
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: 250m
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 512Mi
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: 1Gi
+
+  - target:
+      kind: Deployment
+      name: goscaffold-worker
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+
+  - target:
+      kind: Ingress
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/rules/0/host
+        value: api.goscaffold.example.com
+
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/minReplicas
+        value: 5
+      - op: replace
+        path: /spec/maxReplicas
+        value: 30
+
+  - target:
+      kind: PodDisruptionBudget
+      name: goscaffold-api
+    patch: |
+      - op: replace
+        path: /spec/minAvailable
+        value: 4
+
+configMapGenerator:
+  - name: goscaffold-config
+    behavior: merge
+    literals:
+      - APP_ENV=production
+      - LOG_LEVEL=info
+      - HTTP_CORS_ALLOWED_ORIGINS=https://app.goscaffold.example.com
+      - MESSAGING_ENABLED=true
+      - OTEL_ENABLED=true
+      - OTEL_SAMPLING_RATIO=0.05
+
+# The generated ConfigMap keeps its name instead of gaining a content hash
+# suffix. The suffix is normally the better default — it makes a config change
+# roll the pods — but it also means the ConfigMap name in a manifest never
+# matches the one in the cluster, which is confusing during an incident. Roll
+# deliberately with `kubectl rollout restart` instead.
+generatorOptions:
+  disableNameSuffixHash: true

@@ -1,0 +1,165 @@
+package __PKG__http
+
+import (
+	"log/slog"
+	"net/http"
+	"strconv"
+
+	"github.com/go-chi/chi/v5"
+
+	"__MODULE_PATH__/internal/apperr"
+	"__MODULE_PATH__/internal/auth"
+	"__MODULE_PATH__/internal/httpx"
+	"__MODULE_PATH__/internal/__PKG__"
+)
+
+// The permissions these endpoints require.
+//
+// They are not yet in the policy map in internal/auth/policy.go, and until
+// they are, every endpoint below answers 403 for every caller. That is the
+// intended failure: a generated endpoint that is reachable before anyone has
+// decided who may reach it is a security hole created by convenience.
+const (
+	Perm__TYPE__Create auth.Permission = "__PKG__:create"
+	Perm__TYPE__Read   auth.Permission = "__PKG__:read"
+	Perm__TYPE__List   auth.Permission = "__PKG__:list"
+	Perm__TYPE__Update auth.Permission = "__PKG__:update"
+	Perm__TYPE__Delete auth.Permission = "__PKG__:delete"
+)
+
+// Handler serves the __PKG__ endpoints.
+type Handler struct {
+	svc *__PKG__.Service
+	log *slog.Logger
+}
+
+// NewHandler builds the handler.
+func NewHandler(svc *__PKG__.Service, log *slog.Logger) *Handler {
+	return &Handler{svc: svc, log: log}
+}
+
+// Routes mounts the endpoints.
+//
+// Authorisation that depends only on the caller's role is applied here as
+// middleware, so a request without the permission never reaches the service.
+// Anything that depends on the target record — "may this caller edit their own
+// __PKG__?" — cannot be decided here, because the target has not been loaded
+// yet; that check belongs in the service.
+func (h *Handler) Routes(requirePermission func(auth.Permission) func(http.Handler) http.Handler) func(chi.Router) {
+	return func(r chi.Router) {
+		r.With(requirePermission(Perm__TYPE__Create)).Post("/", h.Create)
+		r.With(requirePermission(Perm__TYPE__List)).Get("/", h.List)
+		r.With(requirePermission(Perm__TYPE__Read)).Get("/{id}", h.Get)
+		r.With(requirePermission(Perm__TYPE__Update)).Patch("/{id}", h.Update)
+		r.With(requirePermission(Perm__TYPE__Delete)).Delete("/{id}", h.Delete)
+	}
+}
+
+// Create stores a new __PKG__ and answers 201 with a Location header.
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	var req create__TYPE__Request
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+
+	created, err := h.svc.Create(r.Context(), req.toInput())
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+
+	w.Header().Set("Location", "/api/v1/__PKGS__/"+created.ID.String())
+	httpx.WriteJSON(r.Context(), w, h.log, http.StatusCreated, toResponse(created))
+}
+
+// Get returns one __PKG__.
+func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+	id, err := __PKG__.ParseID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+
+	found, err := h.svc.Get(r.Context(), id)
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+	httpx.WriteJSON(r.Context(), w, h.log, http.StatusOK, toResponse(found))
+}
+
+// List returns a page.
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	page, err := intQuery(r, "page", 1)
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+	pageSize, err := intQuery(r, "page_size", __PKG__.DefaultPageSize)
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+
+	result, err := h.svc.List(r.Context(), page, pageSize)
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+	httpx.WriteJSON(r.Context(), w, h.log, http.StatusOK, toListResponse(result))
+}
+
+// Update applies a partial change.
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	id, err := __PKG__.ParseID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+
+	var req update__TYPE__Request
+	if err := httpx.DecodeJSON(r, &req); err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+
+	updated, err := h.svc.Update(r.Context(), id, req.toPatch())
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+	httpx.WriteJSON(r.Context(), w, h.log, http.StatusOK, toResponse(updated))
+}
+
+// Delete removes one __PKG__ and answers 204.
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	id, err := __PKG__.ParseID(chi.URLParam(r, "id"))
+	if err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+
+	if err := h.svc.Delete(r.Context(), id); err != nil {
+		httpx.WriteError(r.Context(), w, h.log, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// intQuery reads an optional integer query parameter.
+//
+// An unparseable value is rejected rather than defaulted: silently treating
+// ?page=abc as page 1 hides a client bug and returns data the caller did not
+// ask for.
+func intQuery(r *http.Request, key string, fallback int) (int, error) {
+	raw := r.URL.Query().Get(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, apperr.Invalid("INVALID_QUERY_PARAM", key+" must be an integer")
+	}
+	return n, nil
+}

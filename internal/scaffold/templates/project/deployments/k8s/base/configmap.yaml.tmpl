@@ -1,0 +1,71 @@
+# Non-sensitive configuration. Anything that would be damaging to read belongs
+# in the Secret next to this file, never here: a ConfigMap is readable by
+# anything with get access to the namespace and is routinely dumped into
+# support tickets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: goscaffold-config
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+data:
+  APP_NAME: goscaffoldforlevi
+  # Overridden per environment by the overlays. Production is the base value so
+  # that a missing overlay fails safe: the production guards in config.Validate
+  # reject example secrets and wildcard CORS, so an unconfigured deployment
+  # refuses to start rather than starting up unprotected.
+  APP_ENV: production
+  LOG_LEVEL: info
+
+  HTTP_HOST: 0.0.0.0
+  HTTP_PORT: "8080"
+  HTTP_READ_HEADER_TIMEOUT: 5s
+  HTTP_READ_TIMEOUT: 15s
+  HTTP_WRITE_TIMEOUT: 30s
+  HTTP_IDLE_TIMEOUT: 120s
+  HTTP_REQUEST_TIMEOUT: 15s
+  # Read by the guard test together with terminationGracePeriodSeconds. The pod
+  # must be allowed to finish this budget before the kubelet resorts to SIGKILL.
+  HTTP_SHUTDOWN_TIMEOUT: 30s
+  # How long /ready reports failure before the listener closes, giving the
+  # Service time to remove this pod from its endpoints. Without the gap, traffic
+  # arrives at a socket that is already closing and the client sees a reset.
+  HTTP_READINESS_DRAIN_DELAY: 5s
+  HTTP_CORS_ALLOWED_ORIGINS: https://example.com
+  # The number of proxies in front of the service, which decides how much of
+  # X-Forwarded-For is trusted. One Ingress controller means one hop. Setting
+  # this higher than the real count lets a client forge its own address.
+  HTTP_TRUSTED_PROXY_COUNT: "1"
+
+  REDIS_ADDR: redis:6379
+  REDIS_REQUIRED: "false"
+
+  # ":9464", not "127.0.0.1:9464".
+  #
+  # This single character is the difference between metrics that work and
+  # metrics that silently do not. Prometheus scrapes from another pod, so a
+  # listener bound to loopback inside this container is reachable by nothing at
+  # all — and it fails by producing no data rather than by producing an error,
+  # which is the hardest kind of failure to notice.
+  #
+  # The port is deliberately absent from the Service. Restricting who may reach
+  # it is the job of a NetworkPolicy or of a scraper addressing the pod IP
+  # directly, not of a loopback bind that also excludes the scraper.
+  METRICS_ENABLED: "true"
+  METRICS_ADDR: ":9464"
+  METRICS_PATH: /metrics
+
+  RATELIMIT_ENABLED: "true"
+
+  # Off until a broker exists in the cluster. Turning it on also requires the
+  # worker Deployment, which is why they are separate files.
+  MESSAGING_ENABLED: "false"
+  MESSAGING_NATS_URLS: nats://nats:4222
+
+  OTEL_ENABLED: "false"
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  # Never true in a cluster where the collector is not in the same pod. The
+  # development compose file sets it true; that value must not be copied here.
+  OTEL_EXPORTER_OTLP_INSECURE: "false"
+  OTEL_SAMPLING_RATIO: "0.1"

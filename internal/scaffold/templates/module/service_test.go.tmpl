@@ -1,0 +1,153 @@
+package __PKG__
+
+import (
+	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"__MODULE_PATH__/internal/apperr"
+)
+
+// fakeRepository is a hand-written double rather than a generated mock.
+//
+// It records what it was asked to do, which is what these tests assert on. A
+// mock framework would add a dependency and a second language to read, in
+// exchange for saving these thirty lines.
+type fakeRepository struct {
+	created  __TYPE__
+	items    []__TYPE__
+	total    int64
+	lastLim  int32
+	lastOff  int32
+	err      error
+	deleted  ID
+	patched  Patch
+	getCalls int
+}
+
+func (f *fakeRepository) Create(_ context.Context, v __TYPE__) (__TYPE__, error) {
+	if f.err != nil {
+		return __TYPE__{}, f.err
+	}
+	f.created = v
+	return v, nil
+}
+
+func (f *fakeRepository) GetByID(_ context.Context, id ID) (__TYPE__, error) {
+	f.getCalls++
+	if f.err != nil {
+		return __TYPE__{}, f.err
+	}
+	return __TYPE__{ID: id, Name: "existing"}, nil
+}
+
+func (f *fakeRepository) List(_ context.Context, limit, offset int32) ([]__TYPE__, error) {
+	f.lastLim, f.lastOff = limit, offset
+	return f.items, f.err
+}
+
+func (f *fakeRepository) Count(_ context.Context) (int64, error) { return f.total, f.err }
+
+func (f *fakeRepository) Update(_ context.Context, id ID, p Patch) (__TYPE__, error) {
+	f.patched = p
+	if f.err != nil {
+		return __TYPE__{}, f.err
+	}
+	return __TYPE__{ID: id, Name: "updated"}, nil
+}
+
+func (f *fakeRepository) Delete(_ context.Context, id ID) error {
+	f.deleted = id
+	return f.err
+}
+
+func newTestService(repo Repository) *Service {
+	return NewService(repo, slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func TestCreateRejectsInvalidInput(t *testing.T) {
+	tests := map[string]CreateInput{
+		"empty name":     {Name: ""},
+		"blank name":     {Name: "   "},
+		"name too long":  {Name: strings.Repeat("x", 201)},
+		"control chars":  {Name: "bad\x00name"},
+	}
+
+	for name, in := range tests {
+		t.Run(name, func(t *testing.T) {
+			repo := &fakeRepository{}
+			_, err := newTestService(repo).Create(context.Background(), in)
+
+			if !apperr.Is(err, apperr.KindInvalidArgument) {
+				t.Fatalf("got %v, want an invalid-argument error", err)
+			}
+			// The important half: nothing reached the repository. A service
+			// that validates after writing has not validated anything.
+			if repo.created.Name != "" {
+				t.Errorf("the repository was called with %+v despite invalid input", repo.created)
+			}
+		})
+	}
+}
+
+func TestCreateAssignsAnIdentity(t *testing.T) {
+	repo := &fakeRepository{}
+
+	created, err := newTestService(repo).Create(context.Background(), CreateInput{Name: "a __PKG__"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.ID.IsZero() {
+		t.Error("the entity reached the repository without an ID; it must have its identity before it is stored")
+	}
+	if repo.created.ID != created.ID {
+		t.Errorf("returned ID %s, stored ID %s", created.ID, repo.created.ID)
+	}
+}
+
+func TestListClampsThePageSize(t *testing.T) {
+	repo := &fakeRepository{total: 3}
+	svc := newTestService(repo)
+
+	if _, err := svc.List(context.Background(), 0, 10_000); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if repo.lastLim != MaxPageSize {
+		t.Errorf("limit %d, want it clamped to %d", repo.lastLim, MaxPageSize)
+	}
+	if repo.lastOff != 0 {
+		t.Errorf("offset %d, want page 0 treated as the first page", repo.lastOff)
+	}
+}
+
+func TestListRefusesAnOffsetBeyondTheBound(t *testing.T) {
+	_, err := newTestService(&fakeRepository{}).List(context.Background(), 1<<30, MaxPageSize)
+	if !apperr.Is(err, apperr.KindInvalidArgument) {
+		t.Fatalf("got %v, want an invalid-argument error", err)
+	}
+}
+
+func TestUpdateRejectsAnEmptyPatch(t *testing.T) {
+	repo := &fakeRepository{}
+
+	_, err := newTestService(repo).Update(context.Background(), NewID(), Patch{})
+	if !apperr.Is(err, apperr.KindInvalidArgument) {
+		t.Fatalf("got %v, want an invalid-argument error", err)
+	}
+	if repo.patched.Name != nil {
+		t.Error("the repository was asked to apply an empty patch")
+	}
+}
+
+func TestRepositoryErrorsReachTheCaller(t *testing.T) {
+	sentinel := errors.New("database is down")
+	repo := &fakeRepository{err: sentinel}
+
+	_, err := newTestService(repo).Create(context.Background(), CreateInput{Name: "valid"})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("got %v, want it to wrap %v", err, sentinel)
+	}
+}

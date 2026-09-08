@@ -1,0 +1,754 @@
+openapi: 3.1.0
+
+info:
+  title: Go Enterprise Scaffold API
+  version: 1.0.0
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  description: |
+    Conventions that apply to every endpoint:
+
+    - Successful responses carry the resource directly, with no envelope. The
+      HTTP status code is the envelope (ADR-0004).
+    - Failures always use the same wrapper, so a client has one predictable
+      place to look when something goes wrong.
+    - Updates use PATCH. There is no PUT for resources, because a full
+      replacement makes every omitted field a deletion.
+    - Rate limit state is advertised on every response through `X-RateLimit-*`,
+      except on the login endpoint. There, the headers are stripped: exposing a
+      remaining count next to a refused login is both a progress meter for an
+      attacker and a contradiction for everyone else. Login carries only
+      `Retry-After`.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: auth
+    description: Obtaining, rotating and revoking tokens.
+  - name: users
+    description: User records.
+  - name: system
+    description: Probes used by the orchestrator, outside the versioned API.
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [system]
+      summary: Liveness and version information
+      description: |
+        Always answers 200 while the process is running. It is deliberately
+        weaker than /ready: a health endpoint that checks dependencies causes
+        the orchestrator to restart a healthy pod when a database is slow.
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /live:
+    get:
+      operationId: getLiveness
+      tags: [system]
+      summary: Liveness probe
+      description: |
+        Reports whether the process should be restarted. It never checks a
+        dependency, because restarting a pod does not fix someone else's
+        database.
+      security: []
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /ready:
+    get:
+      operationId: getReadiness
+      tags: [system]
+      summary: Readiness probe
+      description: |
+        Reports whether this instance should receive traffic. It checks required
+        dependencies and returns 503 while the process is draining, which is
+        what lets a load balancer stop sending requests before the socket
+        closes.
+      security: []
+      responses:
+        "200":
+          description: Ready to serve.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessStatus"
+        "503":
+          description: Not ready, or draining.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessStatus"
+
+  /api/v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Exchange credentials for a token pair
+      description: |
+        Every failure — unknown address, wrong password, disabled account —
+        returns the same 401 with the same code and message, and takes the same
+        amount of time. Any difference between them would turn this endpoint
+        into an account enumeration oracle.
+
+        This endpoint is limited by client address and by a hash of the supplied
+        email. Both limits must pass. When the limiter's backend is unavailable
+        the endpoint fails closed with 503 rather than accepting unlimited
+        attempts.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated.
+          headers:
+            Cache-Control:
+              description: Always `no-store`; tokens must not be cached.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: The credentials were not accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  code: INVALID_CREDENTIALS
+                  message: invalid email or password
+                request_id: 01930f8e-0000-7000-8000-000000000001
+        "429":
+          $ref: "#/components/responses/RateLimitedLogin"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/auth/refresh:
+    post:
+      operationId: refreshToken
+      tags: [auth]
+      summary: Rotate a refresh token
+      description: |
+        Returns a new pair and invalidates the presented token. Presenting a
+        token that has already been rotated is treated as evidence that a copy
+        exists, and revokes every session descended from the same login — the
+        legitimate client included.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: Rotated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenPair"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: The token was invalid, expired, revoked or replayed. The
+            response does not distinguish between these.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Revoke a session family
+      description: |
+        Revokes the presented token and everything rotated from it, which is
+        what "log this device out" means.
+
+        Answers 204 whether or not the token existed. Reporting "no such
+        session" would let an unauthenticated caller probe which tokens are
+        live.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LogoutRequest"
+      responses:
+        "204":
+          description: The session family is revoked, or never existed.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/users:
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: Create a user
+      description: Requires `user:create`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: Created.
+          headers:
+            Location:
+              description: The URL of the new user.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The email address is already registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: List users
+      description: |
+        Requires `user:list`; there is no self-service variant, because listing
+        is inherently an administrative capability.
+
+        Results are ordered by `created_at` descending with `id` as a
+        tiebreaker. The tiebreaker is not cosmetic: without it, rows created in
+        the same instant come back in arbitrary order and a client paging
+        through them sees duplicates and gaps.
+      parameters:
+        - name: page
+          in: query
+          description: One-based page number. Out-of-range values are clamped.
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          description: |
+            Rows per page. Values above the maximum are clamped rather than
+            rejected: asking for a thousand rows is reasonable, serving them is
+            not.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: A page of users.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/users/{id}:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+
+    get:
+      tags: [users]
+      operationId: getUser
+      summary: Fetch a user
+      description: |
+        Allowed for the record's owner, or for a caller holding `user:read`.
+        Ownership is checked in the service rather than in middleware, because
+        the owner is only known once the target is known.
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    patch:
+      tags: [users]
+      operationId: updateUser
+      summary: Update a user
+      description: |
+        Omitted fields are left unchanged.
+
+        `name` may be changed by the owner. `role` and `status` may not: they
+        decide what the account can do, so changing them requires `user:update`
+        regardless of ownership. Without that split, every account would be one
+        request away from being an administrator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: The updated user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: Delete a user
+      description: |
+        Requires `user:delete`. Ownership is not sufficient: self-deletion is
+        irreversible and has not been specified as a product behaviour.
+      responses:
+        "204":
+          description: Deleted.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api/v1/users/{id}/password:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+
+    put:
+      tags: [users]
+      operationId: changeUserPassword
+      summary: Replace a user's password
+      description: |
+        Allowed for the owner, or for a caller holding `user:update`.
+
+        It is a separate endpoint rather than a field on PATCH so that the
+        plaintext never travels alongside ordinary attributes, where a logged
+        request body would expose it.
+
+        PUT rather than PATCH because the password is replaced wholesale; there
+        is no partial form of it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "204":
+          description: The password was changed.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        A short-lived access token from `/api/v1/auth/login`. It carries the
+        subject and role but no personal data, because a JWT is signed rather
+        than encrypted and its payload is readable by anyone holding it.
+
+  parameters:
+    UserID:
+      name: id
+      in: path
+      required: true
+      description: The user's UUID.
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    User:
+      type: object
+      description: |
+        The public view of a user. The stored password hash is not part of this
+        schema and has no representation in the API.
+      required: [id, email, name, status, role, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, disabled]
+          description: |
+            Disabled accounts cannot authenticate. Disabling is preferred to
+            deletion because it is reversible.
+        role:
+          type: string
+          enum: [admin, user]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UserPage:
+      type: object
+      required: [items, page_info]
+      properties:
+        items:
+          type: array
+          description: Always an array; an empty page is `[]`, never `null`.
+          items:
+            $ref: "#/components/schemas/User"
+        page_info:
+          $ref: "#/components/schemas/PageInfo"
+
+    PageInfo:
+      type: object
+      required: [page, page_size, total, total_pages]
+      properties:
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total:
+          type: integer
+          format: int64
+        total_pages:
+          type: integer
+
+    CreateUserRequest:
+      type: object
+      required: [email, name, password]
+      properties:
+        email:
+          type: string
+          format: email
+          description: Normalised to lower case before storage.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+          description: |
+            Length is the only rule. Character-class requirements push people
+            toward predictable substitutions that add little entropy, while the
+            upper bound exists because the hash function processes the whole
+            input.
+        role:
+          type: string
+          enum: [admin, user]
+          default: user
+          description: |
+            Optional. Defaults to the least privileged value, so a forgotten
+            field cannot create an administrator.
+
+    UpdateUserRequest:
+      type: object
+      minProperties: 1
+      description: |
+        At least one field must be present. A patch that changes nothing is a
+        client bug, and answering 200 would hide it.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        status:
+          type: string
+          enum: [active, disabled]
+        role:
+          type: string
+          enum: [admin, user]
+
+    ChangePasswordRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+          minLength: 12
+          maxLength: 128
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    LogoutRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+          description: A JWT valid for `expires_in` seconds.
+        refresh_token:
+          type: string
+          description: |
+            An opaque high-entropy string. Only its SHA-256 digest is stored, so
+            a database leak does not yield usable tokens. It is invalidated by
+            the next successful refresh.
+        token_type:
+          type: string
+          enum: [Bearer]
+        expires_in:
+          type: integer
+          description: |
+            Access token lifetime in seconds, so a client can schedule renewal
+            without parsing the token.
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                A stable machine-readable identifier. Clients should branch on
+                this rather than on the message, which is prose and may change.
+            message:
+              type: string
+              description: Safe to display; never contains internal detail.
+            details:
+              type: array
+              description: Field-level reasons, present on validation failures.
+              items:
+                type: object
+                required: [field, reason]
+                properties:
+                  field:
+                    type: string
+                  reason:
+                    type: string
+        request_id:
+          type: string
+          description: |
+            The only link between what the client saw and what operators can
+            look up. Internal errors return nothing else.
+
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+        version:
+          type: string
+        commit:
+          type: string
+          description: |
+            The git SHA this binary was built from, injected at link time.
+            `unknown` in a binary that was not built through the Makefile or
+            the Dockerfile. It identifies a build unambiguously where `version`
+            cannot: the version does not move between development builds.
+
+    ReadinessStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+        version:
+          type: string
+        commit:
+          type: string
+          description: The git SHA this binary was built from. See HealthStatus.
+        components:
+          type: object
+          additionalProperties:
+            type: string
+
+  responses:
+    BadRequest:
+      description: The request could not be accepted as sent.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Unauthorized:
+      description: |
+        No usable credential was presented. The response never says why a token
+        was rejected: distinguishing "expired" from "forged" is useful only to
+        someone forging them.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Forbidden:
+      description: |
+        The caller is authenticated but not permitted. The response does not
+        name the missing permission.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    RateLimited:
+      description: The caller exceeded its quota.
+      headers:
+        Retry-After:
+          description: Seconds until one more request would be accepted.
+          schema:
+            type: integer
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+        X-RateLimit-Reset:
+          description: Unix timestamp at which the bucket is full again.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    RateLimitedLogin:
+      description: |
+        Too many login attempts. Unlike other endpoints this response carries
+        only `Retry-After`: the remaining-attempts headers would give an
+        attacker a precise counter.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    Unavailable:
+      description: |
+        A dependency the endpoint cannot proceed without is unavailable. On the
+        login path this is deliberate: the rate limiter fails closed there,
+        because accepting unlimited attempts while blind would remove
+        brute-force protection exactly when it cannot be observed.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+security:
+  - bearerAuth: []

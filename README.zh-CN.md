@@ -66,7 +66,7 @@ import `net/http`、`chi`、`pgx`、`go-redis`、`nats.go`、`otel`。理由不�
 | 4 | 消息 —— outbox、NATS JetStream、幂等、DLQ | ✅ 完成 |
 | 5 | 可观测性 —— trace、metrics、日志关联、Grafana 栈 | ✅ 完成 |
 | 6 | Dockerfile、CI、Kubernetes manifests | ✅ 完成 |
-| 7 | `goscaffold` CLI | ◻︎ 未开始 |
+| 7 | `goscaffold` CLI | ✅ 完成 |
 | 8 | 文档与终审 | ◻︎ 进行中 |
 
 **部署前必读**：manifests 是**校验过的，不是跑过的**。它们背后还没有任何集群
@@ -150,8 +150,10 @@ api/
   bruno/               24 个请求的调试集合（不是测试套件）
 migrations/            golang-migrate 的 up / down SQL
 queries/               sqlc 的源查询
+cmd/goscaffold/        CLI：new、module、migration
+internal/scaffold/     生成器，以及它内嵌的模板
 Dockerfile             三个 target：api、worker、migrate
-.github/workflows/     CI 门禁与镜像发布
+.github/workflows/     CI 门禁、镜像发布、生成项目校验
 deployments/
   observability/       OTel Collector、Prometheus、Tempo、Grafana 及面板守卫测试
   k8s/                 Kustomize base + 四个 overlay，带守卫测试
@@ -373,6 +375,65 @@ make openapi-lint                  # 需要 npx；刻意不纳入 make check
 数据库错误到 `apperr` 的翻译**只能出现在 `*pg` 包**。如果 service 层看起来需要
 判断驱动的错误码，说明下一层漏了一次翻译：改仓储，不要改 service。
 
+## goscaffold CLI
+
+```sh
+make scaffold      # 安装到 GOPATH/bin
+
+goscaffold new billing --module github.com/acme/billing
+cd billing
+goscaffold module invoice
+goscaffold migration create_invoices
+```
+
+| 命令 | 写出什么 |
+|---|---|
+| `new <name> --module <path>` | 整套脚手架，module 路径与服务名全文替换 |
+| `module <name>` | 领域、service 与端口、HTTP 适配器、PostgreSQL 桩、测试——ADR-0002 的三包结构 |
+| `migration <name>` | 一对 up/down，版本号不会撞车 |
+| `version` | 构建信息 |
+
+`--dry-run` 只列出将写入哪些文件，不落盘。`--output` 与 `--dir` 指定位置。
+
+### 绝不覆盖已有文件
+
+每个命令先构建完整的文件集合，逐个与磁盘核对，然后才写——而且用 `O_EXCL`，
+让文件系统而不是先前那次检查来做最终裁决。只要有一个文件挡路，它会列出全部
+冲突并且**一个字节都不写**。边走边写的生成器一旦中途停下，留下的目录既不是
+旧状态也不是新状态，那是唯一无法靠重跑恢复的结果。
+
+**没有 `--force`。** 加它只需要一个条件判断，但这个命令通常指向一个别人已经
+投入过工作的目录。
+
+### 模板漂移是怎么解决的
+
+这是任何脚手架 CLI 的真问题，这里的答案是：**代码只有一份**。
+
+`internal/scaffold/templates/project/` 不是手工维护的，它是本仓库的**派生
+副本**，由 `make templates` 生成、由 `TestProjectTemplatesMatchTheRepository`
+守着。改了 `internal/httpx/router.go` 却没重新生成，`make check` 就会失败并
+点名那个文件。这与 `make sqlc-check` 是同一个机制，只是对准了另一种生成物
+——并经三种变异验证：改动源文件、模板缺失、源文件已删而模板残留。
+
+模块模板是例外，它无法从任何东西派生：它描述的是一个还不存在的模块。守住它的
+是 `Scaffold` workflow——生成项目、在里面生成模块、编译并测试结果。如果对
+`apperr` 或 `httpx` 的改动破坏了模板所假设的形状，那个 job 就会变红。
+
+生成的 Go 代码在写盘前都过一遍 `go/format`，所以按 `__TYPE__` 宽度对齐的模板
+不会产出围绕 `Order` 错位的代码；而不是合法 Go 的模板会在**生成时**就失败，
+而不是拖到 `go build`。
+
+### 刻意不做的事
+
+- **没有 `--with-redis` / `--with-observability` 开关。** Redis 是限流的硬依赖（ADR-0008），`internal/telemetry` 穿在每个构造函数上（ADR-0010）；去掉任何一个的开关都会产出编译不过的项目。
+- **没有 `--with-messaging` 开关。** ADR-0009 已经在运行期把消息设为默认关闭：`MESSAGING_ENABLED=false` 时没有 outbox 行、不需要 broker、不需要 worker。这个开关只能删掉一些本来就不花代价的文件。
+- **没有配置文件，没有插件系统。** 四个命令三个 flag 不需要 `.goscaffold.yaml`；而一个能改变 `new` 产物的配置文件，会把模板机制刚消灭掉的漂移重新引进来。换模板来源的扩展点是 `readTemplateTree`，就一个函数。
+- **它绝不修改已有文件**，所以把新模块接进 `cmd/api/features.go`、在 `internal/auth/policy.go` 注册权限、加进 depguard 规则、在 `api/openapi.yaml` 里补文档，都还是你的事。命令结束时会把清单打出来。
+
+生成的端点在你注册权限之前一律返回 **403**。策略表是权限的唯一来源，没登记的
+权限永远不会被授予——所以一个生成出来的端点，在没人决定"谁可以访问"之前是
+不可达的。
+
 ## 部署
 
 ### 镜像
@@ -506,6 +567,7 @@ lint）、`test`（build、`go test -race`、govulncheck）、`integration`
 | 优雅关停（SIGTERM → 排空 → 退出） | ✅ `/ready` 报 `draining` 约 5 秒，退出码 0 |
 | 四个 overlay 的 `kubectl kustomize` | ✅ 均可渲染 |
 | manifests 对 Kubernetes 1.33 schema 校验 | ✅ `kubeconform -strict`，0 invalid |
+| 生成项目的 build / vet / test / gofmt | ✅ 24 个包通过，0 个未格式化 |
 | 两个 workflow 的 `actionlint` | ✅ 无问题（带 shellcheck，与 CI 一致） |
 | 守卫测试的变异验证 | ✅ 5 个变异，全部被抓 |
 | 两个 workflow 在 GitHub Runner 上 | ✅ 全绿——CI 与 Docker，第三次尝试 |
@@ -524,7 +586,6 @@ strict 模式（拒绝未知字段）——正是大家想用 dry run 抓的那�
 
 明确写出来，因为一个夸大自身就绪度的脚手架，比一个少给了东西的脚手架更糟。
 
-- **没有 `goscaffold` CLI。** 属于 Phase 7。
 - **没有任何东西在真实集群上跑过。** manifests 能渲染、能通过 schema 校验，但从未被 apply。见[验证状态](#验证状态)。
 - **没有 NetworkPolicy、ServiceMonitor、PrometheusRule。** 告警与 SLO 在 Phase 6 范围之外；而没有 CNI 真正执行的 NetworkPolicy 只是装饰。
 - **没有镜像扫描。** `govulncheck` 已覆盖 Go 依赖；在几乎没有 OS 包的 distroless 镜像上，再加一个扫描器的增量价值很低。

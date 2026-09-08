@@ -1113,3 +1113,187 @@ Phase 7 必须注意:
    明确接受漂移并写进文档。
 3. §7.5 的「绝对禁止覆盖已有文件」是硬约束。第一版可以不做 `--force`,
    但不能默认覆盖。
+
+---
+
+# Phase 7 — Scaffold CLI（2026-09-09）
+
+## CLI Commands
+
+`cmd/goscaffold`,四个命令,标准库 `flag`。
+
+```text
+goscaffold new <name> --module <path> [--output <dir>] [--dry-run]
+goscaffold module <name>              [--dir <project>] [--dry-run]
+goscaffold migration <name>           [--dir <project>] [--dry-run]
+goscaffold version
+```
+
+**§7.8 的框架选择:标准库 `flag`。** Cobra 与 urfave/cli 买到的是补全、嵌套
+子命令和生成的帮助文本。本程序四个命令、没有嵌套、帮助文本一屏放得下,所以
+唯一的收益是生成帮助,代价是一棵比这个二进制本身还大的依赖树。与 ADR-0001
+否决 Viper 同一条理由。复审触发条件:某个命令长出自己的子命令,或补全成为
+真实需求而不是好主意。
+
+## Template Architecture
+
+```text
+internal/scaffold/
+  names.go        标识符的五种形态,单一来源
+  plan.go         两阶段写入:先建计划,再落盘
+  project.go      清单 + new 的生成
+  module.go       module 的生成
+  migration.go    migration 的生成
+  templates.go    embed + Sync
+  templates/
+    project/      221 个文件,本仓库的派生副本,勿手改
+    module/       7 个手写模板
+    newproject/   生成项目自己的 README
+  gentemplates/   make templates 调用的写入端
+```
+
+模板文件一律加 `.tmpl` 后缀。**这个后缀是承重的**:没有它,内嵌的每个 `.go`
+都会被当作本模块的一部分编译,每个 `_test.go` 都会作为整个项目的第二份冲突
+副本运行。有 `TestEveryTemplateHasTheSuffix` 守着。
+
+`//go:embed all:templates` 的 `all:` 前缀同样承重:没有它,embed 会跳过所有
+以点开头的路径,于是 `.github`、`.golangci.yml`、`.env.example`、`.gitignore`
+会从每个生成的项目里静默消失。
+
+## Template Drift Solution（§7.12）
+
+**代码只有一份。** `templates/project/` 不是手工维护的第二套代码,而是本仓库
+的派生副本,由 `make templates` 生成,由 `TestProjectTemplatesMatchTheRepository`
+守住。改了源文件却没重新生成 → `make check` 失败并点名文件。
+
+这与 `make sqlc-check` 是同一个机制,只是对准了另一种生成物。**经三个变异
+验证**:
+
+| 变异 | 测试输出 |
+|---|---|
+| 改 `internal/apperr/apperr.go` 不重新生成 | 点名 `internal/apperr/apperr.go.tmpl`,并提示 `make templates` |
+| 删掉 `Makefile.tmpl` | "not embedded at all: Makefile.tmpl" |
+| 留下一个源文件已不存在的模板 | "embedded but no longer in the repository: GHOST.tmpl" |
+
+**模块模板是例外,它无法派生**——它描述的是一个还不存在的模块。守住它的是
+`.github/workflows/scaffold.yml`:生成项目 → 在其中生成模块 → 编译 + vet +
+test。`apperr` 或 `httpx` 的改动若破坏了模板假设的形状,这个 job 会红。
+
+`scaffold.yml` 单独成文件而不是 `ci.yml` 的一个 job,因为 **`ci.yml` 会被
+复制进每个生成的项目**,而生成的项目没有 `cmd/goscaffold`。它已加入
+`projectExcludes`。
+
+## Safety Mechanisms（§7.5）
+
+两阶段:先构建完整的 `Plan`,核对全部路径,再落盘,且用 `O_EXCL` 让文件系统
+做最终裁决(先检查后写入之间有竞态,只有 `O_EXCL` 不可被绕过)。任一文件挡路
+则**一个字节都不写**,并列出全部冲突而不是遇到第一个就停。
+
+边走边写的生成器一旦中途停下,留下的目录既不是旧状态也不是新状态——那是唯一
+无法靠重跑恢复的结果。
+
+**没有实现 `--force`**(§7.5 允许第一版不做)。扩展点就是 `Plan.Write` 里那
+一处冲突检查,它下面的代码不读取任何已有状态。
+
+`--dry-run` 与真实运行**走同一条构建路径**,只在最后分叉,所以它不可能与真实
+行为脱节。
+
+## Generation Examples
+
+`goscaffold module order` 产出 7 个文件,三包结构:
+
+```text
+internal/order/order.go              ID / 实体 / CreateInput / Patch / Page
+internal/order/service.go            Repository 端口 + Service
+internal/order/service_test.go       手写 fake,6 个测试
+internal/order/orderhttp/dto.go      请求/响应类型,与实体分离
+internal/order/orderhttp/handler.go  5 个端点 + 权限常量
+internal/order/orderhttp/handler_test.go  6 个测试
+internal/order/orderpg/repository.go 编译得过的桩,方法返回 NOT_IMPLEMENTED
+```
+
+**生成的端点在权限注册前一律 403。** 模板用 `auth.Permission("order:create")`
+这样的常量,而策略表是权限的唯一来源、没登记的永远不授予——于是新端点在有人
+决定"谁可以访问"之前是不可达的。这是刻意的 fail-closed,不是遗漏。
+
+**pg 仓储是桩,也是刻意的。** 为一张还不存在的表生成 SQL,产出的是没人读过
+的生成 SQL——而那正是压测时才发现写错了的那种代码。桩返回 `apperr.Internal`
+而不是零值:静默返回零值会让 service、handler 及其测试全绿,而功能什么也不做。
+
+## Tests / Generated Project Verification
+
+- `internal/scaffold`:名称转换(含 `city→cities`、`box→boxes`、`holiday→holidays`、`address→addresses`)、拒绝歧义输入、迁移版本、冲突拒绝、dry-run 不落盘、三包结构、依赖方向
+- `cmd/goscaffold`:参数解析两种顺序、dry-run、冲突退出码、next steps 内容、非法名字
+- **全部在 `t.TempDir()` 中运行**(§7.13)
+
+**§7.14 生成项目验证**(本机实跑,并已作为 CI job):
+
+```text
+goscaffold new demo --module github.com/example/demo
+goscaffold module order
+goscaffold migration create_orders
+→ gofmt -l . 输出 0 行 / go vet 干净 / go build 通过 / go test 24 个包全绿
+```
+
+生成的 Go 在写盘前过一遍 `go/format`。原因是替换会改变标识符宽度:按
+`__TYPE__` 对齐的模板产出围绕 `Order` 就错位,生成的项目第一次跑自己的
+`make check` 就会挂。顺带的好处是,不是合法 Go 的模板在**生成时**就报错。
+
+## 与 Phase 7 要求的偏差
+
+1. **§7.6 迁移版本改用固定 17 位毫秒时间戳**,而不是"秒级 + 冲突时提高精度"。
+   后者会静默破坏顺序:17 位的版本号大于所有 14 位的,所以今天为避开冲突而
+   加精度的文件,会排在下周才写的迁移之后。宽度必须恒定,版本号才能永远当整数
+   比较。已有的 `000001`–`000004` 保持不变(它们更小,顺序正确);
+   `make migrate-create` 已改为调用 goscaffold,`-seq` 不再可达。
+
+2. **`--with-redis` / `--with-messaging` / `--with-observability` 三个开关
+   都没做**(§7.3 称其为"可选开关",且明说"不要第一版就做十几个开关")。
+   理由逐条:Redis 是限流的硬依赖(ADR-0008);telemetry 穿在每个构造函数上
+   (ADR-0010),去掉会编译不过;而 messaging **ADR-0009 已经在运行期做成默认
+   关闭**——开关只能删掉一些本来就不花代价的文件。
+
+3. **§7.10 配置文件、§7.11 插件系统均未实现**,与 prompt 的"如果第一版没有
+   必要就不要实现"/"只设计扩展点"一致。换模板来源的扩展点是
+   `readTemplateTree`,一个函数。
+
+## 本阶段做的超范围的事
+
+1. **`Plan.Add` 对 `.go` 内容调用 `go/format`。** §7 未要求。不做的话生成的
+   项目自带两个未格式化文件,第一次 `make check` 就红。
+2. **`make migrate-create` 改为调用 goscaffold。** §7.6 只要求 CLI 有这个
+   命令。不改的话仓库里有两条产出不同命名的路径,而两者的差异只会在合并时
+   才显现。
+3. **`make scaffold` / `make templates` 两个目标。** 后者是漂移机制的写入端,
+   没有它,测试只会说"过期了"却不给出修复方式。
+
+## Known Limitations（Phase 7 新增）
+
+| 妥协 | 理由 |
+|------|------|
+| `new` 本质上是"带替换的整仓库复制" | §7.3 定义的职责就是"创建目录/复制模板/替换 module 与服务名"。真正的差异化在于替换的正确性有测试守着,以及副本不会漂移 |
+| 生成的项目仍带 `docs/adr/` 与 `docs/architecture.md` | 设计理由是这套脚手架的主要资产。代价是新项目继承了一份写着别人项目名的历史文档 |
+| 复数规则只覆盖三条英语规则 | `person→persons` 是错的。失败可见且改个名就好;引入 inflection 库要付一个依赖和一张词表,而它的失败模式是没人预料到的复数 |
+| 文件权限一律 0644,不保留可执行位 | 当前清单里没有需要可执行位的文件。若将来加入 `scripts/*.sh`,需要扩展 `File.Mode` 的填充 |
+| 模块模板的 pg 仓储是桩 | 见上文。使用者必须补 migration、queries、`make sqlc` 才有真实实现 |
+| 模板替换是纯文本 | 若某个项目名恰好是 Go 关键字或与依赖包同名,替换后可能编译不过。`ProjectOptions.Validate` 只检查了字符集,没检查这一点 |
+
+## Next Phase Entry Conditions
+
+Phase 8 (文档与终审) 开始前已成立:
+
+- [x] `make check` 与 `make test-integration` 全绿
+- [x] `goscaffold new/module/migration` 产出的项目 build / vet / test / gofmt 全过
+- [x] 模板漂移由测试强制,并经三个变异验证
+- [x] 生成器绝不覆盖已有文件,且有测试
+- [x] 生成项目验证已进 CI(`scaffold.yml`)
+
+Phase 8 必须注意:
+
+1. **README 已经写了三轮**(Phase 6 的部署章节、Phase 7 的 CLI 章节)。
+   §8.1 要求的章节清单需要与现有内容对照,补缺而不是重写。
+2. **§8.4 要求做一次 drift 检查**。路由与 spec 的双向一致已经是自动强制的
+   (`cmd/api/openapi_test.go`),该条应聚焦在**请求体** schema——那是目前
+   唯一没有自动校验的一侧,已列在 Known Limitations 里。
+3. **`docs/development.md` 与 `docs/deployment.md` 尚不存在**,而 README 里
+   已有相当一部分对应内容。要决定的是拆分还是链接,不要两处各写一份。

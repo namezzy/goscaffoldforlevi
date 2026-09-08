@@ -1,0 +1,38 @@
+# What a voluntary disruption — a node drain, a cluster upgrade — is allowed to
+# take away. Without this, draining a node can remove every replica at once,
+# because the eviction API has no other way to know what the service needs.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: goscaffold-api
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+    app.kubernetes.io/component: api
+spec:
+  # minAvailable rather than maxUnavailable: the guarantee should be expressed
+  # in terms of what must keep serving, so that it stays correct when the
+  # replica count changes. Two is the floor at which one more failure is still
+  # survivable.
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goscaffoldforlevi
+      app.kubernetes.io/component: api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: goscaffold-worker
+  labels:
+    app.kubernetes.io/name: goscaffoldforlevi
+    app.kubernetes.io/component: worker
+spec:
+  # The worker runs a single replica by default, so minAvailable: 1 would block
+  # node drains indefinitely. maxUnavailable: 1 permits the eviction and accepts
+  # a short gap: messages are durable in JetStream and the outbox, so a pause
+  # delays delivery rather than losing it.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: goscaffoldforlevi
+      app.kubernetes.io/component: worker
