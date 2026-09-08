@@ -118,6 +118,15 @@ lint: ## Run golangci-lint
 vuln: ## Check dependencies for known vulnerabilities
 	$(GOBIN)/govulncheck ./...
 
+.PHONY: actionlint
+actionlint: ## Lint the GitHub Actions workflows
+	@# The CI runner has shellcheck installed, and actionlint uses it to check
+	@# every `run:` block. A machine without shellcheck runs a weaker check and
+	@# will pass workflows that CI rejects, so the absence is reported rather
+	@# than ignored.
+	@command -v shellcheck >/dev/null 2>&1 || echo "note: shellcheck not found; run: blocks will not be checked (CI does check them)"
+	$(GOBIN)/actionlint
+
 .PHONY: openapi-lint
 openapi-lint: ## Validate api/openapi.yaml (requires npx)
 	@command -v npx >/dev/null 2>&1 \

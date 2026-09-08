@@ -68,7 +68,7 @@ jobs:
 
       - name: sqlc diff
         run: |
-          go install github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION}
+          go install "github.com/sqlc-dev/sqlc/cmd/sqlc@${SQLC_VERSION}"
           sqlc diff
 
       - name: actionlint
