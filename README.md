@@ -544,7 +544,9 @@ Recorded honestly, because "it deploys" is a claim worth being precise about.
 | `actionlint` on both workflows | ✅ clean (with shellcheck, as CI runs it) |
 | Guard test mutation-verified | ✅ 5 mutations, all caught |
 | Both workflows on a GitHub runner | ✅ green — CI and Docker, third attempt |
-| **Deployed to a real cluster** | ⛔ **not done — no cluster available** |
+| Deployed to a real cluster | ✅ two distributions — k3s (3 nodes) and OrbStack — same manifests, no changes |
+| Dependencies outside the cluster, over a real network | ✅ including `sslmode=require` (TLSv1.3) |
+| **A managed cluster** | ⛔ **not done — no Ingress controller, HPA, NetworkPolicy or admission policies exercised** |
 
 `kubectl apply --dry-run=client` could not be used: it downloads the OpenAPI
 schema from a cluster, and there is none. `kubeconform` validates the same

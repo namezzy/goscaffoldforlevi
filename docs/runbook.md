@@ -36,6 +36,14 @@
 `exec format error`。CI 在 amd64 runner 上构建;本地构建请用
 `docker build --platform linux/amd64`。
 
+**本机集群怎么拿到镜像,各发行版不同**:
+
+| 集群 | 做法 |
+|---|---|
+| OrbStack | 与 Docker 共享镜像库,`docker build` 完即可用,`imagePullPolicy: Never` 直接生效 |
+| k3d | 需要额外一步 `k3d image import -c <cluster> <image>...` |
+| kind | `kind load docker-image <image>...` |
+
 ## 1. 准备镜像
 
 CI 会在推 `master` 与 `v*` tag 时自动发布四个镜像:
@@ -208,6 +216,57 @@ curl -X POST http://<host>/api/v1/auth/login \
 ```
 
 登录响应必须带 `Cache-Control: no-store`,且**不带** `X-RateLimit-*` 头。
+
+## 外部依赖的延迟
+
+生产里 PostgreSQL 与 Redis 是外部服务,不在集群内。已实测的量级(千兆局域网
+一跳,应用在集群内、数据库在另一台机器上):
+
+| 端点 | 依赖在集群内 | 依赖在网络另一端 |
+|---|---|---|
+| `/live` | ~1ms | ~2ms |
+| `/ready` | ~2ms | ~13ms(TLS 下 ~20ms) |
+| `GET /users`(两次查询) | ~3ms | ~24ms,冷连接首次 64ms |
+| 四条迁移合计 | ~110ms | ~420ms |
+
+**迁移慢约 8 倍**,这是设置 `kubectl wait --timeout` 时要记住的:集群内几十
+毫秒完成的迁移,跨网络是几百毫秒,而一套几十条迁移的成熟 schema 会把这个差距
+放大到分钟级。本文第 4 步用的 `--timeout=5m` 是按后者留的余量。
+
+`/ready` 的 13ms 对每 5 秒一次的 readinessProbe 毫无压力,但它说明探针确实在
+做真实的网络往返 —— 依赖变慢时,`/ready` 会先于业务请求反映出来。
+
+### sslmode
+
+生产连接串用 `sslmode=require`,已实测可用:服务端确认为 TLSv1.3 /
+TLS_AES_256_GCM_SHA384 / 256 位。切换只需改 Secret 里的连接串,应用侧无需
+任何改动。
+
+## 快速重新部署
+
+依赖(PostgreSQL / Redis / NATS)一旦起好就不必重来,重新部署只需要:
+
+```sh
+# 1. 改了代码 → 重建并分发镜像
+make docker-build
+k3d image import -c <cluster> ghcr.io/<owner>/<project>{,-worker,-migrate,-adminctl}:local   # k3d
+# OrbStack 跳过这一步
+
+# 2. 重跑迁移(Job 的 spec 不可变,必须先删)
+kubectl -n <ns> delete job goscaffold-migrate
+kubectl apply -k deployments/k8s/overlays/local
+kubectl -n <ns> wait --for=condition=complete job/goscaffold-migrate --timeout=5m
+
+# 3. 让应用换上新镜像
+kubectl -n <ns> rollout restart deploy/goscaffold-api deploy/goscaffold-worker
+kubectl -n <ns> rollout status deploy/goscaffold-api
+```
+
+> [!NOTE]
+> `kubectl apply -k` 会用 kustomize 生成的 Secret **覆盖**你手工改过的连接串。
+> 想临时指向外部数据库,顺序必须是:先 apply、再 patch Secret、再删掉并重建
+> 迁移 Job。反过来会静默回退到集群内的地址,而现象只是一句
+> `dial tcp <ClusterIP>:5432: connect: connection refused`。
 
 ## 日常操作
 

@@ -1539,3 +1539,97 @@ runbook 里把它升级成了 WARNING。
 托管集群特有的部分:真实 Ingress 控制器、HPA(需 metrics-server)、
 NetworkPolicy(需支持它的 CNI)、LoadBalancer、真实存储、以及公司集群常见的
 准入控制器(OPA / Kyverno 经常会拒掉一些字段)。
+
+
+---
+
+# 跨发行版与生产拓扑验证（2026-09-10）
+
+在第一次真实集群验证之后追加两轮,各自关掉了一块此前无法验证的区域。
+
+## 一、跨发行版:同一套 manifests 在两个 Kubernetes 上
+
+第二个集群是 Mac 上 OrbStack 内置的 Kubernetes(v1.35.6+orb1,单节点),
+与服务器上的 k3d(k3s v1.35.5,三节点)是**两个不同的发行版**。
+
+**零改动部署成功**——同一份 overlay、同一套 manifests。逐项对照:
+
+| 验证项 | k3s(3 节点) | OrbStack(单节点) |
+|---|---|---|
+| securityContext 六项通过准入 | ✅ | ✅ 完全相同 |
+| 探针不被限流 | 600×200 / 0×429 | 600×200 / 0×429 |
+| 限流仍对 API 生效 | 300 中 98 次 429 | 300 中 99 次 429 |
+| 数据库故障 → NotReady | 10s | 10s |
+| 故障期间 restartCount | 0 | 0 |
+| 恢复自愈 | 10s | 10s |
+| 关停时序 | SIGTERM +5.001s | +5.003s |
+| adminctl 引导(stdin) | ✅ | ✅ |
+| outbox → JetStream → 消费者 | ✅ | ✅ |
+
+时序数字逐位吻合,因为它们由 manifest 的 `periodSeconds` / `failureThreshold`
+与应用自己的 `HTTP_READINESS_DRAIN_DELAY` 决定,**不由发行版决定**。这正是想
+确认的事。
+
+**唯一的发行版差异是镜像分发**:OrbStack 的 k8s 与 Docker 共享镜像库,
+`docker build` 完 `imagePullPolicy: Never` 直接生效;k3d 需要额外一步
+`k3d image import`。差异对本项目无害,已写进 runbook。
+
+## 二、生产拓扑:依赖在集群之外,跨真实网络
+
+此前所有验证里 PostgreSQL 与 Redis 都在同一个集群内一跳可达,而**生产里它们
+是外部托管服务**。这一轮把应用留在服务器的集群里,把 PostgreSQL 与 Redis 放到
+另一台机器(Mac,192.168.1.102),走真实局域网。
+
+**结论:不需要改任何代码或 manifest,只改 Secret 里的连接串。** manifests 用
+`postgres:5432` 这样的 Service 名只是默认值,不是假设。
+
+服务端 `pg_stat_activity` 确认连接确实来自集群一侧,不是本地回环。
+
+| 指标 | 值 |
+|---|---|
+| `/live`(不碰依赖) | ~2ms |
+| `/ready`(PG + Redis 各一次往返) | ~13ms |
+| `GET /users`(两次查询) | ~24ms,冷连接首次 64ms |
+| 迁移耗时 | 172 / 252 / 327 / 420ms |
+| 同一批迁移在集群内 | 6 / 19 / 32 / 52ms |
+
+**迁移慢约 8 倍**,这是真实网络延迟的直接体现。值得记住的是它对
+`kubectl wait --timeout` 的含义:集群内 50ms 完成的迁移,跨网络要几百毫秒,
+而一套几十条迁移的成熟 schema 会把这个差距放大到分钟级。
+
+### `sslmode=require` 首次验证
+
+这一条关掉了文档里一个明确的空白:`deployment.md` 一直让人用
+`sslmode=require`,而此前所有验证都跑在 `sslmode=disable` 上。
+
+在 Mac 上起了一个开启 TLS 的 PostgreSQL(自签证书),把连接串改为
+`sslmode=require`。迁移与全部业务链路正常,服务端 `pg_stat_ssl` 确认:
+
+```text
+ssl     = t
+version = TLSv1.3
+cipher  = TLS_AES_256_GCM_SHA384
+bits    = 256
+```
+
+TLS 下 `/ready` 约 20ms,明文约 13ms。
+
+## 过程中的一个错误
+
+在服务器上执行 `docker compose up -d` **之前没有先看那台机器上跑着什么**。
+它实际运行着 26 个容器,包括 Vaultwarden 密码管理器与多个 `buzz-prod-*`
+生产服务,部分已运行数周。那条命令试图占用 5432 与 6379,两个端口都被真实
+服务占用——**绑定冲突让它安全失败,但那是运气,不是谨慎**。
+
+发现后改变了方向:把数据库放到 Mac 一侧,**服务器不新增任何监听端口**。
+失败留下的两个 Created 容器、一个网络、一个卷均已清理,原有服务全程未受影响。
+
+教训可推广:**在别人的机器上发布端口之前,先列出已经在跑什么。** 端口冲突
+是少数会安全失败的错误之一,不能指望下一次还这么走运。
+
+## 仍未覆盖
+
+托管集群特有的部分,没有真实托管集群就做不了:真实 Ingress 控制器、
+HPA(需 metrics-server)、NetworkPolicy(需支持它的 CNI)、LoadBalancer、
+真实存储(StatefulSet + PVC),以及公司集群常见的准入控制器
+(OPA / Kyverno 经常会拒掉一些字段)。

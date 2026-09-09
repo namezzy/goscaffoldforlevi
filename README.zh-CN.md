@@ -496,7 +496,9 @@ initContainer 每 Pod 跑一次,三副本发布会把同一份 DDL 并发执行�
 | 两个 workflow 的 `actionlint` | ✅ 无问题（带 shellcheck，与 CI 一致） |
 | 守卫测试的变异验证 | ✅ 5 个变异，全部被抓 |
 | 两个 workflow 在 GitHub Runner 上 | ✅ 全绿——CI 与 Docker，第三次尝试 |
-| **在真实集群上部署** | ⛔ **未做——没有可用集群** |
+| 在真实集群上部署 | ✅ 两个发行版——k3s（3 节点）与 OrbStack，同一套 manifests 零改动 |
+| 依赖在集群外、跨真实网络 | ✅ 含 `sslmode=require`（TLSv1.3） |
+| **托管集群** | ⛔ **未做——Ingress 控制器、HPA、NetworkPolicy、准入策略均未验证** |
 
 `kubectl apply --dry-run=client` 用不了：它要从集群下载 OpenAPI schema，而本机
 没有集群。`kubeconform` 用官方发布的 1.33 schema 离线校验同一批 manifest，且开
