@@ -480,135 +480,51 @@ may reach it.
 
 ## Deployment
 
-### Images
+Full procedure, rollback and the pitfalls: **[docs/deployment.md](docs/deployment.md)**.
 
-One Dockerfile, three targets. They share every layer up to the final copy, so
-building all three costs one compilation of the dependency graph.
-
-```sh
-make docker-build                       # api + worker, stamped from git
-docker build --target migrate -t m .    # the migration image
-```
-
-| Target | Base | Size | Contains |
-|---|---|---|---|
-| `api` | `gcr.io/distroless/static:nonroot` | 40.8 MB | the HTTP server |
-| `worker` | `gcr.io/distroless/static:nonroot` | 35.1 MB | the outbox relay and consumer |
-| `migrate` | `migrate/migrate:v4.19.1` | — | the golang-migrate CLI with this repo's SQL baked in |
-
-distroless was chosen because nothing here needs libc — pgx and the Argon2
-implementation are pure Go — so `CGO_ENABLED=0` produces a static binary and
-alpine's musl problems never arise.
-
-> [!IMPORTANT]
-> There is no shell in the final image, so `kubectl exec` does not work. The
-> first person to debug a production pod will conclude the image is broken.
-> Use an ephemeral container instead:
-> `kubectl debug -it <pod> --image=busybox --target=api`.
-
-Version, commit and build time are injected at link time into
-`internal/buildinfo` and surface in three places: the startup log line, every
-`/health` and `/ready` response, and the `APP_VERSION` default. A binary built
-without the flags reports `dev` and `unknown` rather than an empty string,
-because a blank version reads as a broken report rather than an unstamped build.
-
-### Compose profiles
+One Dockerfile, three targets — `api` (40.8 MB) and `worker` (35.1 MB) on
+`gcr.io/distroless/static:nonroot`, plus `migrate`, which is the golang-migrate
+CLI with this repository's SQL baked in so an image tag names exactly the schema
+that commit expects.
 
 ```sh
-docker compose up -d                              # postgres + redis
-docker compose --profile messaging up -d          # + NATS JetStream
-docker compose --profile observability up -d      # + collector, Prometheus, Tempo, Grafana
-docker compose --profile full up -d               # + the api and worker containers
-```
-
-`api` and `worker` sit behind the `full` profile rather than starting by
-default. Running the API from compose turns "edit, restart in a second, attach a
-debugger" into "edit, rebuild an image, recreate a container" — an order of
-magnitude slower, with no debugger. The normal loop stays `make run`.
-
-### Kubernetes
-
-Kustomize, with one base and four overlays. Helm's value is distributing a chart
-to third parties; this is a scaffold you copy, and that layer of Go templating
-buys nothing here.
-
-```sh
-kubectl kustomize deployments/k8s/overlays/production      # render
-kubectl apply -k deployments/k8s/overlays/production       # apply
-```
-
-Order matters, and it is not automated on purpose:
-
-```sh
-# 1. Secrets, out of band. Never in git; secret.example.yaml lists the keys.
-kubectl create secret generic goscaffold-secrets \
-  --from-literal=DATABASE_URL='postgres://...?sslmode=require' \
-  --from-literal=AUTH_JWT_SECRET="$(openssl rand -base64 48)" \
-  --from-literal=REDIS_PASSWORD='...'
-
-# 2. Migrate, and wait for it. A failure here must stop the release.
+make docker-build
 kubectl apply -k deployments/k8s/overlays/production
 kubectl wait --for=condition=complete job/goscaffold-migrate --timeout=5m
-
-# 3. Watch the rollout.
 kubectl rollout status deploy/goscaffold-api
 ```
 
-Migration runs as a Job, never as an initContainer: an initContainer executes
-once per pod, so a three-replica rollout would run the same DDL three times
-concurrently, and again on every restart forever.
+Kustomize, one base and four overlays. Migration runs as a Job, never as an
+initContainer: an initContainer executes once per pod, so a three-replica
+rollout would run the same DDL three times concurrently, and again on every
+restart forever.
 
-Four settings in these manifests are load-bearing and each has a guard test in
-`deployments/k8s/manifests_test.go`, because none of them fail in a way that
+Four settings in those manifests are load-bearing, and each has a guard test in
+`deployments/k8s/manifests_test.go` — because none of them fail in a way that
 points at itself:
 
 | Setting | Why it matters |
 |---|---|
-| `terminationGracePeriodSeconds: 45` | The app's shutdown budget is 30 s. "Just over 30" looks right and fails under load: SIGTERM delivery is not instant, and a thin margin becomes SIGKILL — intermittent 502s during deploys, only in production. |
-| liveness → `/live`, readiness → `/ready` | `/live` never touches the database. If it did, a few seconds of failover would fail every replica at once, kill them together, and have them cold-start into the recovering database — a restart storm the database cannot escape. |
+| `terminationGracePeriodSeconds: 45` | The app's budget is 30 s. "Just over 30" fails under load: SIGTERM delivery is not instant, and a thin margin becomes SIGKILL — intermittent 502s during deploys, only in production. |
+| liveness → `/live` | It never touches the database. If it did, a few seconds of failover would fail every replica at once, kill them together, and have them cold-start into the recovering database. |
 | `METRICS_ADDR: ":9464"` | The application default binds loopback, which inside a pod is reachable by nothing, including Prometheus. It fails by producing no data rather than an error. |
-| `runAsNonRoot` + `readOnlyRootFilesystem` + `drop: [ALL]` + `seccompProfile` | Losing one costs nothing observable. The workload keeps running with more privilege than it needs, and no symptom ever points here. |
+| `runAsNonRoot`, `readOnlyRootFilesystem`, `drop: [ALL]`, `seccompProfile` | Losing one costs nothing observable. The workload keeps running with more privilege than it needs. |
 
-Overlays may only reference immutable image tags (`sha-<commit>` or an exact
-release). A moving tag like `v1` makes the same YAML deploy different code on
-different days, and that drift leaves no trace in git. A test enforces this.
-
-### Configuration in a cluster
-
-Non-sensitive values live in `configmap.yaml`; `DATABASE_URL`,
-`AUTH_JWT_SECRET` and `REDIS_PASSWORD` live in a Secret created out of band.
-The application reads both as ordinary environment variables and does not care
-where they came from, so a secrets operator can replace step 1 without any code
-change.
-
-The base ConfigMap sets `APP_ENV: production` deliberately, so that a missing
-overlay fails safe: the production guards refuse an example JWT secret, a
-wildcard CORS origin, and a metrics listener on a public address.
-
-### Rollback
-
-```sh
-kubectl rollout undo deploy/goscaffold-api        # or --to-revision=N
-```
-
-Schema first, and this is the part that bites: a rollback of the code is not a
-rollback of the database. Every migration in `migrations/` has a `.down.sql`,
-but running it discards whatever the new version wrote. Prefer forward-only
-recovery, and design migrations so the previous release can still run against
-the new schema — add columns before writing them, drop them a release later.
+> [!IMPORTANT]
+> There is no shell in the final image, so `kubectl exec` does not work. Use
+> `kubectl debug -it <pod> --image=busybox --target=api`.
 
 ### CI/CD
 
 `ci.yml` runs on every pull request in three jobs, split by duration so the
 first red X arrives in about a minute: `quality` (gofmt, vet, golangci-lint,
 `sqlc diff`, actionlint, OpenAPI lint), `test` (build, `go test -race`,
-govulncheck), and `integration` (testcontainers). Every command also exists as a
-Makefile target — a check that only runs in CI is a check nobody can reproduce
-before pushing.
+govulncheck), and `integration` (testcontainers). `scaffold.yml` generates a
+project, generates a module inside it, and compiles and tests the result.
+`docker.yml` publishes to `ghcr.io`.
 
-`docker.yml` publishes to `ghcr.io` on pushes to `master` and on `v*` tags,
-tagging `sha-<commit>`, and for releases `v1.2.3`, `v1.2` and `v1`. The moving
-tags exist for a human trying a release by hand; the manifests may not use them.
+Every command also exists as a Makefile target — a check that only runs in CI is
+a check nobody can reproduce before pushing.
 
 ### Verification status
 
@@ -667,10 +583,17 @@ through context, offset pagination under concurrent inserts, and more.
 | [`docs/architecture.md`](docs/architecture.md) | Why the design is shaped this way |
 | [`docs/adr/`](docs/adr/) | Ten decisions, with alternatives and revisit triggers |
 | [`docs/progress.md`](docs/progress.md) | How the repository became what it is, in order |
+| [`docs/development.md`](docs/development.md) | How to add a module, an endpoint, a migration, a query, a dependency |
+| [`docs/deployment.md`](docs/deployment.md) | Images, secrets, migration order, probes, rollback |
+| [`docs/security.md`](docs/security.md) | What is defended, what is not, and the known exposures |
+| [`docs/final-report.md`](docs/final-report.md) | The Phase 8 audit: every gate, its evidence, and what is still unverified |
 | [`api/openapi.yaml`](api/openapi.yaml) | The API contract |
 | [`prompts/`](prompts/README.md) | The phased build contract, including the honesty and scope rules |
 
 Where `STATE.md` and any other document disagree, `STATE.md` wins.
+
+The documents under `docs/` are written in Chinese, as they have been since the
+first architecture phase; this README is the bilingual entry point.
 
 ## License
 

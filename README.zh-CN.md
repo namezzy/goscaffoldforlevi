@@ -436,122 +436,47 @@ goscaffold migration create_invoices
 
 ## 部署
 
-### 镜像
+完整流程、回滚与踩坑清单:**[docs/deployment.md](docs/deployment.md)**。
 
-一份 Dockerfile，三个 target。它们共享到最后一次 COPY 为止的全部层，所以构建
-三个只付一次依赖图的编译成本。
-
-```sh
-make docker-build                       # api + worker，版本信息取自 git
-docker build --target migrate -t m .    # 迁移镜像
-```
-
-| Target | 基础镜像 | 大小 | 内容 |
-|---|---|---|---|
-| `api` | `gcr.io/distroless/static:nonroot` | 40.8 MB | HTTP 服务 |
-| `worker` | `gcr.io/distroless/static:nonroot` | 35.1 MB | outbox relay 与消费者 |
-| `migrate` | `migrate/migrate:v4.19.1` | — | golang-migrate CLI，本仓库的 SQL 已烤进镜像 |
-
-选 distroless 的理由是本项目不需要 libc——pgx 与 Argon2 实现都是纯 Go——所以
-`CGO_ENABLED=0` 能静态编译，alpine 的 musl 兼容问题从一开始就不存在。
-
-> [!IMPORTANT]
-> 最终镜像里没有 shell，`kubectl exec` 进不去。第一个上线排查的人会以为镜像坏了。
-> 改用临时容器：`kubectl debug -it <pod> --image=busybox --target=api`。
-
-版本、commit、构建时间在链接期注入 `internal/buildinfo`，出现在三个地方：启动
-日志、每个 `/health` 与 `/ready` 响应、以及 `APP_VERSION` 的默认值。不带 flag
-构建出的二进制报告 `dev` 与 `unknown` 而不是空字符串——空版本号看起来像报告
-坏了，而不像一个没打戳的构建。
-
-### Compose profile
+一份 Dockerfile 三个 target —— `api`(40.8 MB)与 `worker`(35.1 MB)基于
+`gcr.io/distroless/static:nonroot`,外加 `migrate`:golang-migrate CLI 把本
+仓库的 SQL 烤了进去,所以一个镜像 tag 就确切地指明了那个 commit 期望的 schema。
 
 ```sh
-docker compose up -d                              # postgres + redis
-docker compose --profile messaging up -d          # + NATS JetStream
-docker compose --profile observability up -d      # + collector、Prometheus、Tempo、Grafana
-docker compose --profile full up -d               # + api 与 worker 容器
-```
-
-`api` 与 `worker` 归在 `full` profile 下而不是默认启动。从 compose 里跑 API 会
-把「改代码 → 一秒重启 → 断点可用」变成「改代码 → 重建镜像 → 重建容器」，慢一个
-数量级且丢掉调试器。日常循环仍然是 `make run`。
-
-### Kubernetes
-
-Kustomize，一个 base 加四个 overlay。Helm 的价值在于把 chart 分发给第三方；这是
-一份你直接拷走用的脚手架，那层 Go template 间接性买不到东西。
-
-```sh
-kubectl kustomize deployments/k8s/overlays/production      # 渲染
-kubectl apply -k deployments/k8s/overlays/production       # 应用
-```
-
-顺序是有讲究的，且刻意没有自动化：
-
-```sh
-# 1. Secret 走带外创建。绝不进 git；secret.example.yaml 只列出键名。
-kubectl create secret generic goscaffold-secrets \
-  --from-literal=DATABASE_URL='postgres://...?sslmode=require' \
-  --from-literal=AUTH_JWT_SECRET="$(openssl rand -base64 48)" \
-  --from-literal=REDIS_PASSWORD='...'
-
-# 2. 迁移，并等它完成。这里失败必须阻断发布。
+make docker-build
 kubectl apply -k deployments/k8s/overlays/production
 kubectl wait --for=condition=complete job/goscaffold-migrate --timeout=5m
-
-# 3. 盯住滚动。
 kubectl rollout status deploy/goscaffold-api
 ```
 
-迁移用 Job 而不是 initContainer：initContainer 每个 Pod 跑一次，三副本发布会把
-同一份 DDL 并发执行三遍，而且此后每次重启都再跑一遍，永远如此。
+Kustomize,一个 base 四个 overlay。迁移用 Job 而不是 initContainer:
+initContainer 每 Pod 跑一次,三副本发布会把同一份 DDL 并发执行三遍,而且此后
+每次重启都再跑一遍。
 
-这些 manifest 里有四处是承重的，每一处都有 `deployments/k8s/manifests_test.go`
-守着——因为它们出错时都不会指向自己：
+这些 manifest 里有四处是承重的,每一处都有 `deployments/k8s/manifests_test.go`
+守着 —— 因为它们出错时都不指向自己:
 
 | 设置 | 为什么要紧 |
 |---|---|
-| `terminationGracePeriodSeconds: 45` | 应用自己的关停预算是 30 秒。「刚好大于 30」看起来对，负载高时就错：SIGTERM 的送达不是瞬时的，余量太薄就变成 SIGKILL——表现为发布期间偶发 502，只在生产出现。 |
-| liveness → `/live`，readiness → `/ready` | `/live` 绝不碰数据库。碰了的话，几秒的主库切换会让所有副本同时探针失败、同时被杀、同时冷启动打向正在恢复的数据库——数据库再也爬不出来的重启风暴。 |
-| `METRICS_ADDR: ":9464"` | 应用默认绑 loopback，在 Pod 里等于谁也抓不到，包括 Prometheus。它的失败形式是「没有数据」而不是「报错」。 |
-| `runAsNonRoot` + `readOnlyRootFilesystem` + `drop: [ALL]` + `seccompProfile` | 少一项没有任何可观测代价。负载照常运行，只是权限比它需要的多，而且没有任何症状会指向这里。 |
+| `terminationGracePeriodSeconds: 45` | 应用预算是 30 秒。"刚好大于 30"在负载高时就错:SIGTERM 送达不是瞬时的,余量太薄变成 SIGKILL——发布期偶发 502,只在生产出现。 |
+| liveness → `/live` | 它绝不碰数据库。碰了的话,几秒的主库切换会让所有副本同时探针失败、同时被杀、同时冷启动打向正在恢复的库。 |
+| `METRICS_ADDR: ":9464"` | 应用默认绑 loopback,在 Pod 里等于谁也抓不到,包括 Prometheus。失败形式是"没有数据"而不是"报错"。 |
+| `runAsNonRoot`、`readOnlyRootFilesystem`、`drop: [ALL]`、`seccompProfile` | 少一项没有任何可观测代价,负载照常运行,只是权限比需要的多。 |
 
-overlay 只允许引用不可变镜像 tag（`sha-<commit>` 或确切版本号）。`v1` 这类可变
-tag 会让同一份 YAML 在不同时间部署出不同的东西，而这种漂移在 git 里不留痕迹。
-有测试强制这一条。
-
-### 集群里的配置
-
-非敏感值放 `configmap.yaml`；`DATABASE_URL`、`AUTH_JWT_SECRET`、`REDIS_PASSWORD`
-放带外创建的 Secret。应用把两者都当作普通环境变量读，不关心它们从哪来——所以换成
-密钥管理 operator 可以直接替掉第 1 步，不需要改任何代码。
-
-base 的 ConfigMap 刻意写死 `APP_ENV: production`，让「漏配 overlay」失败在安全的
-一侧：生产守卫会拒绝示例 JWT 密钥、通配符 CORS、以及绑在公开地址上的 metrics。
-
-### 回滚
-
-```sh
-kubectl rollout undo deploy/goscaffold-api        # 或 --to-revision=N
-```
-
-先想 schema，这也是最容易咬人的地方：**回滚代码不等于回滚数据库**。
-`migrations/` 里每条迁移都有 `.down.sql`，但执行它会丢掉新版本写入的数据。优先
-向前修复，并且把迁移设计成「上一个版本仍能在新 schema 上运行」——先加列、下个
-版本再写、再下个版本才删。
+> [!IMPORTANT]
+> 最终镜像没有 shell,`kubectl exec` 进不去。用
+> `kubectl debug -it <pod> --image=busybox --target=api`。
 
 ### CI/CD
 
-`ci.yml` 在每个 PR 上跑三个 job，按耗时而不是按主题拆分，让第一个红叉在一分钟
-左右出现：`quality`（gofmt、vet、golangci-lint、`sqlc diff`、actionlint、OpenAPI
-lint）、`test`（build、`go test -race`、govulncheck）、`integration`
-（testcontainers）。每条命令都同时是一个 Makefile target——只存在于 CI 里的检查，
-是没人能在推送前复现的检查。
+`ci.yml` 在每个 PR 上跑三个 job,按耗时拆分,让第一个红叉在一分钟左右出现:
+`quality`(gofmt、vet、golangci-lint、`sqlc diff`、actionlint、OpenAPI lint)、
+`test`(build、`go test -race`、govulncheck)、`integration`(testcontainers)。
+`scaffold.yml` 生成项目、在其中生成模块、编译并测试。`docker.yml` 发布到
+`ghcr.io`。
 
-`docker.yml` 在推 `master` 和打 `v*` tag 时发布到 `ghcr.io`，产出 `sha-<commit>`，
-发版时另出 `v1.2.3`、`v1.2`、`v1`。可变 tag 是给手动尝鲜的人用的，manifest 里
-禁止使用。
+每条命令都同时是一个 Makefile target —— 只存在于 CI 里的检查,是没人能在推送
+前复现的检查。
 
 ### 验证状态
 
@@ -607,6 +532,10 @@ strict 模式（拒绝未知字段）——正是大家想用 dry run 抓的那�
 | [`docs/architecture.md`](docs/architecture.md) | 为什么设计成这样 |
 | [`docs/adr/`](docs/adr/) | 十个决策，含备选方案与复审触发条件 |
 | [`docs/progress.md`](docs/progress.md) | 这个仓库是怎么一步步变成现在这样的 |
+| [`docs/development.md`](docs/development.md) | 怎么加模块、端点、迁移、查询、依赖 |
+| [`docs/deployment.md`](docs/deployment.md) | 镜像、Secret、迁移顺序、探针、回滚 |
+| [`docs/security.md`](docs/security.md) | 防什么、不防什么、已知暴露面 |
+| [`docs/final-report.md`](docs/final-report.md) | Phase 8 终审：每项门禁、证据，以及仍未验证的部分 |
 | [`api/openapi.yaml`](api/openapi.yaml) | API 契约 |
 | [`prompts/`](prompts/README.md) | 分阶段执行契约，含强制诚实与范围纪律条款 |
 
