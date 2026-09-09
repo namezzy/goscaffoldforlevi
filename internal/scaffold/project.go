@@ -2,6 +2,7 @@ package scaffold
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // The identifiers this repository uses for itself. They are replaced when a
@@ -162,8 +164,15 @@ func CollectFromRepo(root string) (map[string][]byte, error) {
 }
 
 // trackedFiles lists the repository's tracked paths, relative to root.
+//
+// The timeout is not ceremony: `git ls-files` on a repository whose index is
+// locked by another process blocks indefinitely, and a generator that hangs
+// with no output is harder to diagnose than one that fails.
 func trackedFiles(root string) (map[string]bool, error) {
-	cmd := exec.Command("git", "-C", root, "ls-files", "-z") //nolint:gosec // root is the caller's repository path
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "-z") //nolint:gosec // root is the caller's repository path
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
