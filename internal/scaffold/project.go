@@ -163,16 +163,31 @@ func CollectFromRepo(root string) (map[string][]byte, error) {
 	return out, nil
 }
 
-// trackedFiles lists the repository's tracked paths, relative to root.
+// trackedFiles lists the paths git would consider part of the repository:
+// everything already tracked, plus everything untracked that .gitignore does
+// not exclude.
 //
-// The timeout is not ceremony: `git ls-files` on a repository whose index is
-// locked by another process blocks indefinitely, and a generator that hangs
-// with no output is harder to diagnose than one that fails.
+// Both halves are load-bearing, and each was learned from a defect.
+//
+// Excluding ignored files is the security half: api/bruno/.env holds a real
+// credential, and an earlier version copied it into the templates — where the
+// .tmpl suffix meant .gitignore no longer matched it, and it was committed.
+//
+// Including untracked-but-not-ignored files is the correctness half. Using
+// --cached alone made this check depend on git's staging state: a new source
+// file was invisible until it was committed, so `make check` passed before the
+// commit and failed immediately after — exactly when nobody is looking. A file
+// counts from the moment it exists on disk.
+//
+// The timeout is not ceremony either: `git ls-files` on a repository whose
+// index is locked by another process blocks indefinitely, and a generator that
+// hangs with no output is harder to diagnose than one that fails.
 func trackedFiles(root string) (map[string]bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "-z") //nolint:gosec // root is the caller's repository path
+	cmd := exec.CommandContext(ctx, "git", "-C", root, //nolint:gosec // root is the caller's repository path
+		"ls-files", "-z", "--cached", "--others", "--exclude-standard")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 

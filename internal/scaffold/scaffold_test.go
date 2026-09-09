@@ -3,6 +3,7 @@ package scaffold_test
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -341,4 +342,64 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// TestCollectFollowsGitRatherThanTheFilesystem pins both halves of the rule in
+// trackedFiles, each of which was learned from a defect.
+//
+// The ignored file is the security half: a credential under an included
+// directory must not become a template, because the .tmpl suffix would stop
+// .gitignore from matching it and it would be committed.
+//
+// The untracked file is the correctness half: a source file counts from the
+// moment it exists, not from the moment it is committed. Depending on the
+// staging state made this check pass before a commit and fail after it.
+func TestCollectFollowsGitRatherThanTheFilesystem(t *testing.T) {
+	root := t.TempDir()
+
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	git("init", "-q")
+	write(".gitignore", ".env\n**/.env\n")
+	write("Makefile", "committed:\n\t@true\n")
+	git("add", "-A")
+	git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "init")
+
+	// Created after the commit: untracked, but not ignored.
+	write("internal/example/service.go", "package example\n")
+	// Ignored, and holding something that must never travel.
+	write("api/bruno/.env", "BRUNO_ADMIN_PASSWORD=not-a-real-secret\n")
+
+	collected, err := scaffold.CollectFromRepo(root)
+	if err != nil {
+		t.Fatalf("CollectFromRepo: %v", err)
+	}
+
+	if _, ok := collected[scaffold.TemplatePath("internal/example/service.go")]; !ok {
+		t.Error("an untracked, non-ignored source file was skipped; the check would pass " +
+			"before the commit that adds it and fail immediately after")
+	}
+	if _, ok := collected[scaffold.TemplatePath("Makefile")]; !ok {
+		t.Error("a committed file was skipped")
+	}
+	if _, ok := collected[scaffold.TemplatePath("api/bruno/.env")]; ok {
+		t.Error("a gitignored credential file was collected into the templates; " +
+			"the .tmpl suffix would then stop .gitignore from matching it")
+	}
 }

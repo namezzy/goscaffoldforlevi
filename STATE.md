@@ -1383,8 +1383,23 @@ token 交给下一个请求)、登录失败不可区分、响应体不回显提�
 故障返回 500。永远返回 204 会告诉客户端"家族已撤销"而实际什么都没发生,
 被盗的 token 继续有效。
 
-**漂移守卫在本阶段又抓到一次**:改了 `docs/architecture.md`(它在模板清单
-里)而没重新生成,`make check` 立刻变红并点名文件。机制按设计工作。
+**漂移守卫在本阶段抓到两次,第二次抓到的是它自己的缺陷。**
+
+第一次是正常工作:改了 `docs/architecture.md`(它在模板清单里)而没重新生成,
+`make check` 立刻变红并点名文件。
+
+第二次暴露了 Phase 7 那个机制的真实缺陷:**它的结果依赖 git 暂存状态**。
+`CollectFromRepo` 用的是 `git ls-files --cached`,只看已跟踪的文件。于是新写的
+`handler_test.go` 在提交前是不可见的——本机 `make check` 全绿,提交之后立刻
+变红,而 CI 是第一个看到的人。**一个在提交前放行、提交后才失败的检查,恰好在
+没人看的时刻失败。**
+
+改为 `--cached --others --exclude-standard`:已跟踪的,加上未跟踪且未被
+gitignore 的。两半都是承重的,且各自来自一次真实缺陷——排除被忽略的文件是
+Phase 7 那次凭据泄漏的修复,纳入未跟踪文件是这一次的修复。新增
+`TestCollectFollowsGitRatherThanTheFilesystem` 在临时 git 仓库里同时钉住两者,
+经两个变异验证(退回 `--cached`、去掉 `--exclude-standard`),各自点名对应
+的失败原因。
 
 ## 审计通过、未发现问题的项
 
