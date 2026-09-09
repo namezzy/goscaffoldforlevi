@@ -1,0 +1,51 @@
+# NATS is required even though overlays/local sets MESSAGING_ENABLED=false in
+# the ConfigMap: the worker Deployment sets that variable directly in `env`,
+# which takes precedence over `envFrom`. That is deliberate — a worker with
+# messaging disabled starts, logs nothing and does nothing, which reads exactly
+# like a broken deployment — but it means the broker is not optional here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  labels: { app.kubernetes.io/name: nats, app.kubernetes.io/part-of: goscaffold-local-deps }
+spec:
+  selector: { app.kubernetes.io/name: nats }
+  ports:
+    - { name: client, port: 4222, targetPort: client }
+    - { name: monitor, port: 8222, targetPort: monitor }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  labels: { app.kubernetes.io/name: nats, app.kubernetes.io/part-of: goscaffold-local-deps }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: nats }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: nats }
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.10-alpine
+          # JetStream is not on by default, and the outbox relay needs it: a
+          # plain NATS server accepts the connection and then rejects every
+          # stream operation, which surfaces as a working broker that loses
+          # every message.
+          args: ["-js", "-sd", "/data", "-m", "8222"]
+          ports:
+            - { name: client, containerPort: 4222 }
+            - { name: monitor, containerPort: 8222 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: monitor }
+            initialDelaySeconds: 3
+            periodSeconds: 3
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+      volumes:
+        - name: data
+          emptyDir: {}

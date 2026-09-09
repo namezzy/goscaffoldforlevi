@@ -585,6 +585,7 @@ through context, offset pagination under concurrent inserts, and more.
 | [`docs/progress.md`](docs/progress.md) | How the repository became what it is, in order |
 | [`docs/development.md`](docs/development.md) | How to add a module, an endpoint, a migration, a query, a dependency |
 | [`docs/deployment.md`](docs/deployment.md) | Images, secrets, migration order, probes, rollback |
+| [`docs/runbook.md`](docs/runbook.md) | The deployment procedure, step by step, and what to do when it breaks |
 | [`docs/security.md`](docs/security.md) | What is defended, what is not, and the known exposures |
 | [`docs/final-report.md`](docs/final-report.md) | The Phase 8 audit: every gate, its evidence, and what is still unverified |
 | [`api/openapi.yaml`](api/openapi.yaml) | The API contract |

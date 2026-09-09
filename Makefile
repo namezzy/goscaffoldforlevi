@@ -243,15 +243,16 @@ dlq-replay: ## Put one dead letter back in the outbox: make dlq-replay id=<dead_
 # --------------------------------------------------------------------- docker
 
 .PHONY: docker-build
-docker-build: ## Build the api and worker images with a build stamp
-	docker build --target api --tag $(IMAGE):$(IMAGE_TAG) \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg COMMIT=$(COMMIT) \
-		--build-arg BUILD_TIME=$(BUILD_TIME) .
-	docker build --target worker --tag $(IMAGE)-worker:$(IMAGE_TAG) \
-		--build-arg VERSION=$(VERSION) \
-		--build-arg COMMIT=$(COMMIT) \
-		--build-arg BUILD_TIME=$(BUILD_TIME) .
+docker-build: ## Build every image with a build stamp
+	@# All four, because the manifests reference three of them and the fourth
+	@# is the only way to create the first administrator in a cluster.
+	for target in api:"" worker:-worker migrate:-migrate adminctl:-adminctl; do \
+		name=$${target%%:*}; suffix=$${target#*:}; \
+		docker build --target $$name --tag $(IMAGE)$$suffix:$(IMAGE_TAG) \
+			--build-arg VERSION=$(VERSION) \
+			--build-arg COMMIT=$(COMMIT) \
+			--build-arg BUILD_TIME=$(BUILD_TIME) . || exit 1; \
+	done
 
 .PHONY: docker-up
 docker-up: ## Start the development dependencies (postgres, redis)

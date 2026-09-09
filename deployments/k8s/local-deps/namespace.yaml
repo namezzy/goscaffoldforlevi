@@ -1,0 +1,6 @@
+# overlays/local 把所有对象放进这个 namespace,但不创建它 —— 一个 overlay
+# 创建自己的 namespace 会让 `kubectl delete -k` 连带删掉别人放在里面的东西。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: goscaffold-local

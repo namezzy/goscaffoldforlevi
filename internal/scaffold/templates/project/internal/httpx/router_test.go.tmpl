@@ -397,3 +397,56 @@ func totalOf(t *testing.T, m *telemetry.Metrics, name string) float64 {
 	}
 	return total
 }
+
+// TestProbesAreNotRateLimited pins the exemption that keeps the rate limiter
+// from taking the service down by itself.
+//
+// The failure it prevents is indirect and therefore hard to diagnose: the
+// kubelet probes from the node's address, every pod on that node shares one
+// quota bucket, and a 429 on /ready is a probe failure — so the pods are marked
+// NotReady and removed from the Service. Nothing logs "rate limited the
+// kubelet"; the cluster simply flaps.
+func TestProbesAreNotRateLimited(t *testing.T) {
+	logger := discardLogger()
+
+	// A limiter that refuses everything. If a probe reaches it, the probe fails.
+	refuseEverything := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+		})
+	}
+
+	router := NewRouter(RouterDeps{
+		Config:        config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
+		Logger:        logger,
+		Health:        NewHealth(logger, Build{Version: "test", Commit: "testcommit"}),
+		RateLimitByIP: refuseEverything,
+	})
+
+	for _, path := range []string{"/health", "/live", "/ready"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if rec.Code == http.StatusTooManyRequests {
+				t.Fatalf("%s was rate limited; a 429 here is a probe failure and the pod is withdrawn", path)
+			}
+			if rec.Code != http.StatusOK {
+				t.Errorf("%s answered %d, want 200", path, rec.Code)
+			}
+		})
+	}
+
+	// The exemption must be exactly that narrow: everything else still pays.
+	// Otherwise a flood of unknown paths costs nothing.
+	for _, path := range []string{"/api/v1/users", "/nope"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if rec.Code != http.StatusTooManyRequests {
+				t.Errorf("%s answered %d; it should still be rate limited", path, rec.Code)
+			}
+		})
+	}
+}

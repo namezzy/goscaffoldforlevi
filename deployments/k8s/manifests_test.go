@@ -332,3 +332,153 @@ func pathsInOpenAPI(t *testing.T) map[string]bool {
 	}
 	return paths
 }
+
+// TestEveryReferencedImageIsPublished catches a manifest pointing at an image
+// nothing builds.
+//
+// It fails at exactly the wrong moment otherwise: the manifests validate, the
+// rollout starts, and the migration Job sits in ImagePullBackOff — so the
+// release stops after the new pods have begun rolling but before the schema has
+// moved. The gap is invisible to schema validation and to any local test that
+// builds its images by hand, which is how it survived until a real deployment.
+func TestEveryReferencedImageIsPublished(t *testing.T) {
+	built := imagesBuiltByCI(t)
+
+	for _, name := range []string{"api-deployment.yaml", "worker-deployment.yaml", "migrate-job.yaml"} {
+		doc := loadYAML(t, name)
+		image, _ := containerAt(t, name, doc, 0)["image"].(string)
+
+		suffix, ok := suffixOf(image)
+		if !ok {
+			t.Errorf("%s: image %q does not use the project's own registry path", name, image)
+			continue
+		}
+		if !built[suffix] {
+			t.Errorf("%s references the image %q, which .github/workflows/docker.yml does not build.\n"+
+				"Add a matrix entry with suffix %q, or point the manifest at an image that exists.",
+				name, image, suffix)
+		}
+	}
+}
+
+// imagesBuiltByCI reads the publish workflow's build matrix.
+func imagesBuiltByCI(t *testing.T) map[string]bool {
+	t.Helper()
+
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "docker.yml"))
+	if err != nil {
+		t.Fatalf("read docker.yml: %v", err)
+	}
+
+	var wf struct {
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Include []struct {
+						Target string `yaml:"target"`
+						Suffix string `yaml:"suffix"`
+					} `yaml:"include"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(raw, &wf); err != nil {
+		t.Fatalf("parse docker.yml: %v", err)
+	}
+
+	built := map[string]bool{}
+	for _, job := range wf.Jobs {
+		for _, entry := range job.Strategy.Matrix.Include {
+			built[entry.Suffix] = true
+		}
+	}
+	if len(built) == 0 {
+		t.Fatal("docker.yml declares no image build matrix")
+	}
+	return built
+}
+
+// suffixOf reduces "ghcr.io/owner/project-worker:tag" to "-worker".
+func suffixOf(image string) (string, bool) {
+	repo := image
+	if i := strings.LastIndex(repo, ":"); i > strings.LastIndex(repo, "/") {
+		repo = repo[:i]
+	}
+	i := strings.LastIndex(repo, "/")
+	if i < 0 {
+		return "", false
+	}
+	name := repo[i+1:]
+
+	// The project name is whatever the api image is called; every other image
+	// is that name plus a suffix. Deriving it this way keeps the test working
+	// after a rename.
+	const project = "goscaffoldforlevi"
+	if !strings.HasPrefix(name, project) {
+		return "", false
+	}
+	return strings.TrimPrefix(name, project), true
+}
+
+// TestOverlaysDeployingTheWorkerEnableMessaging catches a configuration that is
+// contradictory rather than broken, which is why nothing reports it.
+//
+// The worker Deployment sets MESSAGING_ENABLED in its own env, which outranks
+// the ConfigMap: a "false" in the overlay switches messaging off for the API
+// only. Both processes then run and stay healthy — the API silently discards
+// its events, the worker waits for events that never arrive, and no log line
+// anywhere says so. The only symptom is a feature that does nothing.
+func TestOverlaysDeployingTheWorkerEnableMessaging(t *testing.T) {
+	overlays, err := filepath.Glob(filepath.Join("overlays", "*", "kustomization.yaml"))
+	if err != nil || len(overlays) == 0 {
+		t.Fatalf("no overlays found: %v", err)
+	}
+
+	for _, path := range overlays {
+		raw, readErr := os.ReadFile(path) //nolint:gosec // a test reading a fixed path in its own package
+		if readErr != nil {
+			t.Fatalf("read %s: %v", path, readErr)
+		}
+
+		var doc struct {
+			Patches []struct {
+				Patch string `yaml:"patch"`
+			} `yaml:"patches"`
+			ConfigMapGenerator []struct {
+				Name     string   `yaml:"name"`
+				Literals []string `yaml:"literals"`
+			} `yaml:"configMapGenerator"`
+		}
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+
+		// An overlay that deletes the worker is free to leave messaging off.
+		deletesWorker := false
+		for _, p := range doc.Patches {
+			if strings.Contains(p.Patch, "$patch: delete") && strings.Contains(p.Patch, "goscaffold-worker") {
+				deletesWorker = true
+			}
+		}
+		if deletesWorker {
+			continue
+		}
+
+		// Absent means it inherits the base value, which is "false".
+		effective := "false"
+		for _, gen := range doc.ConfigMapGenerator {
+			for _, lit := range gen.Literals {
+				if k, v, ok := strings.Cut(lit, "="); ok && strings.TrimSpace(k) == "MESSAGING_ENABLED" {
+					effective = strings.TrimSpace(v)
+				}
+			}
+		}
+
+		if effective != "true" {
+			t.Errorf("%s deploys the worker but sets MESSAGING_ENABLED=%q.\n"+
+				"The worker overrides that variable in its own env, so this disables messaging for the API only: "+
+				"the API discards its events and the worker waits for events that never come, both without an error.",
+				path, effective)
+		}
+	}
+}

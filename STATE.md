@@ -1440,3 +1440,102 @@ HPA → NetworkPolicy/ServiceMonitor → depguard 规则可推导化 → 文档�
 
 任何后续改动仍受 §0.3 约束:推翻既有 ADR 必须新建 ADR 并写明 `Supersedes:`;
 每次改动后 `STATE.md` 必须与代码保持一致。
+
+
+---
+
+# 真实集群验证（2026-09-09）
+
+终审报告第 22 节的第 1 条「在真实集群上跑一次」已完成,并**找出三个只有真实
+部署才会暴露的缺陷**。
+
+## 环境
+
+局域网服务器(Ubuntu 24.04 / x86_64 / 8 核 / 30G)上的 **k3d 三节点集群**
+(1 server + 2 agent),k3s v1.35.5 / containerd 2.2.3,API 暴露到局域网,
+从本机 Mac 用 kubeconfig 驱动。
+
+**Mac 没能作为节点**:kubelet 只跑 Linux,OrbStack 的虚拟机是 NAT 网络,
+服务器路由不回来。服务器 sudo 需要密码,所以用 k3d 而不是宿主机 k3s。
+镜像在服务器上构建——Mac 是 arm64,服务器是 x86_64,交叉跑会
+`exec format error`。
+
+## 验证通过的项
+
+| 项 | 观察到的结果 |
+|---|---|
+| kubelet 真的调用探针 | 日志里有真实 request_id |
+| **数据库故障只影响 readiness** | `/ready` 5s 转 503 → 10s 摘出 EndpointSlice → **restartCount 全程 0** |
+| 恢复自愈 | 数据库回来后 10s 重新 Ready,零重启 |
+| `maxUnavailable: 0` | 3 副本全量重发布,集群内探针 **117 次请求零失败** |
+| 关停时序 | SIGTERM → `draining delay=5s` → `/ready` 503 → **+5.001s 干净退出** |
+| securityContext | 六项全部通过准入,未被丢弃 |
+| PDB 强制 | 收紧后驱逐被拒:`Cannot evict pod as it would violate the pod's disruption budget` |
+| outbox → JetStream → 消费者 | 跨节点走通,事件被消费并标记 handled |
+| 迁移 Job 与 Deployment 分离 | Job 完成后应用才 Ready |
+
+## 找出并修复的三个缺陷
+
+**1. `adminctl` 不在任何镜像里,集群内无法引导第一个管理员。**
+Dockerfile 只有 api/worker/migrate 三个 target。这是个死结:`POST /users` 需要
+`user:create` 权限,而第一个管理员存在之前没人拥有它。新增 `adminctl` target,
+并把用法写进 runbook——用 `-password-stdin` 从操作者终端传密码,**密码因此不
+进入 Pod 日志、etcd 或任何 Secret**。已实测:管理员已存在时拒绝运行;不存在时
+创建成功且输出不含密码;用该密码登录返回 200。
+
+`stdinOnce: true` 不能省,没有它容器等不到 EOF 会一直挂着——实测踩到过。
+
+**2. 探针端点在 IP 限流器后面。** `r.Use(deps.RateLimitByIP)` 在
+`Health.routes(r)` 之前,没有路径豁免,限流键就是客户端 IP。
+
+危害是间接的,因此极难诊断:限流配额经 Redis **跨副本共享**,而 kubelet 探针的
+源 IP 是**节点 IP**——同一节点上的 Pod 越多越共享同一个桶,每 Pod 每分钟约 18
+次探针,六个 Pod 就超过 100/分钟的配额。然后 `/ready` 返回 429,kubelet 判定
+探针失败,Pod 被标记 NotReady 并摘出 Service。**限流器自己把服务搞挂了,而
+没有任何日志说「限流了 kubelet」**,表现出来只是集群在抖。
+
+修法是把三个探针路径从限流中豁免,且**只豁免这三条**——用路由分组会把 404
+泛洪也一并放行,那是真实的保护回退。路径集合由 `Health.paths()` 导出,与挂载
+表同源,不会漂移。已实测:600 次 `/ready` 全部 200、零 429,同期 300 次 API
+请求有 98 次 429。
+
+**3. CI 不发布 `migrate` 镜像,而 manifests 引用它。** `docker.yml` 的矩阵只有
+api 与 worker,`base/migrate-job.yaml` 却指向 `-migrate`。真实部署会在迁移 Job
+上 `ImagePullBackOff`——发布停在「新 Pod 已经开始滚动、schema 却没动」的位置。
+我们最初没撞上,只因为镜像是手工构建导入的。矩阵补齐四个镜像。
+
+## 新增的守卫测试（均经变异验证）
+
+| 测试 | 抓什么 |
+|---|---|
+| `TestProbesAreNotRateLimited` | 探针被限流(429 即探针失败),以及豁免被放宽到全部路径 |
+| `TestEveryReferencedImageIsPublished` | manifest 引用了 CI 不构建的镜像 |
+| `TestOverlaysDeployingTheWorkerEnableMessaging` | overlay 部署了 worker 却把 messaging 关掉 |
+
+第三条对应的是本次发现的一个**矛盾而非故障**的配置:`local` overlay 的
+ConfigMap 写 `MESSAGING_ENABLED=false`,而 worker 的 Deployment 在 `env` 里
+硬写 `true`——`env` 优先级高于 `envFrom`。结果是 API 丢弃事件、worker 等一个
+永远不来的事件,**两个进程都健康,没有任何错误**,唯一的症状是功能什么都不做。
+已把 `local` overlay 改为 `true`(local-deps 提供了 broker)。
+
+## 新增 `deployments/k8s/local-deps/`
+
+`base/` 里没有 PostgreSQL / Redis / NATS,这对生产是对的(它们是托管服务),
+但让本机集群验证无从下手。新增这一层,明确标注**不是部署制品**:
+无资源限制、无持久卷、数据在 `emptyDir` 里。
+
+验证过程中我自己撞上了这个限制:把 postgres 缩容到 0 做故障演练,再拉起来时
+initdb 重建了空库,四张表全没,worker 开始刷
+`relation "outbox_events" does not exist`。README 里写了,我还是撞上了——所以
+runbook 里把它升级成了 WARNING。
+
+## 新增 `docs/runbook.md`
+
+照着做的部署步骤与故障处置,每一步都在上述集群上执行过。它与
+`deployment.md` 的分工:后者回答「为什么这样部署」,前者回答「照着敲什么」。
+
+## 仍未覆盖
+
+托管集群特有的部分:真实 Ingress 控制器、HPA(需 metrics-server)、
+NetworkPolicy(需支持它的 CNI)、LoadBalancer、真实存储、以及公司集群常见的
+准入控制器(OPA / Kyverno 经常会拒掉一些字段)。

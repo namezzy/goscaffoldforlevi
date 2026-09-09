@@ -93,7 +93,13 @@ configMapGenerator:
       - LOG_LEVEL=debug
       - HTTP_CORS_ALLOWED_ORIGINS=*
       - HTTP_TRUSTED_PROXY_COUNT=0
-      - MESSAGING_ENABLED=false
+      # true, not false. The worker Deployment sets this variable directly in
+      # its own `env`, which outranks `envFrom` — so a "false" here does not
+      # switch messaging off, it only switches it off for the API. The result
+      # is a worker waiting for events that the API has been told to discard:
+      # both processes healthy, nothing happening, and no error anywhere.
+      # local-deps supplies the broker, so the honest setting is on.
+      - MESSAGING_ENABLED=true
       - OTEL_ENABLED=false
 
 secretGenerator:

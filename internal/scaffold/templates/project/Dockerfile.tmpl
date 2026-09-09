@@ -44,8 +44,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -X github.com/namezzy/goscaffoldforlevi/internal/buildinfo.Version=${VERSION} \
       -X github.com/namezzy/goscaffoldforlevi/internal/buildinfo.Commit=${COMMIT} \
       -X github.com/namezzy/goscaffoldforlevi/internal/buildinfo.BuildTime=${BUILD_TIME}" && \
-    go build -trimpath -ldflags "${LDFLAGS}" -o /out/api    ./cmd/api && \
-    go build -trimpath -ldflags "${LDFLAGS}" -o /out/worker ./cmd/worker
+    go build -trimpath -ldflags "${LDFLAGS}" -o /out/api      ./cmd/api && \
+    go build -trimpath -ldflags "${LDFLAGS}" -o /out/worker   ./cmd/worker && \
+    go build -trimpath -ldflags "${LDFLAGS}" -o /out/adminctl ./cmd/adminctl
 
 # ------------------------------------------------------------------ api target
 
@@ -63,6 +64,29 @@ EXPOSE 8080 9464
 USER nonroot:nonroot
 
 ENTRYPOINT ["/api"]
+
+# ------------------------------------------------------------- adminctl target
+
+# The bootstrap image: creates the first administrator, then refuses to run
+# again.
+#
+# It is a separate image rather than a second binary in the api image because
+# the two have different lifetimes. The api runs continuously and should carry
+# nothing that can mint privileged accounts; adminctl runs exactly once, as a
+# Job, and the smaller the window in which that binary exists in the cluster,
+# the better.
+#
+# Without this target the cluster has no way to create the first account at
+# all: POST /users requires the user:create permission, and until an
+# administrator exists nobody holds it. That is a deadlock, and it was found by
+# deploying to a real cluster rather than by reading the manifests.
+FROM gcr.io/distroless/static:nonroot AS adminctl
+
+COPY --from=build /out/adminctl /adminctl
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/adminctl"]
 
 # --------------------------------------------------------------- worker target
 

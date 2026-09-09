@@ -94,11 +94,35 @@ func (h *Health) report(status string) healthResponse {
 	return healthResponse{Status: status, Version: h.build.Version, Commit: h.build.Commit}
 }
 
-// Handler mounts the probes on r.
+// handlers is the probe table.
+//
+// It exists so that the set of probe paths has one definition. The router both
+// mounts these and exempts them from rate limiting, and a second hand-written
+// list would eventually disagree with this one — silently, because a probe that
+// is mounted but not exempt still answers, right up until it is refused.
+func (h *Health) handlers() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"/health": h.handleHealth,
+		"/live":   h.handleLive,
+		"/ready":  h.handleReady,
+	}
+}
+
+// paths returns the probe endpoints, for callers that need to treat them
+// differently from API surface.
+func (h *Health) paths() map[string]bool {
+	paths := make(map[string]bool, len(h.handlers()))
+	for path := range h.handlers() {
+		paths[path] = true
+	}
+	return paths
+}
+
+// routes mounts the probes on r.
 func (h *Health) routes(r chiRouter) {
-	r.Get("/health", h.handleHealth)
-	r.Get("/live", h.handleLive)
-	r.Get("/ready", h.handleReady)
+	for path, handler := range h.handlers() {
+		r.Get(path, handler)
+	}
 }
 
 func (h *Health) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,7 @@
 > **本文只回答"为什么这样设计"。** 具体怎么做见:
 > [`development.md`](development.md)（加模块 / 端点 / 迁移 / 查询 / 依赖 / 测试 / 调试）、
 > [`deployment.md`](deployment.md)（镜像 / Secret / 迁移顺序 / 探针 / 回滚）、
+> [`runbook.md`](runbook.md)（照着做的部署与故障处置步骤）、
 > [`security.md`](security.md)（防什么、不防什么、已知暴露面）、
 > [`final-report.md`](final-report.md)（终审报告：门禁、证据、未验证项）。
 > 当前状态以 [`../STATE.md`](../STATE.md) 为准。

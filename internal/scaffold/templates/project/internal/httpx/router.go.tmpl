@@ -59,7 +59,8 @@ type RouterDeps struct {
 //   - Metrics (Phase 5) precede the rate limiters so that 429s are counted.
 //   - Timeout precedes the handlers so its deadline reaches the database.
 //   - RateLimitByIP precedes authentication, so a flood of forged tokens is
-//     rejected before anything verifies a signature.
+//     rejected before anything verifies a signature. It skips the probe paths;
+//     see the comment at its Use call for why that is load-bearing.
 //
 // Authentication, per-user limiting and authorization are mounted by the
 // feature packages on the routes that need them, because each depends on
@@ -93,7 +94,20 @@ func NewRouter(deps RouterDeps) http.Handler {
 	r.Use(BodyLimit(deps.Config.HTTP.MaxBodyBytes))
 	r.Use(Timeout(deps.Config.HTTP.RequestTimeout, deps.Logger))
 	if deps.RateLimitByIP != nil {
-		r.Use(deps.RateLimitByIP)
+		// The probes are exempt, and this is not a convenience.
+		//
+		// The IP limiter keys on the client address and shares its quota across
+		// replicas through Redis. In Kubernetes the kubelet probes from the
+		// node's address, so every pod on a node draws from one bucket: at
+		// roughly 18 probe requests per minute per pod, six pods on a node
+		// exceed a 100/minute quota. What follows is the bad part — a 429 on
+		// /ready is a probe failure, the pod is marked NotReady, and it is
+		// removed from the Service. The limiter would be taking the service
+		// down by itself, and the symptom is a cluster that "just flaps".
+		//
+		// The exemption is narrow on purpose: unknown paths stay limited, so a
+		// flood of 404s still costs quota.
+		r.Use(exempt(deps.RateLimitByIP, deps.Health.paths()))
 	}
 	r.Use(jsonMethodNotAllowed)
 
@@ -113,6 +127,23 @@ func NewRouter(deps RouterDeps) http.Handler {
 	})
 
 	return r
+}
+
+// exempt returns mw with the given paths routed around it.
+//
+// Path matching is exact and the set comes from the handler that mounts them,
+// so the exemption cannot drift from what is actually served.
+func exempt(mw func(http.Handler) http.Handler, paths map[string]bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		wrapped := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if paths[r.URL.Path] {
+				next.ServeHTTP(w, r)
+				return
+			}
+			wrapped.ServeHTTP(w, r)
+		})
+	}
 }
 
 // jsonMethodNotAllowed gives chi's 405 the JSON body the rest of the API uses,

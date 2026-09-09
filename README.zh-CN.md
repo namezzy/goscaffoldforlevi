@@ -534,6 +534,7 @@ strict 模式（拒绝未知字段）——正是大家想用 dry run 抓的那�
 | [`docs/progress.md`](docs/progress.md) | 这个仓库是怎么一步步变成现在这样的 |
 | [`docs/development.md`](docs/development.md) | 怎么加模块、端点、迁移、查询、依赖 |
 | [`docs/deployment.md`](docs/deployment.md) | 镜像、Secret、迁移顺序、探针、回滚 |
+| [`docs/runbook.md`](docs/runbook.md) | 照着做的部署步骤与故障处置 |
 | [`docs/security.md`](docs/security.md) | 防什么、不防什么、已知暴露面 |
 | [`docs/final-report.md`](docs/final-report.md) | Phase 8 终审：每项门禁、证据，以及仍未验证的部分 |
 | [`api/openapi.yaml`](api/openapi.yaml) | API 契约 |

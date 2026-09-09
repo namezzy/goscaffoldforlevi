@@ -1,13 +1,19 @@
 # 部署指南
 
-> 本文回答"怎么把它放上去,以及出事时怎么办"。
+> 本文回答"为什么这样部署"。**照着做的步骤在
+> [`runbook.md`](runbook.md)** —— 那里的每一步都在真实集群上执行过。
 > 设计上的**为什么**在 [`architecture.md`](architecture.md) 与
 > [`adr/`](adr/);日常开发在 [`development.md`](development.md)。
 
-> [!IMPORTANT]
-> 这套 manifest **校验过,没有跑过**。它们能渲染、能通过 Kubernetes 1.33 的
-> 严格 schema 校验,但从未在真实集群上 apply。schema 校验抓得到字段和类型
-> 错误,抓不到调度、准入控制器、CNI 层面的问题。第一次上线请按预发环境对待。
+> [!NOTE]
+> 这套 manifest 已在一个真实的三节点 Kubernetes 集群(k3s v1.35.5 /
+> containerd 2.2.3)上完整部署并验证过:探针、滚动更新、关停时序、PDB、
+> securityContext、迁移 Job、outbox 全链路。验证同时找出并修复了三个只有
+> 真实部署才会暴露的缺陷,记录在 `STATE.md`。
+>
+> 仍未覆盖的是**托管集群特有的部分**:真实 Ingress 控制器、HPA(需
+> metrics-server)、NetworkPolicy(需支持它的 CNI)、LoadBalancer、真实存储、
+> 以及公司集群常见的准入控制器(OPA / Kyverno 经常会拒掉一些字段)。
 
 ## 目录
 

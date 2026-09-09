@@ -37,6 +37,17 @@ jobs:
             suffix: ""
           - target: worker
             suffix: "-worker"
+          # The migration image is referenced by base/migrate-job.yaml. Leaving
+          # it unpublished is invisible until a real deployment, where the Job
+          # sits in ImagePullBackOff and the release stops before the schema
+          # moves. deployments/k8s/manifests_test.go now fails instead.
+          - target: migrate
+            suffix: "-migrate"
+          # Not referenced by any manifest: it is run once, by hand, to create
+          # the first administrator. It is published because there is otherwise
+          # no way to do that inside a cluster at all.
+          - target: adminctl
+            suffix: "-adminctl"
 
     steps:
       - uses: actions/checkout@v4
