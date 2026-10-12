@@ -6,7 +6,23 @@ import { createInvitation, listInvitations, reinviteMember, revokeInvitation } f
 import { listDepartments } from '../api/org'
 import { ROLE_INFO, can, roleLabel } from '../auth/permissions'
 import { useAuth } from '../auth/useAuth'
-import { Field, inputClass } from './MembersPage'
+import {
+  Badge,
+  Button,
+  Field,
+  PageHeader,
+  Pagination,
+  TBody,
+  THead,
+  Table,
+  TableMessage,
+  Td,
+  Th,
+  Tr,
+  inputClass,
+  linkClass,
+  type Tone,
+} from '../components/ui'
 import type { CreatedInvitation, Department, Invitation, InvitationStatus, Role } from '../api/types'
 
 const PAGE_SIZE = 20
@@ -68,22 +84,29 @@ export function InvitationsPage() {
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-          邀请管理 {total ? <span className="text-sm font-normal text-neutral-500">（共 {total} 个）</span> : null}
-        </h1>
-        {canCreate && (
-          <button
-            onClick={() => setCreating(true)}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
-          >
-            邀请成员
-          </button>
-        )}
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Invitations"
+        title={
+          <>
+            邀请管理{' '}
+            {total ? <span className="font-mono text-sm font-normal tabular-nums text-slate-400">（共 {total} 个）</span> : null}
+          </>
+        }
+        actions={
+          canCreate && (
+            <Button variant="primary" onClick={() => setCreating(true)}>
+              邀请成员
+            </Button>
+          )
+        }
+      />
 
-      <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as InvitationStatus | '')} className={inputClass + ' max-w-xs'}>
+      <select
+        value={statusFilter}
+        onChange={(e) => setStatusFilter(e.target.value as InvitationStatus | '')}
+        className={`${inputClass} max-w-xs`}
+      >
         <option value="">全部状态</option>
         {Object.entries(STATUS_LABELS).map(([k, label]) => (
           <option key={k} value={k}>
@@ -94,106 +117,77 @@ export function InvitationsPage() {
 
       {loadError ? <ErrorBanner error={loadError} /> : null}
 
-      <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[42rem] table-fixed text-left text-sm">
-            <colgroup>
-              <col className="w-[28%]" />
-              <col className="w-[16%]" />
-              <col className="w-[14%]" />
-              <col className="w-[16%]" />
-              <col className="w-[16%]" />
-              <col className="w-[10%]" />
-            </colgroup>
-            <thead className="bg-neutral-50 text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
-              <tr>
-                <th className="px-4 py-2 font-medium">邮箱</th>
-                <th className="px-4 py-2 font-medium">角色</th>
-                <th className="px-4 py-2 font-medium">状态</th>
-                <th className="px-4 py-2 font-medium">邀请时间</th>
-                <th className="px-4 py-2 font-medium">过期时间</th>
-                <th className="whitespace-nowrap px-4 py-2 font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-neutral-400">
-                    加载中…
-                  </td>
-                </tr>
-              ) : invitations.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-neutral-400">
-                    没有邀请记录
-                  </td>
-                </tr>
-              ) : (
-                invitations.map((inv) => (
-                  <tr key={inv.id}>
-                    <td className="truncate px-4 py-2 text-neutral-900 dark:text-neutral-100" title={inv.email}>
-                      {inv.email}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-700 dark:text-neutral-300">{roleLabel(inv.role)}</td>
-                    <td className="whitespace-nowrap px-4 py-2">
-                      <StatusBadge status={inv.status} />
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(inv.created_at).toLocaleDateString('zh-CN')}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(inv.expires_at).toLocaleDateString('zh-CN')}
-                    </td>
-                    <td className="px-4 py-2">
-                      <div className="flex flex-nowrap items-center gap-3 whitespace-nowrap text-xs">
-                        {/* Reinvite works against any prior status — the
-                            backend always issues a fresh invitation, only
-                            revoking the old one first if it was still
-                            pending — so this is available whenever the
-                            link the recipient already has would no longer
-                            work: expired for certain, pending too (to
-                            resend after an email that never arrived). */}
-                        {canCreate && (inv.status === 'pending' || inv.status === 'expired') && (
-                          <button onClick={() => handleReinvite(inv)} className="text-neutral-600 hover:underline dark:text-neutral-300">
-                            重新邀请
-                          </button>
-                        )}
-                        {canRevoke && inv.status === 'pending' && (
-                          <button onClick={() => setRevokingInvite(inv)} className="text-red-600 hover:underline">
-                            撤销
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <Table minWidth="42rem">
+        <colgroup>
+          <col className="w-[28%]" />
+          <col className="w-[16%]" />
+          <col className="w-[14%]" />
+          <col className="w-[16%]" />
+          <col className="w-[16%]" />
+          <col className="w-[10%]" />
+        </colgroup>
+        <THead>
+          <tr>
+            <Th>邮箱</Th>
+            <Th>角色</Th>
+            <Th>状态</Th>
+            <Th>邀请时间</Th>
+            <Th>过期时间</Th>
+            <Th className="whitespace-nowrap">操作</Th>
+          </tr>
+        </THead>
+        <TBody>
+          {loading ? (
+            <TableMessage colSpan={6}>加载中…</TableMessage>
+          ) : invitations.length === 0 ? (
+            <TableMessage colSpan={6}>没有邀请记录</TableMessage>
+          ) : (
+            invitations.map((inv) => (
+              <Tr key={inv.id}>
+                <td className="truncate px-4 py-2.5 text-slate-100" title={inv.email}>
+                  {inv.email}
+                </td>
+                <Td className="whitespace-nowrap">{roleLabel(inv.role)}</Td>
+                <Td className="whitespace-nowrap">
+                  <StatusBadge status={inv.status} />
+                </Td>
+                <Td className="whitespace-nowrap font-mono text-xs tabular-nums text-slate-400">
+                  {new Date(inv.created_at).toLocaleDateString('zh-CN')}
+                </Td>
+                <Td className="whitespace-nowrap font-mono text-xs tabular-nums text-slate-400">
+                  {new Date(inv.expires_at).toLocaleDateString('zh-CN')}
+                </Td>
+                <Td>
+                  <div className="flex flex-nowrap items-center gap-3 whitespace-nowrap text-xs">
+                    {/* Reinvite works against any prior status — the
+                        backend always issues a fresh invitation, only
+                        revoking the old one first if it was still
+                        pending — so this is available whenever the
+                        link the recipient already has would no longer
+                        work: expired for certain, pending too (to
+                        resend after an email that never arrived). */}
+                    {canCreate && (inv.status === 'pending' || inv.status === 'expired') && (
+                      <button onClick={() => handleReinvite(inv)} className={linkClass}>
+                        重新邀请
+                      </button>
+                    )}
+                    {canRevoke && inv.status === 'pending' && (
+                      <button
+                        onClick={() => setRevokingInvite(inv)}
+                        className="text-rose-400 transition hover:text-rose-300 hover:underline"
+                      >
+                        撤销
+                      </button>
+                    )}
+                  </div>
+                </Td>
+              </Tr>
+            ))
+          )}
+        </TBody>
+      </Table>
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 text-sm">
-          <button
-            onClick={() => setPage((p) => Math.max(p - 1, 1))}
-            disabled={page <= 1}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            上一页
-          </button>
-          <span className="text-neutral-500">
-            第 {page} / {totalPages} 页
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
-            disabled={page >= totalPages}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            下一页
-          </button>
-        </div>
-      )}
+      <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 
       {creating && (
         <CreateInvitationModal
@@ -224,13 +218,12 @@ export function InvitationsPage() {
 }
 
 function StatusBadge({ status }: { status: InvitationStatus }) {
-  const cls =
-    status === 'pending'
-      ? 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300'
-      : status === 'accepted'
-        ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-        : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'
-  return <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${cls}`}>{STATUS_LABELS[status]}</span>
+  const tone: Tone = status === 'pending' ? 'blue' : status === 'accepted' ? 'green' : 'neutral'
+  return (
+    <Badge tone={tone} dot>
+      {STATUS_LABELS[status]}
+    </Badge>
+  )
 }
 
 function CreateInvitationModal({
@@ -299,16 +292,10 @@ function CreateInvitationModal({
           </Field>
         )}
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700">
-            取消
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-          >
+          <Button onClick={onClose}>取消</Button>
+          <Button type="submit" variant="primary" disabled={busy}>
             {busy ? '发送中…' : '发送邀请'}
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>
@@ -333,22 +320,17 @@ function InvitationLinkModal({ invitation, onClose }: { invitation: CreatedInvit
   return (
     <Modal title={`已邀请 ${invitation.email}`} onClose={onClose}>
       <div className="space-y-3 text-sm">
-        <p className="text-neutral-600 dark:text-neutral-300">
+        <p className="text-slate-300">
           邀请邮件已交由后台消息队列异步发送。开发环境默认未配置真实邮件服务商，仅会记录到服务器日志——请直接复制下方链接发送给对方，链接仅可使用一次。
         </p>
-        <div className="rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 font-mono text-xs break-all dark:border-neutral-700 dark:bg-neutral-900">
+        <div className="rounded-lg border border-cyan-400/20 bg-slate-950/60 px-3 py-2 font-mono text-xs break-all text-cyan-200">
           {acceptUrl}
         </div>
         <div className="flex justify-end gap-2">
-          <button onClick={handleCopy} className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700">
-            {copied ? '已复制' : '复制链接'}
-          </button>
-          <button
-            onClick={onClose}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
-          >
+          <Button onClick={handleCopy}>{copied ? '已复制' : '复制链接'}</Button>
+          <Button variant="primary" onClick={onClose}>
             完成
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

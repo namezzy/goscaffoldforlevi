@@ -13,7 +13,7 @@ import {
 } from '../api/org'
 import { can } from '../auth/permissions'
 import { useAuth } from '../auth/useAuth'
-import { Field, inputClass } from './MembersPage'
+import { Badge, Button, Card, DescriptionRow, EmptyState, Field, Loading, inputClass } from '../components/ui'
 import type { Department, NotificationChannel, Organization } from '../api/types'
 
 export function OrgPage() {
@@ -84,22 +84,30 @@ export function OrgPage() {
     const children = byParent.get(parentId) ?? []
     if (children.length === 0) return null
     return (
-      <ul className={depth > 0 ? 'ml-5 space-y-1 border-l border-neutral-200 pl-3 dark:border-neutral-800' : 'space-y-1'}>
+      <ul className={depth > 0 ? 'ml-5 space-y-1 border-l border-cyan-400/15 pl-3' : 'space-y-1'}>
         {children.map((d) => (
           <li key={d.id}>
-            <div className="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-neutral-50 dark:hover:bg-neutral-900">
-              <span className="text-sm text-neutral-900 dark:text-neutral-100">{d.name}</span>
+            <div className="flex items-center justify-between rounded-md px-2 py-1.5 transition hover:bg-cyan-400/[0.04]">
+              <span className="flex items-center gap-2 text-sm text-slate-100">
+                <span className="h-1.5 w-1.5 rounded-full bg-cyan-400/70" />
+                {d.name}
+              </span>
               {canWriteDept && (
-                <div className="flex items-center gap-3 text-xs">
-                  <button onClick={() => setAddingParent(d.id)} className="text-neutral-500 hover:underline dark:text-neutral-400">
+                <div className="flex items-center gap-1">
+                  <Button size="sm" variant="ghost" onClick={() => setAddingParent(d.id)}>
                     添加子部门
-                  </button>
-                  <button onClick={() => setEditingDept(d)} className="text-neutral-500 hover:underline dark:text-neutral-400">
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditingDept(d)}>
                     重命名
-                  </button>
-                  <button onClick={() => setDeletingDept(d)} className="text-red-600 hover:underline">
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setDeletingDept(d)}
+                    className="text-rose-400 hover:bg-rose-500/10 hover:text-rose-300"
+                  >
                     删除
-                  </button>
+                  </Button>
                 </div>
               )}
             </div>
@@ -110,75 +118,61 @@ export function OrgPage() {
     )
   }
 
-  if (loading) return <p className="text-neutral-400">加载中…</p>
+  if (loading) return <Loading />
   if (loadError) return <ErrorBanner error={loadError} />
 
   return (
     <div className="space-y-6">
-      <section className="space-y-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">企业信息</h2>
-        {org && <OrgNameForm org={org} canUpdate={canUpdateOrg} onSaved={setOrg} />}
-      </section>
+      <Card title="企业信息">{org && <OrgNameForm org={org} canUpdate={canUpdateOrg} onSaved={setOrg} />}</Card>
 
-      <section className="space-y-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">通知渠道</h2>
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">
-          由部署环境决定是否启用，此处仅展示当前状态，不支持在线修改。
-        </p>
-        {channelsError ? (
-          <ErrorBanner error={channelsError} />
-        ) : channels.length === 0 ? (
-          <p className="text-sm text-neutral-400">加载中…</p>
-        ) : (
-          <ul className="space-y-2">
-            {channels.map((c) => (
-              <li
-                key={c.name}
-                className="flex items-start justify-between gap-4 rounded-md border border-neutral-200 px-3 py-2 dark:border-neutral-800"
-              >
-                <div>
-                  <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">{c.name}</p>
-                  <p className="text-xs text-neutral-500 dark:text-neutral-400">{c.detail}</p>
-                </div>
-                <span
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${
-                    c.configured
-                      ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                      : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'
-                  }`}
-                >
-                  {c.configured ? '已配置' : '未配置'}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">部门架构</h2>
-          {canWriteDept && (
-            <button
-              onClick={() => setAddingParent(null)}
-              className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
-            >
-              新建顶级部门
-            </button>
-          )}
-        </div>
-        <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-          {!canReadDept ? (
-            <p className="text-sm text-neutral-400">没有权限查看部门架构。</p>
-          ) : deptError ? (
-            <ErrorBanner error={deptError} />
-          ) : departments.length === 0 ? (
-            <p className="text-sm text-neutral-400">还没有部门。</p>
+      <Card title="通知渠道">
+        <div className="space-y-3">
+          <p className="text-xs text-slate-400">由部署环境决定是否启用，此处仅展示当前状态，不支持在线修改。</p>
+          {channelsError ? (
+            <ErrorBanner error={channelsError} />
+          ) : channels.length === 0 ? (
+            <Loading />
           ) : (
-            renderTree('', 0)
+            <ul className="space-y-2">
+              {channels.map((c) => (
+                <li
+                  key={c.name}
+                  className="flex items-start justify-between gap-4 rounded-lg border border-white/[0.06] bg-slate-950/40 px-3 py-2.5"
+                >
+                  <div>
+                    <p className="font-mono text-sm font-medium text-slate-100">{c.name}</p>
+                    <p className="text-xs text-slate-400">{c.detail}</p>
+                  </div>
+                  <Badge tone={c.configured ? 'green' : 'neutral'} dot>
+                    {c.configured ? '已配置' : '未配置'}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
-      </section>
+      </Card>
+
+      <Card
+        title="部门架构"
+        actions={
+          canWriteDept && (
+            <Button size="sm" variant="primary" onClick={() => setAddingParent(null)}>
+              新建顶级部门
+            </Button>
+          )
+        }
+      >
+        {!canReadDept ? (
+          <EmptyState>没有权限查看部门架构。</EmptyState>
+        ) : deptError ? (
+          <ErrorBanner error={deptError} />
+        ) : departments.length === 0 ? (
+          <EmptyState>还没有部门。</EmptyState>
+        ) : (
+          renderTree('', 0)
+        )}
+      </Card>
 
       {addingParent !== undefined && (
         <DepartmentModal
@@ -261,15 +255,9 @@ function OrgNameForm({
 
   if (!canUpdate) {
     return (
-      <dl className="space-y-2 text-sm">
-        <div className="flex justify-between gap-4">
-          <dt className="text-neutral-500 dark:text-neutral-400">企业名称</dt>
-          <dd className="text-neutral-900 dark:text-neutral-100">{org.name}</dd>
-        </div>
-        <div className="flex justify-between gap-4">
-          <dt className="text-neutral-500 dark:text-neutral-400">企业标识</dt>
-          <dd className="text-neutral-900 dark:text-neutral-100">{org.identifier || '未设置'}</dd>
-        </div>
+      <dl>
+        <DescriptionRow label="企业名称" value={org.name} />
+        <DescriptionRow label="企业标识" value={org.identifier || '未设置'} mono={!!org.identifier} />
       </dl>
     )
   }
@@ -287,14 +275,10 @@ function OrgNameForm({
           <input maxLength={100} value={identifier} onChange={(e) => setIdentifier(e.target.value)} className={inputClass} />
         </Field>
       </div>
-      <button
-        type="submit"
-        disabled={busy}
-        className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-      >
+      <Button type="submit" variant="primary" disabled={busy}>
         {busy ? '保存中…' : '保存'}
-      </button>
-      {saved && !error ? <span className="text-xs text-green-600 dark:text-green-400">已保存</span> : null}
+      </Button>
+      {saved && !error ? <span className="pb-2 text-xs text-emerald-300">已保存</span> : null}
     </form>
   )
 }
@@ -337,16 +321,10 @@ function DepartmentModal({
           <input required minLength={1} maxLength={100} value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
         </Field>
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onCancel} className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700">
-            取消
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-          >
+          <Button onClick={onCancel}>取消</Button>
+          <Button type="submit" variant="primary" disabled={busy}>
             {busy ? '保存中…' : '保存'}
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>

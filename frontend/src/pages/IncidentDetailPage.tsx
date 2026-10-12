@@ -15,8 +15,21 @@ import { ConfirmDialog } from '../components/ConfirmDialog'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { can } from '../auth/permissions'
 import { useAuth } from '../auth/useAuth'
-import { Field, inputClass } from './MembersPage'
-import { IncidentStatusBadge, ReplayBadge, SEVERITIES, SEVERITY_LABELS, SeverityBadge } from './incidentShared'
+import {
+  Button,
+  Card,
+  DescriptionRow,
+  EmptyState,
+  ErrorState,
+  Field,
+  FieldGroup,
+  Loading,
+  PageHeader,
+  inputClass,
+  linkClass,
+} from '../components/ui'
+import { SEVERITIES, SEVERITY_LABELS } from './incidentLabels'
+import { IncidentStatusBadge, ReplayBadge, SeverityBadge } from './incidentShared'
 import type { AuditEvent, Incident, IncidentSeverity, User } from '../api/types'
 
 type Confirmable = 'acknowledge' | 'resolve' | 'replay'
@@ -34,11 +47,6 @@ const CONFIRM_COPY: Record<Confirmable, { title: string; message: string; label:
     label: '提交重放',
   },
 }
-
-const btnPrimary =
-  'rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900'
-const btnSecondary =
-  'rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800'
 
 export function IncidentDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -91,17 +99,8 @@ export function IncidentDetailPage() {
     [id],
   )
 
-  if (loading) return <p className="text-neutral-400">加载中…</p>
-  if (loadError) {
-    return (
-      <div className="space-y-3">
-        <ErrorBanner error={loadError} />
-        <button onClick={load} className={btnSecondary}>
-          重试
-        </button>
-      </div>
-    )
-  }
+  if (loading) return <Loading />
+  if (loadError) return <ErrorState error={loadError} onRetry={load} />
   if (!incident || !id) return null
 
   const resolved = incident.status === 'resolved'
@@ -122,66 +121,66 @@ export function IncidentDetailPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2 text-sm">
-        <Link to="/incidents" className="text-neutral-500 hover:underline dark:text-neutral-400">
+        <Link to="/incidents" className={linkClass}>
           异常中心
         </Link>
-        <span className="text-neutral-400">/</span>
-        <span className="truncate text-neutral-900 dark:text-neutral-100">{incident.event_type}</span>
+        <span className="text-slate-600">/</span>
+        <span className="truncate font-mono text-slate-300">{incident.event_type}</span>
       </div>
 
-      <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <h1 className="break-all text-lg font-semibold text-neutral-900 dark:text-neutral-100">{incident.event_type}</h1>
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          <SeverityBadge severity={incident.severity} />
-          <IncidentStatusBadge status={incident.status} />
-          {incident.replay_status && <ReplayBadge status={incident.replay_status} />}
-        </div>
+      <PageHeader
+        eyebrow="Incident"
+        title={<span className="font-mono">{incident.event_type}</span>}
+        description={
+          <span className="flex flex-wrap items-center gap-2">
+            <SeverityBadge severity={incident.severity} />
+            <IncidentStatusBadge status={incident.status} />
+            {incident.replay_status && <ReplayBadge status={incident.replay_status} />}
+          </span>
+        }
+      />
 
-        <p className="mt-4 text-xs font-medium text-neutral-500 dark:text-neutral-400">最近一次错误</p>
-        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-neutral-50 p-3 text-xs text-neutral-800 dark:bg-neutral-900 dark:text-neutral-200">
+      <Card>
+        <p className="font-mono text-[11px] uppercase tracking-wider text-slate-500">最近一次错误</p>
+        <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-rose-400/20 bg-slate-950/70 p-3 font-mono text-xs text-rose-200/90">
           {incident.last_error || '—'}
         </pre>
 
-        <dl className="mt-4 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
-          <Row label="消费者" value={incident.consumer} />
-          <Row label="累计发生" value={`${incident.occurrence_count} 次`} />
-          <Row label="首次发生" value={fmt(incident.first_seen_at)} />
-          <Row label="最近发生" value={fmt(incident.last_seen_at)} />
+        <dl className="mt-4 grid gap-x-8 sm:grid-cols-2">
+          <DescriptionRow label="消费者" value={incident.consumer} />
+          <DescriptionRow label="累计发生" value={`${incident.occurrence_count} 次`} />
+          <DescriptionRow label="首次发生" value={fmt(incident.first_seen_at)} />
+          <DescriptionRow label="最近发生" value={fmt(incident.last_seen_at)} />
           <UserRow label="负责人" userId={incident.owner_id} placeholder="未指派" />
-          <Row label="死信 ID" value={incident.dead_letter_id} mono />
-          {incident.acknowledged_at && <Row label="确认时间" value={fmt(incident.acknowledged_at)} />}
+          <DescriptionRow label="死信 ID" value={incident.dead_letter_id} mono />
+          {incident.acknowledged_at && <DescriptionRow label="确认时间" value={fmt(incident.acknowledged_at)} />}
           {incident.acknowledged_by && <UserRow label="确认人" userId={incident.acknowledged_by} />}
-          {incident.resolved_at && <Row label="解决时间" value={fmt(incident.resolved_at)} />}
+          {incident.resolved_at && <DescriptionRow label="解决时间" value={fmt(incident.resolved_at)} />}
           {incident.resolved_by && <UserRow label="解决人" userId={incident.resolved_by} />}
-          {incident.replay_requested_at && <Row label="重放提交时间" value={fmt(incident.replay_requested_at)} />}
-          {incident.replay_result_at && <Row label="重放结果时间" value={fmt(incident.replay_result_at)} />}
+          {incident.replay_requested_at && <DescriptionRow label="重放提交时间" value={fmt(incident.replay_requested_at)} />}
+          {incident.replay_result_at && <DescriptionRow label="重放结果时间" value={fmt(incident.replay_result_at)} />}
         </dl>
 
         {canManage && !resolved && (
-          <div className="mt-5 space-y-4 border-t border-neutral-100 pt-4 dark:border-neutral-800">
+          <div className="mt-5 space-y-4 border-t border-white/[0.06] pt-5">
             {actionError ? <ErrorBanner error={actionError} /> : null}
 
             <div className="flex flex-wrap gap-2">
               {incident.status === 'open' && (
-                <button disabled={busy} onClick={() => setConfirming('acknowledge')} className={btnPrimary}>
+                <Button variant="primary" disabled={busy} onClick={() => setConfirming('acknowledge')}>
                   确认
-                </button>
+                </Button>
               )}
-              <button
+              <Button
                 disabled={busy || replayPending}
                 onClick={() => setConfirming('replay')}
                 title={replayPending ? '上一次重放仍在等待结果' : undefined}
-                className={btnSecondary}
               >
                 重放死信
-              </button>
-              <button
-                disabled={busy}
-                onClick={() => setConfirming('resolve')}
-                className="rounded-md border border-green-300 px-3 py-1.5 text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50 dark:border-green-900 dark:text-green-400 dark:hover:bg-green-950"
-              >
+              </Button>
+              <Button variant="success" disabled={busy} onClick={() => setConfirming('resolve')}>
                 解决
-              </button>
+              </Button>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -202,28 +201,26 @@ export function IncidentDetailPage() {
             <NoteForm busy={busy} onSubmit={(note) => run(() => addIncidentNote(incident.id, note))} />
           </div>
         )}
-      </div>
+      </Card>
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">处理记录</h2>
+      <Card title="处理记录">
         {activity.length === 0 ? (
-          <p className="text-sm text-neutral-400">暂无记录。</p>
+          <EmptyState>暂无记录。</EmptyState>
         ) : (
-          <ol className="space-y-2">
+          <ol className="relative space-y-3 border-l border-cyan-400/20 pl-4">
             {activity.map((e) => (
-              <li key={e.id} className="rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-800">
+              <li key={e.id} className="relative text-sm">
+                <span className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-neutral-900 dark:text-neutral-100">{describeAction(e)}</span>
-                  <span className="whitespace-nowrap text-xs text-neutral-500 dark:text-neutral-400">{fmt(e.created_at)}</span>
+                  <span className="font-medium text-slate-100">{describeAction(e)}</span>
+                  <span className="whitespace-nowrap font-mono text-xs tabular-nums text-slate-500">{fmt(e.created_at)}</span>
                 </div>
-                {noteFromEvent(e) && (
-                  <p className="mt-1 whitespace-pre-wrap text-neutral-600 dark:text-neutral-300">{noteFromEvent(e)}</p>
-                )}
+                {noteFromEvent(e) && <p className="mt-1 whitespace-pre-wrap text-slate-400">{noteFromEvent(e)}</p>}
               </li>
             ))}
           </ol>
         )}
-      </section>
+      </Card>
 
       {confirming && (
         <ConfirmDialog
@@ -241,17 +238,6 @@ export function IncidentDetailPage() {
 
 function fmt(ts: string): string {
   return new Date(ts).toLocaleString('zh-CN')
-}
-
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex justify-between gap-4 py-0.5">
-      <dt className="shrink-0 text-neutral-500 dark:text-neutral-400">{label}</dt>
-      <dd className={`truncate text-right text-neutral-900 dark:text-neutral-100 ${mono ? 'font-mono text-xs' : ''}`} title={value}>
-        {value}
-      </dd>
-    </div>
-  )
 }
 
 /** Best-effort id → email, falling back to the id. Without user:read the
@@ -272,8 +258,8 @@ function UserRow({ label, userId, placeholder }: { label: string; userId?: strin
     }
   }, [userId, canReadUsers])
 
-  if (!userId) return <Row label={label} value={placeholder ?? '—'} />
-  return <Row label={label} value={display?.id === userId ? display.text : userId} />
+  if (!userId) return <DescriptionRow label={label} value={placeholder ?? '—'} />
+  return <DescriptionRow label={label} value={display?.id === userId ? display.text : userId} />
 }
 
 function SeverityForm({
@@ -302,9 +288,9 @@ function SeverityForm({
               </option>
             ))}
           </select>
-          <button type="submit" disabled={busy || value === current} className={btnSecondary}>
+          <Button type="submit" disabled={busy || value === current}>
             保存
-          </button>
+          </Button>
         </div>
       </Field>
     </form>
@@ -338,10 +324,7 @@ function OwnerForm({
   // child, and with no select rendered that is "指派给我" — clicking the
   // caption would assign the incident.
   return (
-    <div role="group" aria-labelledby="incident-owner-label">
-      <span id="incident-owner-label" className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-        负责人
-      </span>
+    <FieldGroup id="incident-owner-label" label="负责人">
       <div className="flex flex-wrap gap-2">
         {canListUsers && (
           <form
@@ -364,23 +347,23 @@ function OwnerForm({
                 </option>
               ))}
             </select>
-            <button type="submit" disabled={busy || value === (current ?? '')} className={btnSecondary}>
+            <Button type="submit" disabled={busy || value === (current ?? '')}>
               保存
-            </button>
+            </Button>
           </form>
         )}
         {meId && current !== meId && (
-          <button type="button" disabled={busy} onClick={() => onSubmit(meId)} className={btnSecondary}>
+          <Button disabled={busy} onClick={() => onSubmit(meId)}>
             指派给我
-          </button>
+          </Button>
         )}
         {current && (
-          <button type="button" disabled={busy} onClick={() => onSubmit('')} className={btnSecondary}>
+          <Button variant="ghost" disabled={busy} onClick={() => onSubmit('')}>
             清除
-          </button>
+          </Button>
         )}
       </div>
-    </div>
+    </FieldGroup>
   )
 }
 
@@ -406,9 +389,9 @@ function NoteForm({ busy, onSubmit }: { busy: boolean; onSubmit: (note: string) 
         />
       </Field>
       <div className="flex justify-end">
-        <button type="submit" disabled={busy || !note.trim()} className={btnPrimary}>
+        <Button type="submit" variant="primary" disabled={busy || !note.trim()}>
           添加备注
-        </button>
+        </Button>
       </div>
     </form>
   )

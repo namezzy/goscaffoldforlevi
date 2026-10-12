@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { listNotifications, markAllNotificationsRead, markNotificationRead } from '../api/notifications'
-import { ErrorBanner } from '../components/ErrorBanner'
+import { Button, Card, EmptyState, ErrorState, Loading, PageHeader, Pagination } from '../components/ui'
 import type { Notification } from '../api/types'
 
 const PAGE_SIZE = 20
@@ -82,87 +82,75 @@ export function NotificationsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-          通知 {total ? <span className="text-sm font-normal text-neutral-500">（共 {total} 条）</span> : null}
-        </h1>
-        <button
-          onClick={handleMarkAllRead}
-          disabled={markingAll}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-        >
-          全部标为已读
-        </button>
-      </div>
+      <PageHeader
+        eyebrow="Notifications"
+        title={
+          <>
+            通知{' '}
+            {total ? <span className="font-mono text-sm font-normal tabular-nums text-slate-400">（共 {total} 条）</span> : null}
+          </>
+        }
+        actions={
+          <Button onClick={handleMarkAllRead} disabled={markingAll}>
+            全部标为已读
+          </Button>
+        }
+      />
 
-      <label className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-300">
-        <input type="checkbox" checked={unreadOnly} onChange={(e) => setUnreadOnly(e.target.checked)} />
+      <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+        <input
+          type="checkbox"
+          checked={unreadOnly}
+          onChange={(e) => setUnreadOnly(e.target.checked)}
+          className="h-4 w-4 accent-cyan-400"
+        />
         只看未读
       </label>
 
-      {loadError ? (
-        <div className="space-y-2">
-          <ErrorBanner error={loadError} />
-          <button
-            onClick={reload}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
-            重试
-          </button>
-        </div>
-      ) : null}
+      {loadError ? <ErrorState error={loadError} onRetry={reload} /> : null}
 
       {loading ? (
-        <p className="text-neutral-400">加载中…</p>
+        <Loading />
       ) : items.length === 0 ? (
-        <p className="text-sm text-neutral-400">{unreadOnly ? '没有未读通知' : '还没有通知'}</p>
+        <EmptyState>{unreadOnly ? '没有未读通知' : '还没有通知'}</EmptyState>
       ) : (
-        <ul className="divide-y divide-neutral-100 overflow-hidden rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
-          {items.map((n) => (
-            <li key={n.id}>
-              <button
-                onClick={() => handleOpen(n)}
-                className={`flex w-full items-start justify-between gap-4 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-900 ${
-                  !n.read_at ? 'bg-blue-50/50 dark:bg-blue-950/20' : ''
-                }`}
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    {!n.read_at && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-600" aria-hidden />}
-                    <span className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{n.title}</span>
+        <Card padded={false} className="overflow-hidden">
+          <ul className="divide-y divide-white/[0.04]">
+            {items.map((n) => (
+              <li key={n.id}>
+                <button
+                  onClick={() => handleOpen(n)}
+                  className={`flex w-full items-start justify-between gap-4 px-4 py-3 text-left transition hover:bg-cyan-400/[0.04] ${
+                    !n.read_at ? 'bg-cyan-400/[0.03]' : ''
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      {!n.read_at && (
+                        <span
+                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]"
+                          aria-hidden
+                        />
+                      )}
+                      <span
+                        className={`truncate text-sm font-medium ${n.read_at ? 'text-slate-300' : 'text-slate-50'}`}
+                      >
+                        {n.title}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate text-sm text-slate-400">{n.body}</p>
                   </div>
-                  <p className="mt-0.5 truncate text-sm text-neutral-500 dark:text-neutral-400">{n.body}</p>
-                </div>
-                <span className="shrink-0 whitespace-nowrap text-xs text-neutral-400">
-                  {new Date(n.created_at).toLocaleString('zh-CN')}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
+                  <span className="shrink-0 whitespace-nowrap font-mono text-xs tabular-nums text-slate-500">
+                    {new Date(n.created_at).toLocaleString('zh-CN')}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Card>
       )}
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 text-sm">
-          <button
-            onClick={() => setPage(Math.max(page - 1, 1))}
-            disabled={page <= 1}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            上一页
-          </button>
-          <span className="text-neutral-500">
-            第 {page} / {totalPages} 页
-          </span>
-          <button
-            onClick={() => setPage(Math.min(page + 1, totalPages))}
-            disabled={page >= totalPages}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            下一页
-          </button>
-        </div>
-      )}
+      <Pagination page={page} totalPages={totalPages} onChange={setPage} />
     </div>
   )
 }

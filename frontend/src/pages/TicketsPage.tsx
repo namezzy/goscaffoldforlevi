@@ -5,7 +5,23 @@ import { ErrorBanner } from '../components/ErrorBanner'
 import { Modal } from '../components/Modal'
 import { can } from '../auth/permissions'
 import { useAuth } from '../auth/useAuth'
-import { Field, inputClass } from './MembersPage'
+import {
+  Button,
+  ErrorState,
+  Field,
+  PageHeader,
+  Pagination,
+  TBody,
+  THead,
+  Table,
+  TableMessage,
+  Td,
+  Th,
+  Tr,
+  controlClass,
+  inputClass,
+  linkClass,
+} from '../components/ui'
 import { PriorityBadge, STATUS_LABELS, StatusBadge } from './ticketShared'
 import type { Ticket, TicketPriority, TicketScope, TicketStatus } from '../api/types'
 
@@ -104,27 +120,30 @@ export function TicketsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-          工单 {total ? <span className="text-sm font-normal text-neutral-500">（共 {total} 个）</span> : null}
-        </h1>
-        <button
-          onClick={() => setCreating(true)}
-          className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
-        >
-          提交工单
-        </button>
-      </div>
+      <PageHeader
+        eyebrow="Tickets"
+        title={
+          <>
+            工单{' '}
+            {total ? <span className="font-mono text-sm font-normal tabular-nums text-slate-400">（共 {total} 个）</span> : null}
+          </>
+        }
+        actions={
+          <Button variant="primary" onClick={() => setCreating(true)}>
+            提交工单
+          </Button>
+        }
+      />
 
-      <div className="flex gap-1 border-b border-neutral-200 dark:border-neutral-800">
+      <div className="inline-flex flex-wrap gap-1 rounded-lg border border-white/[0.07] bg-slate-950/50 p-1">
         {SCOPE_TABS.filter((t) => t.scope !== 'all' || canSeeAll).map((t) => (
           <button
             key={t.scope}
             onClick={() => patchParams({ scope: t.scope })}
-            className={`border-b-2 px-3 py-2 text-sm font-medium ${
+            className={`rounded-md px-3 py-1 text-sm font-medium transition ${
               scope === t.scope
-                ? 'border-neutral-900 text-neutral-900 dark:border-neutral-100 dark:text-neutral-100'
-                : 'border-transparent text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200'
+                ? 'bg-cyan-400/15 text-cyan-200 shadow-[inset_0_0_0_1px_rgba(34,211,238,0.3)]'
+                : 'text-slate-400 hover:text-slate-100'
             }`}
           >
             {t.label}
@@ -142,7 +161,7 @@ export function TicketsPage() {
         <select
           value={status}
           onChange={(e) => patchParams({ status: e.target.value })}
-          className={inputClass}
+          className={controlClass}
         >
           <option value="">全部状态</option>
           {(Object.keys(STATUS_LABELS) as TicketStatus[]).map((s) => (
@@ -154,7 +173,7 @@ export function TicketsPage() {
         <select
           value={priority}
           onChange={(e) => patchParams({ priority: e.target.value })}
-          className={inputClass}
+          className={controlClass}
         >
           <option value="">全部优先级</option>
           <option value="low">低</option>
@@ -164,99 +183,57 @@ export function TicketsPage() {
         </select>
       </div>
 
-      {loadError ? (
-        <div className="space-y-2">
-          <ErrorBanner error={loadError} />
-          <button
-            onClick={() => setReloadTick((t) => t + 1)}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
-            重试
-          </button>
-        </div>
-      ) : null}
+      {loadError ? <ErrorState error={loadError} onRetry={() => setReloadTick((t) => t + 1)} /> : null}
 
-      <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[42rem] table-fixed text-left text-sm">
-            <colgroup>
-              <col className="w-[36%]" />
-              <col className="w-[16%]" />
-              <col className="w-[14%]" />
-              <col className="w-[14%]" />
-              <col className="w-[20%]" />
-            </colgroup>
-            <thead className="bg-neutral-50 text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
-              <tr>
-                <th className="px-4 py-2 font-medium">标题</th>
-                <th className="px-4 py-2 font-medium">分类</th>
-                <SortableHeader label="优先级" sortKey="priority" active={sort} dir={sortDir} onToggle={toggleSort} />
-                <SortableHeader label="状态" sortKey="status" active={sort} dir={sortDir} onToggle={toggleSort} />
-                <SortableHeader label="更新时间" sortKey="created_at" active={sort} dir={sortDir} onToggle={toggleSort} />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-6 text-center text-neutral-400">
-                    加载中…
-                  </td>
-                </tr>
-              ) : tickets.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-6 text-center text-neutral-400">
-                    {search || status || priority ? '没有匹配的工单' : '还没有工单'}
-                  </td>
-                </tr>
-              ) : (
-                tickets.map((t) => (
-                  <tr key={t.id}>
-                    <td className="truncate px-4 py-2 text-neutral-900 dark:text-neutral-100" title={t.title}>
-                      <Link to={`/tickets/${t.id}`} className="hover:underline">
-                        {t.title}
-                      </Link>
-                    </td>
-                    <td className="truncate px-4 py-2 text-neutral-500 dark:text-neutral-400" title={t.category}>
-                      {t.category}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2">
-                      <PriorityBadge priority={t.priority} />
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2">
-                      <StatusBadge status={t.status} />
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(t.updated_at).toLocaleString('zh-CN')}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <Table minWidth="42rem">
+        <colgroup>
+          <col className="w-[36%]" />
+          <col className="w-[16%]" />
+          <col className="w-[14%]" />
+          <col className="w-[14%]" />
+          <col className="w-[20%]" />
+        </colgroup>
+        <THead>
+          <tr>
+            <Th>标题</Th>
+            <Th>分类</Th>
+            <SortableHeader label="优先级" sortKey="priority" active={sort} dir={sortDir} onToggle={toggleSort} />
+            <SortableHeader label="状态" sortKey="status" active={sort} dir={sortDir} onToggle={toggleSort} />
+            <SortableHeader label="更新时间" sortKey="created_at" active={sort} dir={sortDir} onToggle={toggleSort} />
+          </tr>
+        </THead>
+        <TBody>
+          {loading ? (
+            <TableMessage colSpan={5}>加载中…</TableMessage>
+          ) : tickets.length === 0 ? (
+            <TableMessage colSpan={5}>{search || status || priority ? '没有匹配的工单' : '还没有工单'}</TableMessage>
+          ) : (
+            tickets.map((t) => (
+              <Tr key={t.id}>
+                <td className="truncate px-4 py-2.5 text-slate-100" title={t.title}>
+                  <Link to={`/tickets/${t.id}`} className={linkClass}>
+                    {t.title}
+                  </Link>
+                </td>
+                <td className="truncate px-4 py-2.5 text-slate-400" title={t.category}>
+                  {t.category}
+                </td>
+                <Td className="whitespace-nowrap">
+                  <PriorityBadge priority={t.priority} />
+                </Td>
+                <Td className="whitespace-nowrap">
+                  <StatusBadge status={t.status} />
+                </Td>
+                <Td className="whitespace-nowrap font-mono text-xs tabular-nums text-slate-400">
+                  {new Date(t.updated_at).toLocaleString('zh-CN')}
+                </Td>
+              </Tr>
+            ))
+          )}
+        </TBody>
+      </Table>
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 text-sm">
-          <button
-            onClick={() => patchParams({ page: Math.max(page - 1, 1) }, false)}
-            disabled={page <= 1}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            上一页
-          </button>
-          <span className="text-neutral-500">
-            第 {page} / {totalPages} 页
-          </span>
-          <button
-            onClick={() => patchParams({ page: Math.min(page + 1, totalPages) }, false)}
-            disabled={page >= totalPages}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            下一页
-          </button>
-        </div>
-      )}
+      <Pagination page={page} totalPages={totalPages} onChange={(p) => patchParams({ page: p }, false)} />
 
       {creating && (
         <CreateTicketModal
@@ -286,17 +263,17 @@ function SortableHeader({
 }) {
   const isActive = active === sortKey
   return (
-    <th className="px-4 py-2 font-medium">
+    <Th>
       <button
         onClick={() => onToggle(sortKey)}
-        className={`flex items-center gap-1 hover:text-neutral-900 dark:hover:text-neutral-100 ${
-          isActive ? 'text-neutral-900 dark:text-neutral-100' : ''
+        className={`flex items-center gap-1 uppercase tracking-wider transition hover:text-cyan-200 ${
+          isActive ? 'text-cyan-300' : ''
         }`}
       >
         {label}
         {isActive ? <span aria-hidden>{dir === 'asc' ? '↑' : '↓'}</span> : null}
       </button>
-    </th>
+    </Th>
   )
 }
 
@@ -359,16 +336,12 @@ function CreateTicketModal({ onClose, onCreated }: { onClose: () => void; onCrea
           />
         </Field>
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700">
+          <Button type="button" onClick={onClose}>
             取消
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-          >
+          </Button>
+          <Button type="submit" variant="primary" disabled={busy}>
             {busy ? '提交中…' : '提交'}
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>

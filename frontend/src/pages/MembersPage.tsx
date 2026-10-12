@@ -1,6 +1,23 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { ErrorBanner } from '../components/ErrorBanner'
+import {
+  Badge,
+  Button,
+  Field,
+  PageHeader,
+  Pagination,
+  TBody,
+  THead,
+  Table,
+  TableMessage,
+  Td,
+  Th,
+  Tr,
+  controlClass,
+  inputClass,
+  linkClass,
+} from '../components/ui'
 import { Modal } from '../components/Modal'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { createUser, deleteUser, listUsers } from '../api/users'
@@ -82,20 +99,23 @@ export function MembersPage() {
   const canDelete = can(me?.role, 'user:delete')
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-          成员管理 {total ? <span className="text-sm font-normal text-neutral-500">（共 {total} 个）</span> : null}
-        </h1>
-        {canCreate && (
-          <button
-            onClick={() => setCreating(true)}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
-          >
-            新建成员
-          </button>
-        )}
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Members"
+        title={
+          <>
+            成员管理{' '}
+            {total ? <span className="font-mono text-sm font-normal tabular-nums text-slate-400">（共 {total} 个）</span> : null}
+          </>
+        }
+        actions={
+          canCreate && (
+            <Button variant="primary" onClick={() => setCreating(true)}>
+              新建成员
+            </Button>
+          )
+        }
+      />
 
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -104,7 +124,11 @@ export function MembersPage() {
           placeholder="搜索邮箱、用户名或姓名"
           className={`${inputClass} max-w-xs`}
         />
-        <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value as Role | '')} className={inputClass}>
+        <select
+          value={roleFilter}
+          onChange={(e) => setRoleFilter(e.target.value as Role | '')}
+          className={controlClass}
+        >
           <option value="">全部角色</option>
           {ROLE_INFO.map((r) => (
             <option key={r.role} value={r.role}>
@@ -115,7 +139,7 @@ export function MembersPage() {
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as UserStatus | '')}
-          className={inputClass}
+          className={controlClass}
         >
           <option value="">全部状态</option>
           <option value="active">已启用</option>
@@ -125,114 +149,79 @@ export function MembersPage() {
 
       {loadError ? <ErrorBanner error={loadError} /> : null}
 
-      <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[48rem] table-fixed text-left text-sm">
-            <colgroup>
-              <col className="w-[24%]" />
-              <col className="w-[14%]" />
-              <col className="w-[16%]" />
-              <col className="w-[14%]" />
-              <col className="w-[10%]" />
-              <col className="w-[10%]" />
-              <col className="w-[12%]" />
-            </colgroup>
-            <thead className="bg-neutral-50 text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
-              <tr>
-                <SortableHeader label="邮箱" sortKey="email" active={sort} dir={sortDir} onToggle={toggleSort} />
-                <th className="px-4 py-2 font-medium">用户名</th>
-                <SortableHeader label="姓名" sortKey="name" active={sort} dir={sortDir} onToggle={toggleSort} />
-                <th className="whitespace-nowrap px-4 py-2 font-medium">角色</th>
-                <th className="whitespace-nowrap px-4 py-2 font-medium">状态</th>
-                <SortableHeader label="加入时间" sortKey="created_at" active={sort} dir={sortDir} onToggle={toggleSort} />
-                <th className="whitespace-nowrap px-4 py-2 font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {loading ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-neutral-400">
-                    加载中…
-                  </td>
-                </tr>
-              ) : members.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-6 text-center text-neutral-400">
-                    {search || roleFilter || statusFilter ? '没有匹配的成员' : '没有成员'}
-                  </td>
-                </tr>
-              ) : (
-                members.map((u) => (
-                  <tr key={u.id}>
-                    <td className="truncate px-4 py-2 text-neutral-900 dark:text-neutral-100" title={u.email}>
-                      <Link to={`/members/${u.id}`} className="hover:underline">
-                        {u.email}
-                      </Link>
-                    </td>
-                    <td className="truncate px-4 py-2 text-neutral-500 dark:text-neutral-400" title={u.username}>
-                      {u.username ?? '—'}
-                    </td>
-                    <td className="truncate px-4 py-2 text-neutral-700 dark:text-neutral-300" title={u.name}>
-                      {u.name}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-700 dark:text-neutral-300">
-                      {roleLabel(u.role)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2">
-                      <span
-                        className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-                          u.status === 'active'
-                            ? 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300'
-                            : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400'
-                        }`}
+      <Table minWidth="48rem">
+        <colgroup>
+          <col className="w-[24%]" />
+          <col className="w-[14%]" />
+          <col className="w-[16%]" />
+          <col className="w-[14%]" />
+          <col className="w-[10%]" />
+          <col className="w-[10%]" />
+          <col className="w-[12%]" />
+        </colgroup>
+        <THead>
+          <tr>
+            <SortableHeader label="邮箱" sortKey="email" active={sort} dir={sortDir} onToggle={toggleSort} />
+            <Th>用户名</Th>
+            <SortableHeader label="姓名" sortKey="name" active={sort} dir={sortDir} onToggle={toggleSort} />
+            <Th className="whitespace-nowrap">角色</Th>
+            <Th className="whitespace-nowrap">状态</Th>
+            <SortableHeader label="加入时间" sortKey="created_at" active={sort} dir={sortDir} onToggle={toggleSort} />
+            <Th className="whitespace-nowrap">操作</Th>
+          </tr>
+        </THead>
+        <TBody>
+          {loading ? (
+            <TableMessage colSpan={7}>加载中…</TableMessage>
+          ) : members.length === 0 ? (
+            <TableMessage colSpan={7}>
+              {search || roleFilter || statusFilter ? '没有匹配的成员' : '没有成员'}
+            </TableMessage>
+          ) : (
+            members.map((u) => (
+              <Tr key={u.id}>
+                <td className="truncate px-4 py-2.5 text-slate-100" title={u.email}>
+                  <Link to={`/members/${u.id}`} className={linkClass}>
+                    {u.email}
+                  </Link>
+                </td>
+                <td className="truncate px-4 py-2.5 font-mono text-xs text-slate-400" title={u.username}>
+                  {u.username ?? '—'}
+                </td>
+                <td className="truncate px-4 py-2.5 text-slate-200" title={u.name}>
+                  {u.name}
+                </td>
+                <Td className="whitespace-nowrap">{roleLabel(u.role)}</Td>
+                <Td className="whitespace-nowrap">
+                  <Badge tone={u.status === 'active' ? 'green' : 'neutral'} dot>
+                    {u.status === 'active' ? '已启用' : '已禁用'}
+                  </Badge>
+                </Td>
+                <Td className="whitespace-nowrap font-mono text-xs tabular-nums text-slate-400">
+                  {new Date(u.created_at).toLocaleDateString('zh-CN')}
+                </Td>
+                <Td>
+                  <div className="flex flex-nowrap items-center gap-3 whitespace-nowrap text-xs">
+                    <Link to={`/members/${u.id}`} className={linkClass}>
+                      详情
+                    </Link>
+                    {canDelete && (
+                      <button
+                        onClick={() => setDeletingUser(u)}
+                        className="text-rose-400 transition hover:text-rose-300 hover:underline"
                       >
-                        {u.status === 'active' ? '已启用' : '已禁用'}
-                      </span>
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(u.created_at).toLocaleDateString('zh-CN')}
-                    </td>
-                    <td className="px-4 py-2">
-                      <div className="flex flex-nowrap items-center gap-3 whitespace-nowrap text-xs">
-                        <Link to={`/members/${u.id}`} className="text-neutral-600 hover:underline dark:text-neutral-300">
-                          详情
-                        </Link>
-                        {canDelete && (
-                          <button onClick={() => setDeletingUser(u)} className="text-red-600 hover:underline">
-                            删除
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+                        删除
+                      </button>
+                    )}
+                  </div>
+                </Td>
+              </Tr>
+            ))
+          )}
+        </TBody>
+      </Table>
 
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 text-sm">
-          <button
-            onClick={() => setPage((p) => Math.max(p - 1, 1))}
-            disabled={page <= 1}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            上一页
-          </button>
-          <span className="text-neutral-500">
-            第 {page} / {totalPages} 页
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(p + 1, totalPages))}
-            disabled={page >= totalPages}
-            className="rounded-md border border-neutral-300 px-2 py-1 disabled:opacity-40 dark:border-neutral-700"
-          >
-            下一页
-          </button>
-        </div>
-      )}
+      <Pagination page={page} totalPages={totalPages} onChange={setPage} />
 
       {creating && (
         <CreateMemberModal
@@ -274,17 +263,17 @@ function SortableHeader({
 }) {
   const isActive = active === sortKey
   return (
-    <th className="px-4 py-2 font-medium">
+    <Th>
       <button
         onClick={() => onToggle(sortKey)}
-        className={`flex items-center gap-1 hover:text-neutral-900 dark:hover:text-neutral-100 ${
-          isActive ? 'text-neutral-900 dark:text-neutral-100' : ''
+        className={`flex items-center gap-1 uppercase tracking-wider transition hover:text-cyan-200 ${
+          isActive ? 'text-cyan-300' : ''
         }`}
       >
         {label}
         {isActive ? <span aria-hidden>{dir === 'asc' ? '↑' : '↓'}</span> : null}
       </button>
-    </th>
+    </Th>
   )
 }
 
@@ -315,7 +304,7 @@ function CreateMemberModal({ onClose, onCreated }: { onClose: () => void; onCrea
     <Modal title="新建成员" onClose={onClose}>
       <form onSubmit={handleSubmit} className="space-y-3">
         {error ? <ErrorBanner error={error} /> : null}
-        <p className="text-xs text-neutral-500 dark:text-neutral-400">
+        <p className="text-xs text-slate-400">
           直接创建账户会立即生效。更常见的做法是在「邀请管理」中发送邀请，让成员自行设置密码。
         </p>
         <Field label="邮箱">
@@ -356,16 +345,10 @@ function CreateMemberModal({ onClose, onCreated }: { onClose: () => void; onCrea
           </select>
         </Field>
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700">
-            取消
-          </button>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-          >
+          <Button onClick={onClose}>取消</Button>
+          <Button type="submit" variant="primary" disabled={busy}>
             {busy ? '创建中…' : '创建'}
-          </button>
+          </Button>
         </div>
       </form>
     </Modal>
@@ -408,14 +391,3 @@ function DeleteMemberDialog({ user, onCancel, onDeleted }: { user: User; onCance
   )
 }
 
-export const inputClass =
-  'w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100'
-
-export function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">{label}</span>
-      {children}
-    </label>
-  )
-}

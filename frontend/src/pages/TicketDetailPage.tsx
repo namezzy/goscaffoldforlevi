@@ -16,7 +16,7 @@ import { ApiError } from '../api/errors'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { can } from '../auth/permissions'
 import { useAuth } from '../auth/useAuth'
-import { Field, inputClass } from './MembersPage'
+import { Button, Card, EmptyState, ErrorState, Field, Loading, PageHeader, inputClass, linkClass } from '../components/ui'
 import { PriorityBadge, StatusBadge } from './ticketShared'
 import type { AuditEvent, Ticket, User } from '../api/types'
 
@@ -49,20 +49,8 @@ export function TicketDetailPage() {
     load()
   }, [load])
 
-  if (loading) return <p className="text-neutral-400">加载中…</p>
-  if (loadError) {
-    return (
-      <div className="space-y-3">
-        <ErrorBanner error={loadError} />
-        <button
-          onClick={load}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-        >
-          重试
-        </button>
-      </div>
-    )
-  }
+  if (loading) return <Loading />
+  if (loadError) return <ErrorState error={loadError} onRetry={load} />
   if (!ticket || !id) return null
 
   const isRequester = me?.id === ticket.requester_id
@@ -108,97 +96,88 @@ export function TicketDetailPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2 text-sm">
-        <Link to="/tickets" className="text-neutral-500 hover:underline dark:text-neutral-400">
+        <Link to="/tickets" className={linkClass}>
           工单
         </Link>
-        <span className="text-neutral-400">/</span>
-        <span className="truncate text-neutral-900 dark:text-neutral-100">{ticket.title}</span>
+        <span className="text-slate-600">/</span>
+        <span className="truncate text-slate-300">{ticket.title}</span>
       </div>
 
-      <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">{ticket.title}</h1>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <StatusBadge status={ticket.status} />
-              <PriorityBadge priority={ticket.priority} />
-              <span className="text-xs text-neutral-500 dark:text-neutral-400">{ticket.category}</span>
-            </div>
-          </div>
-        </div>
-        <p className="mt-4 whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300">{ticket.description}</p>
+      <PageHeader
+        eyebrow="Ticket"
+        title={ticket.title}
+        description={
+          <span className="flex flex-wrap items-center gap-2">
+            <StatusBadge status={ticket.status} />
+            <PriorityBadge priority={ticket.priority} />
+            <span className="text-xs text-slate-400">{ticket.category}</span>
+          </span>
+        }
+      />
 
-        <dl className="mt-4 grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+      <Card>
+        <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">{ticket.description}</p>
+
+        <dl className="mt-5 grid gap-x-8 border-t border-white/[0.06] pt-3 text-sm sm:grid-cols-2">
           <RequesterRow label="申请人" userId={ticket.requester_id} />
           <RequesterRow label="负责人" userId={ticket.assignee_id} placeholder="未分配" />
-          <Row label="创建时间" value={new Date(ticket.created_at).toLocaleString('zh-CN')} />
-          <Row label="更新时间" value={new Date(ticket.updated_at).toLocaleString('zh-CN')} />
-          {ticket.closed_at && <Row label="关闭时间" value={new Date(ticket.closed_at).toLocaleString('zh-CN')} />}
+          <Row label="创建时间" value={new Date(ticket.created_at).toLocaleString('zh-CN')} mono />
+          <Row label="更新时间" value={new Date(ticket.updated_at).toLocaleString('zh-CN')} mono />
+          {ticket.closed_at && <Row label="关闭时间" value={new Date(ticket.closed_at).toLocaleString('zh-CN')} mono />}
         </dl>
 
         {availableActions.length > 0 && (
-          <div className="mt-5 border-t border-neutral-100 pt-4 dark:border-neutral-800">
-            <p className="mb-2 text-xs font-medium text-neutral-500 dark:text-neutral-400">下一步操作</p>
+          <div className="mt-5 border-t border-white/[0.06] pt-4">
+            <p className="mb-2 font-mono text-[11px] uppercase tracking-wider text-slate-500">下一步操作</p>
             <div className="flex flex-wrap gap-2">
               {availableActions.map((a) => (
-                <button
-                  key={a.kind}
-                  onClick={() => setActiveAction(a.kind)}
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium ${
-                    a.kind === 'close'
-                      ? 'border border-red-300 text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950'
-                      : 'bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900'
-                  }`}
-                >
+                <Button key={a.kind} variant={a.kind === 'close' ? 'danger' : 'primary'} onClick={() => setActiveAction(a.kind)}>
                   {a.label}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
         )}
 
         {activeAction && (
-          <div className="mt-4 border-t border-neutral-100 pt-4 dark:border-neutral-800">
+          <div className="mt-4 border-t border-white/[0.06] pt-4">
             <ActionForm kind={activeAction} ticket={ticket} onCancel={() => setActiveAction(null)} onDone={onDone} />
           </div>
         )}
-      </div>
+      </Card>
 
-      <section className="space-y-2">
-        <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">处理记录</h2>
+      <Card title="处理记录">
         {activity.length === 0 ? (
-          <p className="text-sm text-neutral-400">暂无记录。</p>
+          <EmptyState>暂无记录。</EmptyState>
         ) : (
-          <ol className="space-y-2">
+          <ol className="relative space-y-3 border-l border-cyan-400/20 pl-4">
             {activity.map((e) => (
-              <li key={e.id} className="rounded-md border border-neutral-200 px-3 py-2 text-sm dark:border-neutral-800">
+              <li key={e.id} className="relative text-sm">
+                <span className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full bg-cyan-400 shadow-[0_0_6px_rgba(34,211,238,0.8)]" />
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-neutral-900 dark:text-neutral-100">{describeAction(e.action)}</span>
-                  <span className="whitespace-nowrap text-xs text-neutral-500 dark:text-neutral-400">
+                  <span className="font-medium text-slate-100">{describeAction(e.action)}</span>
+                  <span className="whitespace-nowrap font-mono text-xs tabular-nums text-slate-500">
                     {new Date(e.created_at).toLocaleString('zh-CN')}
                   </span>
                 </div>
-                {noteFromEvent(e) && (
-                  <p className="mt-1 whitespace-pre-wrap text-neutral-600 dark:text-neutral-300">{noteFromEvent(e)}</p>
-                )}
+                {noteFromEvent(e) && <p className="mt-1 whitespace-pre-wrap text-slate-400">{noteFromEvent(e)}</p>}
               </li>
             ))}
           </ol>
         )}
-      </section>
+      </Card>
     </div>
   )
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div className="flex justify-between gap-4 py-0.5">
-      <dt className="text-neutral-500 dark:text-neutral-400">{label}</dt>
-      <dd className="text-right text-neutral-900 dark:text-neutral-100">{value}</dd>
+    <div className="flex justify-between gap-4 border-b border-white/[0.04] py-2">
+      <dt className="shrink-0 text-slate-500">{label}</dt>
+      <dd className={`min-w-0 break-all text-right text-slate-200 ${mono ? 'font-mono text-xs tabular-nums' : ''}`}>{value}</dd>
     </div>
   )
 }
-
 /** Resolves a user id to an email, falling back to the raw id if the lookup
  * fails (no permission, or the id is absent) — a cosmetic best effort, not
  * this page's primary content, so it fails silently like Layout's own
@@ -319,7 +298,7 @@ function ActionForm({
         <div>
           <ErrorBanner error={error} />
           {isConflict && (
-            <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+            <p className="mt-1 text-xs text-slate-400">
               该工单已被他人更新，请刷新页面后重试。
             </p>
           )}
@@ -353,19 +332,15 @@ function ActionForm({
         </Field>
       )}
       {kind === 'close' && !needsNote && (
-        <p className="text-sm text-neutral-600 dark:text-neutral-300">确定要关闭这个工单吗？关闭后无法再次操作。</p>
+        <p className="text-sm text-slate-300">确定要关闭这个工单吗？关闭后无法再次操作。</p>
       )}
       <div className="flex justify-end gap-2 pt-1">
-        <button type="button" onClick={onCancel} className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700">
+        <Button type="button" onClick={onCancel}>
           取消
-        </button>
-        <button
-          type="submit"
-          disabled={busy}
-          className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-        >
+        </Button>
+        <Button type="submit" variant={kind === 'close' ? 'danger' : 'primary'} disabled={busy}>
           {busy ? '提交中…' : '确认'}
-        </button>
+        </Button>
       </div>
     </form>
   )

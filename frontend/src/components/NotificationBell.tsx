@@ -10,7 +10,7 @@ const POLL_INTERVAL_MS = 30_000
  * pagination. Refreshes on every route change (an action on the current
  * page may have just read or created a notification) and otherwise polls,
  * since nothing pushes this update to the client. */
-export function NotificationBell({ monitor }: { monitor?: boolean }) {
+export function NotificationBell() {
   const location = useLocation()
   const [count, setCount] = useState<number | null>(null)
 
@@ -38,9 +38,7 @@ export function NotificationBell({ monitor }: { monitor?: boolean }) {
     <Link
       to="/notifications"
       aria-label={count ? `通知，${count} 条未读` : '通知'}
-      className={`relative rounded-md p-2 ${
-        monitor ? 'text-neutral-300 hover:bg-white/5' : 'text-neutral-600 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800'
-      }`}
+      className="relative rounded-lg p-2 text-slate-400 transition hover:bg-white/5 hover:text-cyan-200"
     >
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
         <path
@@ -51,7 +49,7 @@ export function NotificationBell({ monitor }: { monitor?: boolean }) {
         <path d="M13.73 21a2 2 0 0 1-3.46 0" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
       {!!count && (
-        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold leading-none text-white">
+        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-rose-500 px-1 font-mono text-[10px] font-semibold leading-none text-white shadow-[0_0_8px_rgba(244,63,94,0.8)]">
           {count > 99 ? '99+' : count}
         </span>
       )}

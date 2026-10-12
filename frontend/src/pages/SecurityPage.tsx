@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { listSessions, revokeOtherSessions, revokeSession } from '../api/auth'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { ConfirmDialog } from '../components/ConfirmDialog'
+import { Badge, Button, EmptyState, ErrorState, Loading, PageHeader, TBody, THead, Table, Td, Th, Tr } from '../components/ui'
 import type { Session } from '../api/types'
 
 /** The security center: the caller's own active sessions and login history,
@@ -66,104 +67,89 @@ export function SecurityPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">安全中心</h1>
-        {activeCount > 1 && (
-          <button
-            onClick={() => setConfirmingOthers(true)}
-            className="rounded-md border border-red-300 px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-          >
-            退出其他所有设备
-          </button>
-        )}
-      </div>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400">
-        这里列出你账户最近的登录会话。撤销一个会话会让对应设备重新要求登录；已签发但尚未过期的短期访问令牌最多还会保持有效
-        1 小时,这是当前设计的已知限制,而不是撤销失败。
-      </p>
+      <PageHeader
+        eyebrow="Security"
+        title="安全中心"
+        description={
+          <>
+            这里列出你账户最近的登录会话。撤销一个会话会让对应设备重新要求登录；已签发但尚未过期的短期访问令牌最多还会保持有效
+            1 小时,这是当前设计的已知限制,而不是撤销失败。
+          </>
+        }
+        actions={
+          activeCount > 1 && (
+            <Button variant="danger" onClick={() => setConfirmingOthers(true)}>
+              退出其他所有设备
+            </Button>
+          )
+        }
+      />
 
       {revokeOthersResult !== null && (
-        <p className="text-sm text-green-600 dark:text-green-400">
-          已退出 {revokeOthersResult} 个其他会话。
+        <p className="text-sm text-emerald-300">
+          已退出 <span className="font-mono tabular-nums">{revokeOthersResult}</span> 个其他会话。
         </p>
       )}
       {revokeOthersError ? <ErrorBanner error={revokeOthersError} /> : null}
-      {loadError ? (
-        <div className="space-y-2">
-          <ErrorBanner error={loadError} />
-          <button
-            onClick={reload}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-          >
-            重试
-          </button>
-        </div>
-      ) : null}
+      {loadError ? <ErrorState error={loadError} onRetry={reload} /> : null}
 
       {loading ? (
-        <p className="text-neutral-400">加载中…</p>
+        <Loading />
       ) : sessions && sessions.length === 0 ? (
-        <p className="text-sm text-neutral-400">没有会话记录。</p>
+        <EmptyState>没有会话记录。</EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[42rem] text-left text-sm">
-              <thead className="bg-neutral-50 text-neutral-500 dark:bg-neutral-900 dark:text-neutral-400">
-                <tr>
-                  <th className="px-4 py-2 font-medium">设备 / User-Agent</th>
-                  <th className="px-4 py-2 font-medium">IP</th>
-                  <th className="px-4 py-2 font-medium">最近活跃</th>
-                  <th className="px-4 py-2 font-medium">状态</th>
-                  <th className="px-4 py-2 font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {sessions?.map((s) => (
-                  <tr key={s.id}>
-                    <td className="max-w-[18rem] truncate px-4 py-2 text-neutral-700 dark:text-neutral-300" title={s.user_agent}>
+        <Table minWidth="42rem">
+          <THead>
+            <tr>
+              <Th className="w-[40%]">设备 / User-Agent</Th>
+              <Th>IP</Th>
+              <Th>最近活跃</Th>
+              <Th>状态</Th>
+              <Th>操作</Th>
+            </tr>
+          </THead>
+          <TBody>
+            {sessions?.map((s) => (
+              <Tr key={s.id}>
+                <Td>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-slate-200" title={s.user_agent}>
                       {s.user_agent ?? '未知设备'}
-                      {s.current && (
-                        <span className="ml-2 rounded bg-neutral-900 px-1.5 py-0.5 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900">
-                          当前会话
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-neutral-500 dark:text-neutral-400">{s.ip ?? '—'}</td>
-                    <td className="whitespace-nowrap px-4 py-2 text-neutral-500 dark:text-neutral-400">
-                      {new Date(s.created_at).toLocaleString('zh-CN')}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-2">
-                      {s.revoked_at ? (
-                        <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-xs font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
-                          已撤销
-                        </span>
-                      ) : new Date(s.expires_at) < new Date() ? (
-                        <span className="rounded bg-neutral-200 px-1.5 py-0.5 text-xs font-medium text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
-                          已过期
-                        </span>
-                      ) : (
-                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-800 dark:bg-green-950 dark:text-green-300">
-                          有效
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2">
-                      {!s.revoked_at && (
-                        <button
-                          onClick={() => handleRevoke(s.id)}
-                          disabled={revokingId === s.id}
-                          className="text-xs text-red-600 hover:underline disabled:opacity-50"
-                        >
-                          {revokingId === s.id ? '撤销中…' : '撤销'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                    </span>
+                    {s.current && <Badge tone="cyan">当前会话</Badge>}
+                  </div>
+                </Td>
+                <Td className="font-mono text-xs text-slate-400">{s.ip ?? '—'}</Td>
+                <Td className="whitespace-nowrap font-mono text-xs tabular-nums text-slate-400">
+                  {new Date(s.created_at).toLocaleString('zh-CN')}
+                </Td>
+                <Td className="whitespace-nowrap">
+                  {s.revoked_at ? (
+                    <Badge tone="neutral">已撤销</Badge>
+                  ) : new Date(s.expires_at) < new Date() ? (
+                    <Badge tone="neutral">已过期</Badge>
+                  ) : (
+                    <Badge tone="green" dot>
+                      有效
+                    </Badge>
+                  )}
+                </Td>
+                <Td>
+                  {!s.revoked_at && (
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => handleRevoke(s.id)}
+                      disabled={revokingId === s.id}
+                    >
+                      {revokingId === s.id ? '撤销中…' : '撤销'}
+                    </Button>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </TBody>
+        </Table>
       )}
       {revokeError ? <ErrorBanner error={revokeError} /> : null}
 

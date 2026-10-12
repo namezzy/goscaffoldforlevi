@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { getDashboard } from '../api/workbench'
-import { ErrorBanner } from '../components/ErrorBanner'
+import {
+  ButtonLink,
+  Card,
+  EmptyState,
+  ErrorState,
+  Loading,
+  PageHeader,
+  StatCard,
+  formatDateTime,
+  linkClass,
+} from '../components/ui'
 import { can } from '../auth/permissions'
 import { useAuth } from '../auth/useAuth'
 import { STATUS_LABELS } from './ticketShared'
@@ -28,155 +38,121 @@ export function DashboardPage() {
       .finally(() => setLoading(false))
   }, [reloadTick])
 
-  if (loading) return <p className="text-neutral-400">加载中…</p>
-  if (loadError) {
-    return (
-      <div className="space-y-3">
-        <ErrorBanner error={loadError} />
-        <button
-          onClick={() => setReloadTick((t) => t + 1)}
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-        >
-          重试
-        </button>
-      </div>
-    )
-  }
+  if (loading) return <Loading />
+  if (loadError) return <ErrorState error={loadError} onRetry={() => setReloadTick((t) => t + 1)} />
   if (!overview) return null
 
   const canSeeAllTickets = can(me?.role, 'ticket:read_all')
 
   return (
     <div className="space-y-6">
-      <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">工作台</h1>
+      <PageHeader
+        eyebrow="Workbench"
+        title="工作台"
+        description="你的待办、申请与通知一览"
+        actions={
+          <>
+            <ButtonLink to="/tickets" variant="primary">
+              提交工单
+            </ButtonLink>
+            <ButtonLink to="/notifications">查看通知</ButtonLink>
+            <ButtonLink to="/profile">我的资料</ButtonLink>
+          </>
+        }
+      />
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <MetricCard
-          label="我的申请"
-          value={overview.my_open_tickets}
-          hint="仍在处理中的申请"
-          to="/tickets?scope=mine"
-        />
-        <MetricCard
+        <StatCard label="我的申请" value={overview.my_open_tickets} hint="仍在处理中的申请" to="/tickets?scope=mine" />
+        <StatCard
           label="我的待办"
           value={overview.assigned_to_me}
           hint="分配给我且未完结的工单"
           to="/tickets?scope=assigned"
+          tone="violet"
         />
-        <MetricCard
+        <StatCard
           label="未读通知"
           value={overview.unread_notifications}
           hint="工单分配、补充信息、完成等提醒"
           to="/notifications?unread_only=true"
+          tone="amber"
         />
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Link
-          to="/tickets"
-          className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-800 dark:bg-neutral-100 dark:text-neutral-900"
-        >
-          提交工单
-        </Link>
-        <Link
-          to="/notifications"
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-        >
-          查看通知
-        </Link>
-        <Link
-          to="/profile"
-          className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
-        >
-          我的资料
-        </Link>
-      </div>
-
       {overview.admin && (
-        <div className="space-y-4 border-t border-neutral-200 pt-6 dark:border-neutral-800">
-          <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">管理概览</h2>
-
+        <div className="grid gap-4 lg:grid-cols-2">
           {overview.admin.tickets_by_status && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-medium text-neutral-500 dark:text-neutral-400">工单概况</h3>
-              <div className="flex flex-wrap gap-2">
+            <Card
+              title="工单概况"
+              className="lg:col-span-2"
+              actions={
+                canSeeAllTickets && (
+                  <Link to="/tickets?scope=all" className={`text-xs ${linkClass}`}>
+                    查看全部 →
+                  </Link>
+                )
+              }
+            >
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
                 {STATUS_ORDER.map((status) => {
                   const count = overview.admin?.tickets_by_status?.[status] ?? 0
                   return (
                     <Link
                       key={status}
                       to={`/tickets?scope=all&status=${status}`}
-                      className="min-w-[7rem] flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
+                      className="rounded-lg border border-white/[0.06] bg-slate-950/40 px-3 py-2.5 transition hover:border-cyan-400/30"
                     >
-                      <div className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">{count}</div>
-                      <div className="text-neutral-500 dark:text-neutral-400">{STATUS_LABELS[status]}</div>
+                      <div className="font-mono text-xl font-semibold tabular-nums text-slate-50">{count}</div>
+                      <div className="mt-0.5 text-xs text-slate-400">{STATUS_LABELS[status]}</div>
                     </Link>
                   )
                 })}
-                {canSeeAllTickets && (
-                  <Link
-                    to="/tickets?scope=all"
-                    className="flex min-w-[7rem] flex-1 items-center justify-center rounded-lg border border-dashed border-neutral-300 px-3 py-2 text-sm text-neutral-500 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-900"
-                  >
-                    查看全部 →
-                  </Link>
-                )}
               </div>
-            </section>
+            </Card>
           )}
 
           {overview.admin.outbox && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-medium text-neutral-500 dark:text-neutral-400">系统异常摘要</h3>
-              <Link
-                to="/status"
-                className="block rounded-lg border border-neutral-200 px-3 py-2 text-sm hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
-              >
-                <span className="text-neutral-900 dark:text-neutral-100">
-                  待投递 {overview.admin.outbox.pending} · 失败 {overview.admin.outbox.failing}
+            <Card title="系统异常摘要">
+              <Link to="/status" className="flex items-center justify-between gap-3 text-sm">
+                <span className="font-mono text-slate-200">
+                  待投递 <span className="text-cyan-300">{overview.admin.outbox.pending}</span> · 失败{' '}
+                  <span className={overview.admin.outbox.failing ? 'text-rose-300' : 'text-emerald-300'}>
+                    {overview.admin.outbox.failing}
+                  </span>
                 </span>
-                <span className="ml-2 text-neutral-500 dark:text-neutral-400">前往监控台 →</span>
+                <span className={`text-xs ${linkClass}`}>前往监控台 →</span>
               </Link>
-            </section>
+            </Card>
           )}
 
           {overview.admin.recent_audit_events && (
-            <section className="space-y-2">
-              <h3 className="text-xs font-medium text-neutral-500 dark:text-neutral-400">最近管理操作</h3>
+            <Card
+              title="最近管理操作"
+              padded={false}
+              actions={
+                <Link to="/audit" className={`text-xs ${linkClass}`}>
+                  查看完整审计日志 →
+                </Link>
+              }
+            >
               {overview.admin.recent_audit_events.length === 0 ? (
-                <p className="text-sm text-neutral-400">暂无记录。</p>
+                <EmptyState>暂无记录。</EmptyState>
               ) : (
-                <ul className="divide-y divide-neutral-100 overflow-hidden rounded-lg border border-neutral-200 dark:divide-neutral-800 dark:border-neutral-800">
+                <ul className="divide-y divide-white/[0.04]">
                   {overview.admin.recent_audit_events.map((e) => (
-                    <li key={e.id} className="flex items-center justify-between gap-4 px-3 py-2 text-sm">
-                      <span className="truncate text-neutral-900 dark:text-neutral-100">{e.action}</span>
-                      <span className="shrink-0 whitespace-nowrap text-xs text-neutral-500 dark:text-neutral-400">
-                        {new Date(e.created_at).toLocaleString('zh-CN')}
+                    <li key={e.id} className="flex items-center justify-between gap-4 px-5 py-2.5 text-sm">
+                      <span className="truncate font-mono text-xs text-slate-200">{e.action}</span>
+                      <span className="shrink-0 whitespace-nowrap font-mono text-xs text-slate-500">
+                        {formatDateTime(e.created_at)}
                       </span>
                     </li>
                   ))}
                 </ul>
               )}
-              <Link to="/audit" className="text-xs text-neutral-500 hover:underline dark:text-neutral-400">
-                查看完整审计日志 →
-              </Link>
-            </section>
+            </Card>
           )}
         </div>
       )}
     </div>
-  )
-}
-
-function MetricCard({ label, value, hint, to }: { label: string; value: number; hint: string; to: string }) {
-  return (
-    <Link
-      to={to}
-      className="block rounded-lg border border-neutral-200 p-4 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
-    >
-      <div className="text-2xl font-semibold text-neutral-900 dark:text-neutral-100">{value}</div>
-      <div className="mt-1 text-sm text-neutral-600 dark:text-neutral-300">{label}</div>
-      <div className="mt-0.5 text-xs text-neutral-400">{hint}</div>
-    </Link>
   )
 }

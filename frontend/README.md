@@ -5,6 +5,11 @@
 工单、通知、监控台（实时请求、消息队列）、异常中心。React + Vite +
 TypeScript + Tailwind CSS v4，没有引入额外的组件库或状态管理库。
 
+界面统一使用暗色科技风主题（青色强调、等宽数字）。页面只通过
+`src/components/ui` 里的共享组件（`PageHeader`、`Card`、`Table`、`Badge`、
+`Button` 等）与样式常量（`inputClass`、`controlClass` 等）搭建，新增页面请沿用，
+不要再写 `dark:` 变体或零散的颜色类。
+
 ## 运行
 
 后端必须先跑起来（见仓库根目录 `README.zh-CN.md`），且其

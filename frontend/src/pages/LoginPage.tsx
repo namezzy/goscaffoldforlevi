@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { AuthShell } from '../components/AuthShell'
 import { ErrorBanner } from '../components/ErrorBanner'
+import { Button, Field, inputClass, linkClass } from '../components/ui'
 import { login } from '../auth/store'
 import { useAuth } from '../auth/useAuth'
 
@@ -49,26 +51,11 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm rounded-lg border border-neutral-200 bg-white p-8 shadow-sm dark:border-neutral-800 dark:bg-neutral-900"
-      >
-        <h1 className="mb-1 text-xl font-semibold text-neutral-900 dark:text-neutral-100">
-          goscaffoldforlevi
-        </h1>
-        <p className="mb-6 text-sm text-neutral-500 dark:text-neutral-400">登录以继续</p>
+    <AuthShell title="控制台登录" subtitle="登录以继续">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {error ? <ErrorBanner error={error} /> : null}
 
-        {error ? (
-          <div className="mb-4">
-            <ErrorBanner error={error} />
-          </div>
-        ) : null}
-
-        <label className="mb-3 block">
-          <span className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            邮箱或用户名
-          </span>
+        <Field label="邮箱或用户名">
           <input
             type="text"
             required
@@ -76,37 +63,32 @@ export function LoginPage() {
             autoComplete="username"
             value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            className={inputClass}
           />
-        </label>
+        </Field>
 
-        <label className="mb-2 block">
-          <span className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
-            密码
-          </span>
-          <input
-            type="password"
-            required
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-500 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
-          />
-        </label>
-        <div className="mb-6 text-right">
-          <Link to="/forgot-password" className="text-xs text-neutral-500 hover:underline dark:text-neutral-400">
-            忘记密码？
-          </Link>
+        <div>
+          <Field label="密码">
+            <input
+              type="password"
+              required
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className={inputClass}
+            />
+          </Field>
+          <div className="mt-2 text-right">
+            <Link to="/forgot-password" className={`text-xs ${linkClass}`}>
+              忘记密码？
+            </Link>
+          </div>
         </div>
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="w-full rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-800 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
-        >
+        <Button type="submit" variant="primary" disabled={busy} className="w-full">
           {busy ? '登录中…' : '登录'}
-        </button>
+        </Button>
       </form>
-    </div>
+    </AuthShell>
   )
 }

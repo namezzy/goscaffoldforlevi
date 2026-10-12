@@ -1,4 +1,5 @@
 import { ROLE_INFO } from '../auth/permissions'
+import { PageHeader, cardClass } from '../components/ui'
 
 const PERMISSION_LABELS: Record<string, string> = {
   'user:create': '创建成员',
@@ -22,23 +23,27 @@ const PERMISSION_LABELS: Record<string, string> = {
 
 export function RolesPage() {
   return (
-    <div className="space-y-4">
-      <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">角色权限</h1>
-      <p className="text-sm text-neutral-500 dark:text-neutral-400">
-        第一阶段提供 5 个固定角色，权限点在后端独立校验；下方仅供查阅，不支持自定义角色或可视化编辑权限规则。
-      </p>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Roles"
+        title="角色权限"
+        description="第一阶段提供 5 个固定角色，权限点在后端独立校验；下方仅供查阅，不支持自定义角色或可视化编辑权限规则。"
+      />
       <div className="grid gap-4 sm:grid-cols-2">
         {ROLE_INFO.map((r) => (
-          <section key={r.role} className="space-y-3 rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
+          <section key={r.role} className={`${cardClass} space-y-3 p-5`}>
             <div>
-              <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{r.label}</h2>
-              <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">{r.description}</p>
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+                <span className="h-3.5 w-0.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]" />
+                {r.label}
+              </h2>
+              <p className="mt-1 text-xs text-slate-400">{r.description}</p>
             </div>
             <ul className="flex flex-wrap gap-1.5">
               {r.permissions.map((p) => (
                 <li
                   key={p}
-                  className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300"
+                  className="rounded-md border border-cyan-400/20 bg-cyan-400/[0.06] px-1.5 py-0.5 text-xs text-cyan-200"
                 >
                   {PERMISSION_LABELS[p] ?? p}
                 </li>

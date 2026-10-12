@@ -79,26 +79,26 @@ export function Modal({
   }, [])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-sm">
       <div
         ref={dialogRef}
-        className="flex max-h-[85vh] w-full max-w-md flex-col rounded-lg bg-white shadow-xl outline-none dark:bg-neutral-900"
+        className="flex max-h-[85vh] w-full max-w-md flex-col rounded-xl border border-cyan-400/20 bg-slate-900/95 shadow-[0_0_40px_-10px_rgba(34,211,238,0.35)] outline-none"
         role="dialog"
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
       >
-        <div className="flex shrink-0 items-center justify-between border-b border-neutral-100 p-6 pb-4 dark:border-neutral-800">
-          <h2 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">{title}</h2>
+        <div className="flex shrink-0 items-center justify-between border-b border-white/[0.06] px-6 py-4">
+          <h2 className="text-base font-semibold text-slate-50">{title}</h2>
           <button
             onClick={onClose}
-            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200"
+            className="rounded-md p-1 text-slate-500 transition hover:bg-white/5 hover:text-slate-200"
             aria-label="关闭"
           >
             ✕
           </button>
         </div>
-        <div ref={bodyRef} className="overflow-y-auto p-6 pt-4">
+        <div ref={bodyRef} className="overflow-y-auto px-6 py-5">
           {children}
         </div>
       </div>

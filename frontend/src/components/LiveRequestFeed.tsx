@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getRecentRequests, streamRequests } from '../api/requests'
 import type { RequestEvent } from '../api/types'
+import { Badge, cardClass } from './ui'
 
 const MAX_ITEMS = 300
 const RECONNECT_DELAY_MS = 1500
@@ -97,41 +98,39 @@ export function LiveRequestFeed() {
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-cyan-500/20 bg-[#070b14] shadow-[0_0_30px_-10px_rgba(34,211,238,0.25)]">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-500/10 bg-cyan-500/[0.03] px-4 py-3">
+    <section className={`${cardClass} overflow-hidden`}>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-5 py-3">
         <div className="flex items-center gap-2">
           <ConnectionDot status={status} />
-          <h2 className="font-mono text-sm font-semibold tracking-wide text-cyan-300">
-            实时请求流
-          </h2>
+          <h2 className="text-sm font-semibold text-slate-100">实时请求流</h2>
         </div>
-        <div className="flex items-center gap-4 font-mono text-xs text-neutral-400">
+        <div className="flex flex-wrap items-center gap-4 font-mono text-xs tabular-nums text-slate-400">
           <span title={`最近 ${RATE_WINDOW_MS / 1000} 秒内收到的请求数 ÷ ${RATE_WINDOW_MS / 1000}`}>
             <span className="text-cyan-300">{rate.toFixed(1)}</span> req/s
-            <span className="text-neutral-600">（近{RATE_WINDOW_MS / 1000}s）</span>
+            <span className="text-slate-500">（近{RATE_WINDOW_MS / 1000}s）</span>
           </span>
           <span
-            className="text-neutral-600"
+            className="text-slate-500"
             title={`下方列表最多展示最近 ${MAX_ITEMS} 条，速率统计不受此限制`}
           >
             展示 {items.length}/{MAX_ITEMS}
           </span>
-          <span className="text-emerald-400">2xx {buckets['2xx']}</span>
-          <span className="text-sky-400">3xx {buckets['3xx']}</span>
-          <span className="text-amber-400">4xx {buckets['4xx']}</span>
-          <span className="text-rose-400">5xx {buckets['5xx']}</span>
+          <span className="text-emerald-300">2xx {buckets['2xx']}</span>
+          <span className="text-sky-300">3xx {buckets['3xx']}</span>
+          <span className="text-amber-300">4xx {buckets['4xx']}</span>
+          <span className="text-rose-300">5xx {buckets['5xx']}</span>
         </div>
       </div>
 
-      <div className="max-h-96 overflow-y-auto font-mono text-xs">
+      <div className="max-h-96 overflow-y-auto font-mono text-xs tabular-nums">
         {items.length === 0 ? (
-          <p className="px-4 py-8 text-center text-neutral-500">
+          <p className="px-4 py-8 text-center text-slate-500">
             {status === 'connecting' ? '连接中…' : '等待请求…'}
           </p>
         ) : (
           <table className="w-full border-collapse">
-            <thead className="sticky top-0 bg-[#070b14] text-neutral-600">
-              <tr className="border-b border-white/5">
+            <thead className="sticky top-0 bg-slate-900/95 text-[11px] uppercase tracking-wider text-slate-500 backdrop-blur">
+              <tr className="border-b border-white/[0.06]">
                 <th className="px-4 py-1.5 text-left font-medium">时间</th>
                 <th className="px-2 py-1.5 text-left font-medium">方法</th>
                 <th className="px-2 py-1.5 text-left font-medium">路径</th>
@@ -150,13 +149,13 @@ export function LiveRequestFeed() {
           </table>
         )}
       </div>
-    </div>
+    </section>
   )
 }
 
 function ConnectionDot({ status }: { status: ConnectionStatus }) {
   const color =
-    status === 'live' ? 'bg-emerald-400' : status === 'reconnecting' ? 'bg-amber-400' : 'bg-neutral-500'
+    status === 'live' ? 'bg-emerald-400' : status === 'reconnecting' ? 'bg-amber-400' : 'bg-slate-500'
   const label = status === 'live' ? '已连接' : status === 'reconnecting' ? '重连中' : '连接中'
   return (
     <span className="flex items-center gap-1.5" title={label}>
@@ -191,7 +190,7 @@ function methodColor(method: string): string {
     case 'DELETE':
       return 'text-rose-400'
     default:
-      return 'text-neutral-400'
+      return 'text-slate-400'
   }
 }
 
@@ -199,44 +198,36 @@ function RequestRow({ event, isNew }: { event: RequestEvent; isNew: boolean }) {
   const time = new Date(event.time)
   return (
     <tr
-      className={`border-b border-white/[0.03] hover:bg-white/[0.02] ${isNew ? 'animate-[fadeIn_0.4s_ease-out]' : ''}`}
+      className={`border-b border-white/[0.03] transition hover:bg-cyan-400/[0.03] ${isNew ? 'animate-[fadeIn_0.4s_ease-out]' : ''}`}
     >
-      <td className="whitespace-nowrap px-4 py-1 text-neutral-500">
+      <td className="whitespace-nowrap px-4 py-1 text-slate-500">
         {time.toLocaleTimeString(undefined, { hour12: false })}
       </td>
       <td className={`whitespace-nowrap px-2 py-1 font-semibold ${methodColor(event.method)}`}>
         {event.method}
       </td>
-      <td className="max-w-xs truncate px-2 py-1 text-neutral-300" title={event.path}>
+      <td className="max-w-xs truncate px-2 py-1 text-slate-300" title={event.path}>
         {event.path}
       </td>
-      <td className="whitespace-nowrap px-2 py-1 text-neutral-500">{event.ip || '—'}</td>
+      <td className="whitespace-nowrap px-2 py-1 text-slate-500">{event.ip || '—'}</td>
       <td className="whitespace-nowrap px-2 py-1">
         <RegionBadge countryName={event.country_name} />
       </td>
       <td className={`whitespace-nowrap px-2 py-1 text-right font-semibold ${statusColor(event.status)}`}>
         {event.status}
       </td>
-      <td className="whitespace-nowrap px-2 py-1 text-right text-neutral-500">
+      <td className="whitespace-nowrap px-2 py-1 text-right text-slate-500">
         {event.duration_ms.toFixed(1)}ms
       </td>
-      <td className="whitespace-nowrap px-4 py-1 text-right text-neutral-600">{event.bytes}B</td>
+      <td className="whitespace-nowrap px-4 py-1 text-right text-slate-500">{event.bytes}B</td>
     </tr>
   )
 }
 
 function RegionBadge({ countryName }: { countryName?: string }) {
   if (!countryName) {
-    return <span className="text-neutral-700">—</span>
+    return <span className="text-slate-600">—</span>
   }
   const isPrivate = countryName === '内网'
-  return (
-    <span
-      className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-        isPrivate ? 'bg-white/5 text-neutral-400' : 'bg-cyan-500/10 text-cyan-300'
-      }`}
-    >
-      {countryName}
-    </span>
-  )
+  return <Badge tone={isPrivate ? 'neutral' : 'cyan'}>{countryName}</Badge>
 }
