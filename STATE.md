@@ -1633,3 +1633,98 @@ TLS 下 `/ready` 约 20ms,明文约 13ms。
 HPA(需 metrics-server)、NetworkPolicy(需支持它的 CNI)、LoadBalancer、
 真实存储(StatefulSet + PVC),以及公司集群常见的准入控制器
 (OPA / Kyverno 经常会拒掉一些字段)。
+
+---
+
+# Phase 8 之后的功能扩展与收尾（2026-10-12）
+
+Phase 8 之后在工作区里累积了一批未提交的扩展:用户名登录、组织与部门、
+邀请、五角色权限与审计、工单、站内通知、安全中心(会话管理、自助密码
+重置)、实时请求监控、消息队列管理端点,以及异常中心(`internal/incident`,
+把死信归并成可分派的异常)。后端与 React 前端(`frontend/`)大部分已完成,
+本轮补齐其中没收尾的部分。
+
+## 本轮发现并补上的缺口
+
+| 缺口 | 处理 |
+|---|---|
+| 模板漂移测试失败:`internal/incident` 的 3 个测试文件未嵌入 | `make templates` |
+| `internal/incident/watcher_test.go` 未经 gofmt(`make check` 会拦) | `gofmt -w` 后重新同步模板 |
+| 前端没有异常中心:无 API 客户端、无页面、`permissions.ts` 缺 `incident:*` | 新增 `api/incidents.ts`、`IncidentsPage`、`IncidentDetailPage`、`incidentShared.tsx`,路由与导航按 `incident:read` 守卫 |
+| 新异常的站内通知点进去落回工作台 | `NotificationsPage.targetHref` 支持 `incident` |
+| 4 处代码注释引用 `docs/security.md` 的"异常中心"小节,但该小节不存在 | 补写该小节,并补"策略表之外的两处手抄"说明 |
+| `docs/security.md` 仍写"两个角色、五个权限" | 改为五个角色、二十二个权限 |
+| `frontend/README.md` 仍写"12 个 operation"、两种角色 | 按现状重写 |
+
+详情页的操作按后端状态机显示:只有 `open` 可确认;`resolved` 之后不可再
+操作;`replay_status = pending` 时重放按钮禁用,文案是"已提交,等待结果",
+从不显示成成功。负责人可"指派给我"/"清除";持有 `user:list` 时额外有成员
+下拉(operator 没有 `user:list`,所以不给它一个必然 403 的列表)。
+
+设计文档:`docs/superpowers/specs/2026-10-12-exception-center-frontend-design.md`
+
+## 验证
+
+- `go build ./...`、`go vet ./...`、`go test ./...` 全部通过(含模板漂移)
+- 前端 `npm run build`、`npm test` 通过;`npm run lint` 无错误,新增文件只有
+  与既有页面同类的两种警告(`set-state-in-effect`、`only-export-components`)
+
+## 端到端验证（Docker,独立环境）
+
+独立起一套 PostgreSQL / Redis / NATS 容器,API 与 worker 用不同的
+`AUTH_JWT_SECRET` 启动,让邀请邮件 handler 解不开 token、事件进死信,
+再走完整流程。发现三个真实缺陷,单元测试(全是 fake)都看不到:
+
+| 缺陷 | 根因 | 修复 | 回归测试 |
+|---|---|---|---|
+| **异常中心从不产生任何异常**,watcher 每次轮询都报错 | `incident_poll_state.last_failed_at` 种子值是 `'-infinity'`,pgx 无法扫进 `time.Time` | 迁移 `20261012030000000_incident_poll_state_epoch`:默认值与现有行改为 `'epoch'` | `incidentpg/poll_state_integration_test.go` |
+| **死信重放在保留期内必然 500**(Phase 4 起就存在,`make dlq-replay` 同样受影响) | `Replay` 用原事件 id 新插一行 outbox,而已投递的原行在 `PublishedRetention` 内仍在,主键冲突 | 新查询 `RequeueOutboxEvent`:`ON CONFLICT (id)` 把原行重置为未发布 | `messagingpg` 的 `TestReplayWhileTheOriginalOutboxRowIsRetained` |
+| **2 分钟内的第二次重放被 broker 静默丢弃**,异常永远停在"重放中" | JetStream 去重键是事件 id,重放保留 id,落在 `Duplicates` 窗口内即被当作重复 | 迁移 `20261012030100000_outbox_replay_generation` 加 `replay_generation`,每次重放 +1;发布端去重键为 `id/replay-N`(首投仍是 id,relay 崩溃重发仍去重);消费者去重不变 | `natsmq` 的 `TestAReplayIsNotSwallowedByBrokerDedupe` |
+
+另:详情页在无 `user:read` 时不再发注定 403 的用户查询(operator 打开详情页
+控制台曾有两条 403)。
+
+走通的流程:死信 → watcher 开异常 → 同指纹再失败归并(次数 +1)→ 改级别 /
+指派 / 确认(重复确认 409)/ 备注(空备注 400)→ 重放(错误 secret 下
+`pending → failed`,并再次归并)→ 换正确 secret 后 30 秒内再次重放
+`pending → succeeded` → 解决(重复解决 409)→ 摘要计数归零;处理记录与审计
+一致;新异常的站内通知 `target_type = incident`。权限:auditor 可读不可写
+(403),operator 可读写,read_only 403,匿名 401。前端用无头 Chrome 以
+operator 登录,导航 → 列表 → 详情渲染正常,控制台无错误。
+
+`go test ./...`、`go test -tags integration ./...`(NATS 指向测试 broker)、
+`make sqlc-check`、模板漂移、前端 build / test / lint 均通过。
+
+## 用户本机环境验证
+
+在用户自己的 Docker(`make docker-up` / `broker-up` / `migrate-up`,库
+`go_enterprise`)上重跑同一流程,全部通过。过程中停掉了两个陈旧进程:一个
+无数据库连接的旧 API 构建,一个占着 metrics 端口 9465 并抢消费事件的旧
+worker。注意:要让 worker 跑消费者、watcher 与 relay,`.env` 需
+`MESSAGING_ENABLED=true`。
+
+## 收尾（提交、收紧已解决状态、补测试）
+
+提交:`cfb4bd8` 后端扩展 · `d196495` 前端 · `36294bb` 端到端三个缺陷 ·
+`4115830` 已解决状态收紧 · `7c4037d` HTTP 层测试 · `2aa4a8c` 前端页面测试。
+
+- **已解决是终态,后端强制**:之前只有确认/解决检查状态,已解决的异常仍可
+  改级别、指派、写备注、重放。`Service.lockUnresolved` 在动作事务里
+  `GetForUpdate` 锁行后判断,一律 409 `INCIDENT_INVALID_TRANSITION`,不写
+  审计、不触发重放;`RequestReplay` 原本在事务外无锁读取,一并移进事务。
+  OpenAPI 四个端点补 409。本机实测:对已解决异常的六个动作全部 409,
+  审计无新增行。
+- **`incidenthttp` handler 测试**:权限(401/403)、状态码(202/409/400/404)、
+  响应体对照 OpenAPI;经变异验证(改 202、去掉路由权限中间件均被抓到)。
+- **前端页面测试**:引入 `@testing-library/react` + `jsdom`(仅开发依赖,
+  页面测试文件单独声明 jsdom 环境)。覆盖按状态/权限显示动作、pending
+  不显示为成功、409 展示、无 `user:read` 不查用户、列表过滤与 URL 同步。
+- **测试暴露的前端缺陷**:负责人控件包在 `<label>` 里,operator(无
+  `user:list`)时 label 的第一个可标注元素是"指派给我",点"负责人"标题
+  文字就把异常指派给自己。改为 `role=group` + `aria-labelledby`。
+
+## 仍未覆盖
+
+- ticket/org/invite 的 HTTP 层仍没有 handler 测试;路由与契约一致性由
+  `cmd/api/openapi_test.go` 守着。
+- 前端除异常中心外的页面没有测试(测试基础设施已就位)。
