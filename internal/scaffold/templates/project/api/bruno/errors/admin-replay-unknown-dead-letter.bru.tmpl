@@ -1,0 +1,28 @@
+meta {
+  name: admin replay unknown dead letter
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/v1/admin/dlq/01a05c5c-0000-7000-8000-000000000000/replay
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq DEAD_LETTER_NOT_FOUND
+}
+
+docs {
+  The one replay case this collection can exercise honestly: a well-formed
+  UUID that resolves to nothing, same shape as users-not-found.bru. Nothing
+  here can produce a real dead letter to replay — that only happens after a
+  consumer exhausts its retries — so the 200/204 path is covered by the
+  integration test in internal/messaging/messagingpg instead.
+
+  A second replay of the same (real) letter answers 409
+  DEAD_LETTER_ALREADY_REPLAYED rather than 404; that path is covered by
+  TestReplayStatusCodes in messaginghttp's handler tests.
+}

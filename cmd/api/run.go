@@ -14,10 +14,12 @@ import (
 
 	"github.com/namezzy/goscaffoldforlevi/internal/buildinfo"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/geoip"
 	"github.com/namezzy/goscaffoldforlevi/internal/httpx"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
 	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit/ratelimithttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/redis"
+	"github.com/namezzy/goscaffoldforlevi/internal/requesttrack"
 	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
@@ -122,7 +124,22 @@ func run(ctx context.Context) error {
 	build := httpx.Build{Version: cfg.App.Version, Commit: buildinfo.Commit}
 	health := httpx.NewHealth(logger, build, checkers(pool, cache, cfg.Redis.Required)...)
 
-	features, err := buildFeatures(cfg, pool, cache, txManager, logger, metrics)
+	// Bounded and in-process only — see package requesttrack. Shared between
+	// the router's Track middleware, which writes to it, and the admin
+	// handler buildFeatures wires up, which reads from it.
+	tracker := requesttrack.NewTracker(requesttrack.DefaultCapacity)
+
+	geo, err := geoip.Open(cfg.GeoIP.DatabasePath, cfg.GeoIP.Language)
+	if err != nil {
+		return fmt.Errorf("open geoip database: %w", err)
+	}
+	defer func() {
+		if err := geo.Close(); err != nil {
+			logger.Warn("geoip database close failed", slog.Any("error", err))
+		}
+	}()
+
+	features, err := buildFeatures(cfg, pool, cache, txManager, logger, metrics, tracker)
 	if err != nil {
 		return err
 	}
@@ -135,6 +152,8 @@ func run(ctx context.Context) error {
 		RateLimitByIP: ratelimithttp.ByIP(features.guard, cfg.HTTP.TrustedProxyCount, logger),
 		Tracer:        tracer,
 		Metrics:       metrics,
+		Tracker:       tracker,
+		Geo:           geo,
 	})
 
 	server := httpx.NewServer(cfg.HTTP, handler)

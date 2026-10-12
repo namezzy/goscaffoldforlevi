@@ -28,23 +28,36 @@ import (
 // nothing else; most of what can break at this layer is in the routing.
 
 type fakeRepo struct {
-	byID    map[user.ID]user.User
-	byEmail map[string]user.ID
-	order   []user.ID
+	byID       map[user.ID]user.User
+	byEmail    map[string]user.ID
+	byUsername map[string]user.ID
+	order      []user.ID
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{byID: map[user.ID]user.User{}, byEmail: map[string]user.ID{}}
+	return &fakeRepo{
+		byID:       map[user.ID]user.User{},
+		byEmail:    map[string]user.ID{},
+		byUsername: map[string]user.ID{},
+	}
 }
 
 func (f *fakeRepo) Create(_ context.Context, u user.User) (user.User, error) {
 	if _, taken := f.byEmail[u.Email]; taken {
 		return user.User{}, apperr.Conflict("EMAIL_ALREADY_EXISTS", "a user with this email already exists")
 	}
+	if u.Username != "" {
+		if _, taken := f.byUsername[u.Username]; taken {
+			return user.User{}, apperr.Conflict("USERNAME_ALREADY_EXISTS", "this username is already taken")
+		}
+	}
 	u.CreatedAt = time.Now()
 	u.UpdatedAt = u.CreatedAt
 	f.byID[u.ID] = u
 	f.byEmail[u.Email] = u.ID
+	if u.Username != "" {
+		f.byUsername[u.Username] = u.ID
+	}
 	f.order = append([]user.ID{u.ID}, f.order...)
 	return u, nil
 }
@@ -63,6 +76,16 @@ func (f *fakeRepo) GetByEmail(_ context.Context, email string) (user.User, error
 		return user.User{}, apperr.NotFound("USER_NOT_FOUND", "user not found")
 	}
 	return f.byID[id], nil
+}
+
+func (f *fakeRepo) GetByIdentifier(_ context.Context, identifier string) (user.User, error) {
+	if id, ok := f.byEmail[identifier]; ok {
+		return f.byID[id], nil
+	}
+	if id, ok := f.byUsername[identifier]; ok {
+		return f.byID[id], nil
+	}
+	return user.User{}, apperr.NotFound("USER_NOT_FOUND", "user not found")
 }
 
 func (f *fakeRepo) List(_ context.Context, limit, offset int32) ([]user.User, error) {
@@ -85,6 +108,24 @@ func (f *fakeRepo) Update(_ context.Context, id user.ID, p user.Patch) (user.Use
 	u, ok := f.byID[id]
 	if !ok {
 		return user.User{}, apperr.NotFound("USER_NOT_FOUND", "user not found")
+	}
+	if p.Email != nil && *p.Email != u.Email {
+		if _, taken := f.byEmail[*p.Email]; taken {
+			return user.User{}, apperr.Conflict("EMAIL_ALREADY_EXISTS", "a user with this email already exists")
+		}
+		delete(f.byEmail, u.Email)
+		u.Email = *p.Email
+		f.byEmail[u.Email] = id
+	}
+	if p.Username != nil && *p.Username != u.Username {
+		if _, taken := f.byUsername[*p.Username]; taken {
+			return user.User{}, apperr.Conflict("USERNAME_ALREADY_EXISTS", "this username is already taken")
+		}
+		if u.Username != "" {
+			delete(f.byUsername, u.Username)
+		}
+		u.Username = *p.Username
+		f.byUsername[u.Username] = id
 	}
 	if p.Name != nil {
 		u.Name = *p.Name
@@ -109,6 +150,36 @@ func (f *fakeRepo) Delete(_ context.Context, id user.ID) error {
 	}
 	delete(f.byID, id)
 	return nil
+}
+
+// ListFiltered and CountFiltered ignore the filter and return everything in
+// the same order List does: none of the handler tests exercise search/role/
+// status/sort, only that an unfiltered request still behaves like the old
+// plain listing — see TestListReturnsAnEmptyArrayNotNull and
+// TestListRejectsAMalformedPageParameter.
+func (f *fakeRepo) ListFiltered(ctx context.Context, _ user.ListFilter, limit, offset int32) ([]user.User, error) {
+	return f.List(ctx, limit, offset)
+}
+
+func (f *fakeRepo) CountFiltered(ctx context.Context, _ user.ListFilter) (int64, error) {
+	return f.Count(ctx)
+}
+
+func (f *fakeRepo) CountActiveByRole(_ context.Context, role auth.Role) (int64, error) {
+	var n int64
+	for _, u := range f.byID {
+		if u.Role == role && u.Status == user.StatusActive {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// LockActiveByRole: see the identically-named comment on fakeRepository in
+// internal/user/service_test.go — this fake cannot reproduce a real row
+// lock, so it just counts.
+func (f *fakeRepo) LockActiveByRole(ctx context.Context, role auth.Role) (int64, error) {
+	return f.CountActiveByRole(ctx, role)
 }
 
 type stubHasher struct{}
@@ -198,15 +269,21 @@ func do(t *testing.T, srv http.Handler, method, path, principal, body string) *h
 	return rec
 }
 
-func asAdmin(u user.User) string { return u.ID.String() + "/" + string(auth.RoleAdmin) }
-func asUser(u user.User) string  { return u.ID.String() + "/" + string(auth.RoleUser) }
+func asAdmin(u user.User) string { return u.ID.String() + "/" + string(auth.RoleSystemAdmin) }
+
+// asUser authenticates as u with RoleOperator — of the five roles, the one
+// that holds none of the user:* permissions — so tests using it exercise
+// ownership (AuthorizeSelfOrPermission) rather than a granted permission.
+// RoleReadOnly would not do: it can read and list any member, which is
+// exactly the access TestStatusCodesForTheCommonFailures asserts is absent.
+func asUser(u user.User) string { return u.ID.String() + "/" + string(auth.RoleOperator) }
 
 func TestCreateUserAnswers201WithLocation(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
 
 	rec := do(t, srv, http.MethodPost, "/users", asAdmin(admin),
 		`{"email":"New@Example.com","name":"New","password":"correct horse battery"}`)
@@ -227,7 +304,7 @@ func TestCreateUserAnswers201WithLocation(t *testing.T) {
 		t.Errorf("email = %v, want the normalised form", got["email"])
 	}
 	// Omitting role must produce the least privileged account, not an admin.
-	if got["role"] != string(auth.RoleUser) {
+	if got["role"] != string(auth.RoleReadOnly) {
 		t.Errorf("role = %v, want user", got["role"])
 	}
 }
@@ -240,7 +317,7 @@ func TestResponsesNeverCarryThePasswordHash(t *testing.T) {
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
 
 	for _, target := range []string{"/users", "/users/" + admin.ID.String()} {
 		rec := do(t, srv, http.MethodGet, target, asAdmin(admin), "")
@@ -261,7 +338,7 @@ func TestListReturnsAnEmptyArrayNotNull(t *testing.T) {
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
 	// Page two of a single-row table is empty.
 	rec := do(t, srv, http.MethodGet, "/users?page=2&page_size=50", asAdmin(admin), "")
 
@@ -280,7 +357,7 @@ func TestListRejectsAMalformedPageParameter(t *testing.T) {
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
 
 	rec := do(t, srv, http.MethodGet, "/users?page=abc", asAdmin(admin), "")
 
@@ -297,8 +374,8 @@ func TestStatusCodesForTheCommonFailures(t *testing.T) {
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
-	ordinary := seed(t, repo, "user@example.com", auth.RoleUser)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
+	ordinary := seed(t, repo, "user@example.com", auth.RoleReadOnly)
 	missing := user.NewID().String()
 
 	cases := []struct {
@@ -349,7 +426,7 @@ func TestOwnerMayRenameItselfButNotPromoteItself(t *testing.T) {
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	ordinary := seed(t, repo, "user@example.com", auth.RoleUser)
+	ordinary := seed(t, repo, "user@example.com", auth.RoleReadOnly)
 	path := "/users/" + ordinary.ID.String()
 
 	rec := do(t, srv, http.MethodPatch, path, asUser(ordinary), `{"name":"Renamed"}`)
@@ -361,8 +438,60 @@ func TestOwnerMayRenameItselfButNotPromoteItself(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("self-promotion: status = %d, want 403: %s", rec.Code, rec.Body)
 	}
-	if repo.byID[ordinary.ID].Role != auth.RoleUser {
+	if repo.byID[ordinary.ID].Role != auth.RoleReadOnly {
 		t.Error("the stored role changed despite the request being refused")
+	}
+}
+
+// TestOwnerMayChangeItsOwnEmailAndUsername covers the two fields this change
+// adds to PATCH: like name, and unlike role/status, ownership alone is
+// enough — see user.Patch.ChangesPrivileges.
+func TestOwnerMayChangeItsOwnEmailAndUsername(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepo()
+	srv := newServer(t, repo)
+	ordinary := seed(t, repo, "user@example.com", auth.RoleReadOnly)
+	path := "/users/" + ordinary.ID.String()
+
+	rec := do(t, srv, http.MethodPatch, path, asUser(ordinary),
+		`{"email":"new@example.com","username":"ada_lovelace"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+
+	var got map[string]any
+	decode(t, rec, &got)
+	if got["email"] != "new@example.com" {
+		t.Errorf("email = %v, want new@example.com", got["email"])
+	}
+	if got["username"] != "ada_lovelace" {
+		t.Errorf("username = %v, want ada_lovelace", got["username"])
+	}
+}
+
+// TestUpdateReportsATakenEmailOrUsernameAsAConflict is the uniqueness check
+// the request asked for explicitly: a username change that collides with an
+// existing account must fail with 409 before the record is changed, the same
+// way a colliding email already does.
+func TestUpdateReportsATakenEmailOrUsernameAsAConflict(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepo()
+	srv := newServer(t, repo)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
+	rec := do(t, srv, http.MethodPatch, "/users/"+admin.ID.String(), asAdmin(admin), `{"username":"taken"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("seeding the taken username: status = %d: %s", rec.Code, rec.Body)
+	}
+	ordinary := seed(t, repo, "user@example.com", auth.RoleReadOnly)
+
+	rec = do(t, srv, http.MethodPatch, "/users/"+ordinary.ID.String(), asUser(ordinary), `{"username":"TAKEN"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if code := errorCode(t, rec); code != "USERNAME_ALREADY_EXISTS" {
+		t.Errorf("code = %q, want USERNAME_ALREADY_EXISTS", code)
 	}
 }
 
@@ -371,8 +500,8 @@ func TestSuccessfulDeleteAndPasswordChangeReturn204WithNoBody(t *testing.T) {
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
-	ordinary := seed(t, repo, "user@example.com", auth.RoleUser)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
+	ordinary := seed(t, repo, "user@example.com", auth.RoleReadOnly)
 
 	rec := do(t, srv, http.MethodPut, "/users/"+ordinary.ID.String()+"/password",
 		asUser(ordinary), `{"password":"another good passphrase"}`)
@@ -404,7 +533,7 @@ func TestErrorsNeverNameThePermission(t *testing.T) {
 
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	ordinary := seed(t, repo, "user@example.com", auth.RoleUser)
+	ordinary := seed(t, repo, "user@example.com", auth.RoleReadOnly)
 
 	rec := do(t, srv, http.MethodGet, "/users", asUser(ordinary), "")
 	if rec.Code != http.StatusForbidden {
@@ -449,12 +578,17 @@ func TestResponseBodiesMatchTheDocumentedSchemas(t *testing.T) {
 	spec := openapitest.Load(t)
 	repo := newFakeRepo()
 	srv := newServer(t, repo)
-	admin := seed(t, repo, "admin@example.com", auth.RoleAdmin)
+	admin := seed(t, repo, "admin@example.com", auth.RoleSystemAdmin)
 
+	// Created with a username, not left at the zero value: the schema check
+	// is meaningless for a field the response never actually sends.
 	created := do(t, srv, http.MethodPost, "/users", asAdmin(admin),
-		`{"email":"schema@example.com","name":"Schema","password":"correct horse battery"}`)
+		`{"email":"schema@example.com","username":"schema_user","name":"Schema","password":"correct horse battery"}`)
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d: %s", created.Code, created.Body)
+	}
+	if !strings.Contains(created.Body.String(), `"username":"schema_user"`) {
+		t.Fatalf("expected the username in the response: %s", created.Body)
 	}
 	spec.AssertMatches(t, "User", created.Body.Bytes())
 

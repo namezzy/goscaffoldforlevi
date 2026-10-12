@@ -1,0 +1,22 @@
+meta {
+  name: mark notification read
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/notifications/{{notificationId}}/read
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  Marking an already-read notification is not an error either — see
+  notificationpg.Repository.MarkRead's doc comment — so running this
+  collection twice against the same notificationId is still a 204, not a
+  404 or a 409.
+}

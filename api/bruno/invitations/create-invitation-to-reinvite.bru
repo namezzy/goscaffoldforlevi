@@ -1,0 +1,39 @@
+meta {
+  name: create invitation to reinvite
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/invitations
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("reinviteEmail", "bruno-reinvite-" + Date.now() + "@example.com");
+  bru.setVar("reinviteInvitationId", "");
+}
+
+body:json {
+  {
+    "email": "{{reinviteEmail}}",
+    "role": "read_only"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 201) {
+    bru.setVar("reinviteInvitationId", res.body.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+}
+
+docs {
+  A second, separate invitation — the one from create-invitation.bru was
+  already consumed by accept-invitation.bru, and reinvite needs a
+  still-pending row to revoke.
+}

@@ -12,15 +12,24 @@ import (
 
 	"go.opentelemetry.io/otel"
 
+	"github.com/namezzy/goscaffoldforlevi/internal/audit"
+	"github.com/namezzy/goscaffoldforlevi/internal/audit/auditpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 	"github.com/namezzy/goscaffoldforlevi/internal/buildinfo"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/incident"
+	"github.com/namezzy/goscaffoldforlevi/internal/incident/incidentpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/invite"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging/messagingpg"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging/natsmq"
+	"github.com/namezzy/goscaffoldforlevi/internal/notification"
+	"github.com/namezzy/goscaffoldforlevi/internal/notification/notificationpg"
 	"github.com/namezzy/goscaffoldforlevi/internal/notify"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
 	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 	"github.com/namezzy/goscaffoldforlevi/internal/user"
+	"github.com/namezzy/goscaffoldforlevi/internal/user/userpg"
 )
 
 // run starts the relay and the consumer and serves until ctx is cancelled.
@@ -90,6 +99,13 @@ func run(ctx context.Context) error {
 
 	store := messagingpg.NewStore(pool, postgres.NewTxManager(pool))
 
+	// Built here, ahead of the consumer, since the incident alert handler
+	// below (conditionally added to its dispatch list) and the incident
+	// watcher both need them.
+	auditService := audit.NewService(auditpg.New(pool))
+	notificationService := notification.NewService(notificationpg.New(pool))
+	userRepo := userpg.New(pool)
+
 	conn, err := natsmq.Connect(ctx, natsConfig(cfg.Messaging), logger)
 	if err != nil {
 		return fmt.Errorf("connect nats: %w", err)
@@ -107,22 +123,61 @@ func run(ctx context.Context) error {
 	)
 	relay.SetObserver(metrics)
 
+	sender := notify.NewLogSender(logger)
+	handlers := []messaging.Handler{
+		notify.NewWelcomeHandler(sender, logger),
+		notify.NewInvitationHandler(
+			sender, cfg.Invite.AcceptURLBase,
+			// Must be built from the same secret cmd/api's invite.NewService
+			// used to encrypt — see invite.NewTokenCipher's doc comment.
+			invite.NewTokenCipher(cfg.Auth.JWTSecret.Reveal()), logger,
+		),
+		notify.NewPasswordResetHandler(
+			sender, cfg.Auth.PasswordResetURLBase,
+			// Must be built from the same secret cmd/api's auth.NewService
+			// used to encrypt — see auth.NewTokenCipher's doc comment.
+			auth.NewTokenCipher(cfg.Auth.JWTSecret.Reveal()), logger,
+		),
+	}
+	// The external alert channel is opt-in: with no address configured, the
+	// exception center still notifies every incident:manage holder in-app
+	// (incident.Watcher does that directly, not through this dispatch
+	// list) — this only adds the email on top of that.
+	if cfg.Notify.IncidentAlertEmail != "" {
+		handlers = append(handlers, notify.NewIncidentAlertHandler(sender, cfg.Notify.IncidentAlertEmail, logger))
+	}
 	consumer := messaging.NewConsumer(
-		notify.NewWelcomeHandler(notify.NewLogSender(logger), logger),
+		// Dispatched by event type, in the same durable consumer/dedupe log —
+		// see notify.DispatchHandler and natsmq.Subscribe's doc comment for
+		// why this is one subscription across every event type rather than
+		// one per type.
+		notify.DispatchHandler(handlers...),
 		store,
 		consumerConfig(cfg.Messaging),
 		logger,
 	)
 	consumer.SetObserver(metrics)
 
-	// The consumer subscribes to the one event it handles rather than to
-	// everything. Filtering at the broker means an unrelated event never
-	// becomes this consumer's problem, and never appears in its dedupe log.
-	subscription, err := natsmq.Subscribe(ctx, conn, user.EventUserCreated, logger)
+	// The consumer subscribes to exactly the event types it handles rather
+	// than to everything. Filtering at the broker means an unrelated event
+	// never becomes this consumer's problem, and never appears in its
+	// dedupe log. incident.EventIncidentOpened is subscribed unconditionally
+	// (not gated on IncidentAlertEmail): every handler above already ignores
+	// an event type that is not its own, so an unconfigured deployment just
+	// sees it dispatched to nothing, harmlessly, rather than needing its own
+	// separate subscription toggle.
+	subscription, err := natsmq.Subscribe(ctx, conn, logger,
+		user.EventUserCreated, invite.EventInvitationCreated, auth.EventPasswordResetRequested,
+		incident.EventIncidentOpened)
 	if err != nil {
 		return fmt.Errorf("subscribe: %w", err)
 	}
 	subscription.SetTracer(tracer)
+
+	incidentWatcher := incident.NewWatcher(
+		incidentpg.New(pool), postgres.NewTxManager(pool), auditService,
+		notificationService, userRepo, publisher, incident.DefaultWatcherConfig(), logger,
+	)
 
 	// Both halves stop on the same context and are waited for. Nothing here
 	// depends on finishing in time: an event the relay did not publish is
@@ -130,7 +185,7 @@ func run(ctx context.Context) error {
 	// be redelivered. The wait exists to make the common case clean, not to
 	// make correctness depend on it.
 	var wg sync.WaitGroup
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 
 	wg.Add(1)
 	go func() {
@@ -145,6 +200,14 @@ func run(ctx context.Context) error {
 		defer wg.Done()
 		if err := subscription.Run(ctx, consumer); err != nil {
 			errs <- fmt.Errorf("subscription: %w", err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := incidentWatcher.Run(ctx); err != nil {
+			errs <- fmt.Errorf("incident watcher: %w", err)
 		}
 	}()
 

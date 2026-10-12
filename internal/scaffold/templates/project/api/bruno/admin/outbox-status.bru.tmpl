@@ -1,0 +1,29 @@
+meta {
+  name: outbox status
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/outbox/status
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.pending: isNumber
+  res.body.published: isNumber
+  res.body.failing: isNumber
+  res.body.worst_attempts: isNumber
+}
+
+docs {
+  The same four numbers `make outbox-status` prints. Reads the table
+  directly, so this answers even when MESSAGING_ENABLED is off — the
+  table exists once the baseline migrations run, whether or not anything
+  is currently writing to it.
+
+  Requires messaging:read, which only the admin role holds. See
+  errors/admin-outbox-status-forbidden.bru for the member-token case.
+}

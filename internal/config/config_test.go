@@ -110,6 +110,9 @@ func validConfig() config.Config {
 			AccessTTL:  900 * secondsUnit,
 			RefreshTTL: 2592000 * secondsUnit,
 
+			PasswordResetTTL:     3600 * secondsUnit,
+			PasswordResetURLBase: "https://app.example.com/reset-password",
+
 			Argon2Time:    3,
 			Argon2Memory:  64 * 1024,
 			Argon2Threads: 4,
@@ -139,6 +142,10 @@ func validConfig() config.Config {
 			Enabled: true,
 			Addr:    "127.0.0.1:9464",
 			Path:    "/metrics",
+		},
+		Invite: config.Invite{
+			TTL:           72 * time.Hour,
+			AcceptURLBase: "https://app.example.com/accept-invite",
 		},
 	}
 }
@@ -202,6 +209,21 @@ func TestValidateRejects(t *testing.T) {
 			name:   "refresh ttl not longer than access ttl",
 			mutate: func(c *config.Config) { c.Auth.RefreshTTL = 60 * secondsUnit },
 			want:   "AUTH_REFRESH_TTL",
+		},
+		{
+			name:   "password reset ttl not positive",
+			mutate: func(c *config.Config) { c.Auth.PasswordResetTTL = 0 },
+			want:   "AUTH_PASSWORD_RESET_TTL",
+		},
+		{
+			name:   "password reset url base not a url",
+			mutate: func(c *config.Config) { c.Auth.PasswordResetURLBase = "not-a-url" },
+			want:   "AUTH_PASSWORD_RESET_URL_BASE",
+		},
+		{
+			name:   "incident alert email not an email address",
+			mutate: func(c *config.Config) { c.Notify.IncidentAlertEmail = "not-an-email" },
+			want:   "NOTIFY_INCIDENT_ALERT_EMAIL",
 		},
 		{
 			name:   "argon2 memory below the owasp floor",

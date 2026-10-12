@@ -12,6 +12,15 @@ import (
 )
 
 type Querier interface {
+	// AcknowledgeIncident marks the incident seen without resolving it. Returns
+	// 0 rows changed when the incident was not open — the caller's signal that
+	// the transition did not apply.
+	AcknowledgeIncident(ctx context.Context, arg AcknowledgeIncidentParams) (int64, error)
+	// AdvanceIncidentPollState commits that this dead letter (and everything
+	// before it) has been turned into or merged into an incident.
+	AdvanceIncidentPollState(ctx context.Context, lastFailedAt time.Time) error
+	// AssignIncidentOwner sets or clears (via NULL) who is handling this.
+	AssignIncidentOwner(ctx context.Context, arg AssignIncidentOwnerParams) error
 	// ClaimEventForConsumer marks an event as handled by one consumer.
 	//
 	// ON CONFLICT DO NOTHING makes the second delivery of the same event return no
@@ -31,21 +40,88 @@ type Querier interface {
 	// different order than they inserted, and no ordering guarantee is offered to
 	// consumers.
 	ClaimOutboxEvents(ctx context.Context, limit int32) ([]ClaimOutboxEventsRow, error)
+	// CountActiveUsersByRole backs the "protect the last system admin" rule: a
+	// role change or deactivation that would leave zero active holders of
+	// system_admin is refused. Unlike CountUsersByRole it excludes disabled
+	// accounts, since a disabled admin cannot act and so does not count as
+	// protection against lockout.
+	//
+	// This is the read used outside a transaction (e.g. by cmd/adminctl); it
+	// gives no concurrency guarantee by itself. LockActiveUsersByRole below is
+	// what the last-system-admin guard actually serializes on.
+	CountActiveUsersByRole(ctx context.Context, role string) (int64, error)
+	CountAuditEventsFiltered(ctx context.Context, arg CountAuditEventsFilteredParams) (int64, error)
+	// CountChildDepartments and CountDepartmentMembers back the two guards a
+	// delete (and, for the child count, a reparent) must pass: a department that
+	// still has sub-departments or assigned members cannot be removed, since
+	// either would either violate the FK (ON DELETE RESTRICT already refuses it
+	// at the database level) or, worse, silently orphan members if that
+	// constraint were ever loosened. The service checks these first so the
+	// caller gets a clear conflict instead of a raw constraint-violation
+	// message.
+	CountChildDepartments(ctx context.Context, parentID *uuid.UUID) (int64, error)
+	// CountDeadLetters answers "how many, in total" for the same filter
+	// ListDeadLetters uses. A LIMIT-ed list has no way to say that on its own,
+	// and reporting len(rows) as the total silently under-counts a queue larger
+	// than the page it was asked to hand back.
+	CountDeadLetters(ctx context.Context, eventType *string) (int64, error)
+	CountDepartmentMembers(ctx context.Context, departmentID *uuid.UUID) (int64, error)
+	CountIncidentsFiltered(ctx context.Context, arg CountIncidentsFilteredParams) (int64, error)
+	CountInvitationsFiltered(ctx context.Context, arg CountInvitationsFilteredParams) (int64, error)
+	CountNotificationsFiltered(ctx context.Context, arg CountNotificationsFilteredParams) (int64, error)
+	// CountOpenIncidentsBySeverity backs the exception center's summary strip.
+	CountOpenIncidentsBySeverity(ctx context.Context) ([]CountOpenIncidentsBySeverityRow, error)
+	// CountTicketsByStatus backs the workbench's ticket overview: one row per
+	// status actually present, which is cheaper and simpler than five separate
+	// COUNT(*) FILTER columns for statuses that might all be zero.
+	CountTicketsByStatus(ctx context.Context) ([]CountTicketsByStatusRow, error)
+	CountTicketsFiltered(ctx context.Context, arg CountTicketsFilteredParams) (int64, error)
 	// CountUnpublishedOutboxEvents backs the queue-depth metric and the readiness
 	// of any operator asking "is the relay keeping up".
 	CountUnpublishedOutboxEvents(ctx context.Context) (int64, error)
+	CountUnreadNotifications(ctx context.Context, userID uuid.UUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	// CountUsersByRole exists for the bootstrap command, which refuses to run once
 	// an administrator already exists. Without that check the command would be a
 	// permanent way to mint privileged accounts outside the API, bypassing both
 	// authorization and the audit trail.
 	CountUsersByRole(ctx context.Context, role string) (int64, error)
+	CountUsersFiltered(ctx context.Context, arg CountUsersFilteredParams) (int64, error)
+	CreateDepartment(ctx context.Context, arg CreateDepartmentParams) (Department, error)
+	// CreateIncident opens a new incident for a fingerprint that has no
+	// non-resolved one yet.
+	CreateIncident(ctx context.Context, arg CreateIncidentParams) (Incident, error)
+	// Invitation queries.
+	CreateInvitation(ctx context.Context, arg CreateInvitationParams) (CreateInvitationRow, error)
+	// Notification queries.
+	// CreateNotification is written inside the caller's transaction (the
+	// ticket or member action that causes it), and is expected to sometimes
+	// conflict on notifications_dedup_key_unique — that is the redelivery/
+	// duplicate-trigger guard working as intended, not an error condition the
+	// caller should surface, so ON CONFLICT DO NOTHING rather than propagating
+	// a unique-violation. :execrows lets the caller tell "created" from
+	// "already existed" without treating the latter as a failure.
+	CreateNotification(ctx context.Context, arg CreateNotificationParams) (int64, error)
+	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (PasswordResetToken, error)
 	CreateRefreshSession(ctx context.Context, arg CreateRefreshSessionParams) (RefreshSession, error)
+	// Ticket queries.
+	//
+	// There is no query here that writes an activity/timeline row: the
+	// timeline is audit_events, written through package audit exactly the way
+	// every other feature's audit trail is (see internal/ticket's doc comment).
+	CreateTicket(ctx context.Context, arg CreateTicketParams) (Ticket, error)
 	// Columns are listed explicitly everywhere. SELECT * makes the generated
 	// struct change shape whenever a migration adds a column, which turns an
 	// additive schema change into a compile error at best and a silent behaviour
 	// change at worst.
+	//
+	// The lists below put username, then department_id, last, matching their
+	// physical position (each was added by a later migration, after
+	// created_at/updated_at). sqlc only reuses the generated User model for a
+	// query whose column list matches the model's field order; out of order, it
+	// would mint a near-duplicate row type per query.
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeleteDepartment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteExpiredRefreshSessions(ctx context.Context) (int64, error)
 	// DeleteProcessedEventsBefore prunes the dedupe log. The cutoff must stay
 	// longer than the longest possible redelivery window, or pruning would make
@@ -54,15 +130,70 @@ type Querier interface {
 	// DeletePublishedOutboxEventsBefore prunes delivered rows.
 	DeletePublishedOutboxEventsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
+	// ExistsProcessedEventSince is the real "did the replay actually succeed"
+	// signal: the dedupe log only gains a row for (event_id, consumer) once the
+	// consumer's handler has actually run to completion (see
+	// messaging.Consumer.attempt — the claim and the handler share a
+	// transaction, so a failed attempt never commits a row here).
+	ExistsProcessedEventSince(ctx context.Context, arg ExistsProcessedEventSinceParams) (bool, error)
+	GetAuditEventByID(ctx context.Context, id uuid.UUID) (AuditEvent, error)
 	// GetDeadLetter fetches one parked message for replay.
 	GetDeadLetter(ctx context.Context, id uuid.UUID) (DeadLetterEvent, error)
+	GetDepartmentByID(ctx context.Context, id uuid.UUID) (Department, error)
+	// GetIncident fetches one incident for detail/actions. FOR UPDATE variant is
+	// GetIncidentForUpdate below; this one is for read-only access.
+	GetIncident(ctx context.Context, id uuid.UUID) (Incident, error)
+	// GetIncidentForUpdate is GetIncident, row-locked for a mutating action.
+	GetIncidentForUpdate(ctx context.Context, id uuid.UUID) (Incident, error)
+	// Exception/processing center: incidents merged from dead letters, and the
+	// poller's checkpoint. See the exception_center migration for the schema
+	// rationale (fingerprint merge rule, why the poller checkpoints by
+	// timestamp rather than a per-row flag).
+	// GetIncidentPollState reads the checkpoint. FOR UPDATE so only one poller
+	// replica advances it at a time — the row lock is the mutual exclusion.
+	GetIncidentPollState(ctx context.Context) (time.Time, error)
+	GetInvitationByID(ctx context.Context, id uuid.UUID) (GetInvitationByIDRow, error)
+	// GetInvitationByTokenHash takes a row lock: Accept always follows it with a
+	// conditional update, and two concurrent accepts of the same token must not
+	// both see it as pending.
+	GetInvitationByTokenHash(ctx context.Context, tokenHash []byte) (GetInvitationByTokenHashRow, error)
+	// GetOpenIncidentByFingerprint finds the one non-resolved incident for this
+	// kind of failure, if any — the merge target. FOR UPDATE so a concurrent
+	// operator action (ack, resolve, replay) on the same incident serializes
+	// with the poller's bump instead of racing it.
+	GetOpenIncidentByFingerprint(ctx context.Context, fingerprint string) (Incident, error)
+	// Organization and department queries.
+	// Column order matches the tables' physical column order (identifier was
+	// added last, by the tickets_notifications_settings migration) so sqlc
+	// reuses the shared Organization model instead of minting a per-query row
+	// type — see queries/user.sql's header comment for the same rule.
+	// GetOrganization reads the one row the singleton table ever holds.
+	GetOrganization(ctx context.Context) (Organization, error)
+	// GetPasswordResetTokenByHash takes a row lock because confirmation reads
+	// the row and then writes it back (marks it used), and two concurrent
+	// confirmations of the same token must not both succeed — the same
+	// reasoning as GetRefreshSessionByTokenHash.
+	GetPasswordResetTokenByHash(ctx context.Context, tokenHash []byte) (PasswordResetToken, error)
 	// GetRefreshSessionByTokenHash takes a row lock because every caller reads the
 	// session in order to immediately rotate or revoke it. Without the lock, two
 	// concurrent refreshes with the same token both read it as valid and both
 	// succeed, which is exactly the replay this table exists to detect.
 	GetRefreshSessionByTokenHash(ctx context.Context, tokenHash []byte) (RefreshSession, error)
+	GetTicketByID(ctx context.Context, id uuid.UUID) (Ticket, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
+	// GetUserByIdentifier backs login, which accepts either an email address or a
+	// username in the same field. Both are normalised to lower case before this
+	// runs, so one equality check against each column is enough — there is no
+	// need for the caller to guess which kind of identifier it was given.
+	GetUserByIdentifier(ctx context.Context, identifier string) (User, error)
+	// Audit log queries.
+	//
+	// There is deliberately no update or delete query here: the table's own
+	// triggers refuse both (see the org_roles_audit migration), and not writing
+	// the queries in the first place means there is no generated method that
+	// could tempt a caller into trying.
+	InsertAuditEvent(ctx context.Context, arg InsertAuditEventParams) (AuditEvent, error)
 	// Messaging queries: the outbox, the consumer dedupe log, and dead letters.
 	// InsertOutboxEvent records an event inside the caller's transaction.
 	//
@@ -70,16 +201,148 @@ type Querier interface {
 	// written, and letting a caller set it would allow an event to be born
 	// already-delivered.
 	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) error
+	// InvalidatePendingPasswordResetTokensForUser removes any earlier
+	// unconsumed token before a new one is issued, so requesting a reset twice
+	// cannot leave two live links — only the most recent email's link works.
+	InvalidatePendingPasswordResetTokensForUser(ctx context.Context, userID uuid.UUID) (int64, error)
+	// ListActiveUserIDsByRole is LockActiveUsersByRole without the lock, for
+	// callers that only need to know who to notify (the exception center's
+	// incident alerts) rather than to guard a concurrent write.
+	ListActiveUserIDsByRole(ctx context.Context, role string) ([]uuid.UUID, error)
+	// ListAuditEventsFiltered backs the audit list view: any combination of a
+	// time range, actor, action, result and target. Target (type + id together,
+	// since an id is only unambiguous within its type) is what the member
+	// detail page uses to show "operations related to this person" — events
+	// where they were acted on, not just ones they performed. These six filters
+	// use the `(param IS NULL OR ...)` pattern (ADR-0005); six dynamic
+	// dimensions is above the point where that pattern is guaranteed to pick a
+	// good plan, but audit_events is written far more than it is queried and
+	// its indexes cover each filter column individually, so a suboptimal
+	// combined plan costs milliseconds, not correctness — this is the "revisit
+	// if EXPLAIN shows a full scan" case the ADR calls out, not yet the
+	// "hand-write it" case.
+	ListAuditEventsFiltered(ctx context.Context, arg ListAuditEventsFilteredParams) ([]AuditEvent, error)
 	// ListDeadLetters is the triage query behind `make dlq-list`.
 	ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]DeadLetterEvent, error)
+	// ListDepartments returns the whole tree. The department count in a
+	// single-tenant deployment is small enough (dozens, not thousands) that
+	// paging it would be solving a problem this phase does not have; the client
+	// builds the tree from the flat list.
+	ListDepartments(ctx context.Context) ([]Department, error)
+	// ListIncidentsFiltered is the exception center's list view, newest activity
+	// first. Every filter is optional (NULL = no constraint on that dimension).
+	ListIncidentsFiltered(ctx context.Context, arg ListIncidentsFilteredParams) ([]Incident, error)
+	// ListInvitationsFiltered pages the invitation management list.
+	ListInvitationsFiltered(ctx context.Context, arg ListInvitationsFilteredParams) ([]ListInvitationsFilteredRow, error)
+	ListNotificationsFiltered(ctx context.Context, arg ListNotificationsFilteredParams) ([]ListNotificationsFilteredRow, error)
+	// ListPendingReplayIncidents is the replay-result resolver's work queue.
+	ListPendingReplayIncidents(ctx context.Context, limit int32) ([]Incident, error)
+	// ListRecentRefreshSessionsByUser backs the security center's session list.
+	//
+	// One row per session family, not per refresh-token rotation: a family is
+	// what a user perceives as "one login on one device", but every rotation
+	// (internal/auth/service.go's Refresh) inserts a new refresh_sessions row
+	// sharing that family_id and revokes the old one. Showing one row per
+	// rotation would list the same login several times over, growing with
+	// however many times the client happened to refresh. DISTINCT ON collapses
+	// each family to its single most recent row (current expiry/revocation
+	// state), and the outer ORDER BY/LIMIT then rank and cap the resulting
+	// families by recency — a plain ORDER BY/LIMIT before collapsing would rank
+	// rotations, not families, and could cap the page at N rows all belonging
+	// to the one most-refreshed family.
+	ListRecentRefreshSessionsByUser(ctx context.Context, arg ListRecentRefreshSessionsByUserParams) ([]RefreshSession, error)
+	// ListTicketsFiltered backs all three list views (all / mine-as-requester /
+	// assigned-to-me): the service passes requester_id or assignee_id only for
+	// the scoped views, leaving both NULL for the "all tickets" view a
+	// ticket:read_all holder gets. The `(param IS NULL OR ...)` pattern is
+	// ADR-0005's documented way to handle this without a query builder.
+	ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]Ticket, error)
 	// ListUsers pages with a stable order. created_at alone is not stable: rows
 	// created in the same millisecond would come back in arbitrary order and a
 	// client paging through them would see duplicates and gaps.
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	// ListUsersFiltered is the member-directory search: a substring match across
+	// email/username/name, an optional role and status filter, and a choice of
+	// sort key and direction.
+	//
+	// The `(param IS NULL OR ...)` shape and the CASE-based ORDER BY are the
+	// documented way this project handles dynamic filtering/sorting without a
+	// query builder (ADR-0005): sqlc cannot parameterise a column name or a sort
+	// direction directly, but exactly one of the six CASE branches is non-NULL
+	// for any given call, since sort_by/sort_desc are fixed for the whole query —
+	// the other five are NULL for every row and so cannot affect the comparison.
+	// id DESC is the final tiebreaker so paging stays stable regardless of which
+	// column is sorted on.
+	ListUsersFiltered(ctx context.Context, arg ListUsersFilteredParams) ([]User, error)
+	// LockActiveUsersByRole is CountActiveUsersByRole's transactional sibling:
+	// it must be called from inside the same transaction as the write it
+	// guards, and its FOR UPDATE is what makes the last-system-admin check
+	// correct under concurrency rather than merely usually-correct.
+	//
+	// FOR UPDATE cannot be combined with an aggregate (count(*)), so this
+	// returns the matching rows and the caller counts len(rows) instead. The
+	// guarantee comes from PostgreSQL re-evaluating a FOR UPDATE query's WHERE
+	// clause against each row's latest committed version once its lock is
+	// granted: a second transaction's call to this query blocks on the first's
+	// locked rows, and when it resumes it sees whichever of those rows the
+	// first transaction's write left still matching role/status — not the
+	// stale set it would have seen at the query's start. Two concurrent
+	// requests each demoting one of the two remaining system admins therefore
+	// serialize correctly instead of both reading "2 remaining" and both
+	// proceeding.
+	LockActiveUsersByRole(ctx context.Context, role string) ([]uuid.UUID, error)
+	// LockDepartmentsForReparenting locks every department row for the duration
+	// of the caller's transaction, so two concurrent reparent operations
+	// serialize instead of each checking the tree against a snapshot the other
+	// is simultaneously invalidating — the same class of race
+	// LockActiveUsersByRole (queries/user.sql) closes for the last-system-admin
+	// guard, applied here to department A being reparented under B at the same
+	// moment B is reparented under A: each transaction's own cycle check would
+	// pass against the pre-move tree, and both would commit, leaving a real
+	// cycle neither check ever saw. Locking the whole table is coarse, but
+	// appropriate at this scale — see ListDepartments' own reasoning for why
+	// this table is never expected to hold more than a few dozen rows.
+	LockDepartmentsForReparenting(ctx context.Context) ([]Department, error)
+	MarkAllNotificationsRead(ctx context.Context, userID uuid.UUID) (int64, error)
 	// MarkDeadLetterReplayed records that a parked message was put back.
 	MarkDeadLetterReplayed(ctx context.Context, id uuid.UUID) (int64, error)
+	// MarkInvitationAccepted is the one-time-use guard: the WHERE clause only
+	// matches a still-pending row, so a second concurrent accept (or a replay of
+	// an old link) updates zero rows instead of racing the first one to
+	// provision a second account.
+	MarkInvitationAccepted(ctx context.Context, arg MarkInvitationAcceptedParams) (int64, error)
+	MarkInvitationExpired(ctx context.Context, id uuid.UUID) (int64, error)
+	// MarkNotificationRead is scoped by user_id, not just id, so one member can
+	// never mark another's notification read via a guessed id — the same
+	// ownership-in-the-WHERE-clause shape as every other per-user resource in
+	// this schema.
+	MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) (int64, error)
 	// MarkOutboxEventPublished records a successful delivery.
 	MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error
+	// MarkPasswordResetTokenUsed is guarded on used_at IS NULL for the same
+	// reason RevokeRefreshSession is guarded on revoked_at IS NULL: idempotent,
+	// and a zero row count is how the caller notices a race already consumed it.
+	MarkPasswordResetTokenUsed(ctx context.Context, id uuid.UUID) (int64, error)
+	// MergeIncidentOccurrence records a repeat failure onto an existing
+	// incident: bump the count, move the pointer to the newest dead letter and
+	// its event, and refresh the error text so the list shows what is failing
+	// right now rather than what failed first. event_id must move together with
+	// dead_letter_id — the replay-result resolver checks processed_events by
+	// event_id, and leaving it pointed at a stale occurrence would make that
+	// check answer the wrong question.
+	MergeIncidentOccurrence(ctx context.Context, arg MergeIncidentOccurrenceParams) error
+	// NextUnpolledDeadLetter returns the oldest dead letter the poller has not
+	// yet processed. Ordered by failed_at so the checkpoint always advances
+	// monotonically; ties within the same microsecond are the one case this can
+	// still skip, an accepted tradeoff at this volume (see ClaimOutboxEvents's
+	// "roughly is the honest word" for the same kind of call elsewhere).
+	NextUnpolledDeadLetter(ctx context.Context, failedAt time.Time) (NextUnpolledDeadLetterRow, error)
+	// OutboxSummary is the admin API's view of the outbox: the same four numbers
+	// `make outbox-status` prints, behind an endpoint rather than a raw SQL
+	// connection. worst_attempts is coalesced to 0 because max() over an empty
+	// FILTER is NULL, and a NULL "how bad is the worst one" reads as a query
+	// failure rather than as "nothing is failing".
+	OutboxSummary(ctx context.Context) (OutboxSummaryRow, error)
 	// System queries: infrastructure, not business data.
 	//
 	// Feature queries live in their own files (queries/user.sql, queries/auth.sql)
@@ -99,13 +362,66 @@ type Querier interface {
 	// kept for visibility rather than control: an event the broker cannot accept
 	// is a broker problem, and dropping it would turn an outage into data loss.
 	RecordOutboxEventFailure(ctx context.Context, arg RecordOutboxEventFailureParams) error
+	// RequestIncidentReplay records that a replay was submitted — not that it
+	// succeeded. See ResolveIncidentReplay for how the real result is learned.
+	RequestIncidentReplay(ctx context.Context, id uuid.UUID) error
+	// ResolveIncident closes the incident out. Resolving is what lets a later,
+	// unrelated recurrence of the same fingerprint open a fresh incident instead
+	// of reopening this one's history. Returns 0 rows changed when it was
+	// already resolved.
+	ResolveIncident(ctx context.Context, arg ResolveIncidentParams) (int64, error)
+	// ResolveIncidentReplay records the real outcome of the last requested
+	// replay.
+	ResolveIncidentReplay(ctx context.Context, arg ResolveIncidentReplayParams) error
+	// RevokeAllRefreshSessionsForUser backs member deactivation: every family a
+	// user holds is revoked, not just the one behind the current request, so a
+	// disabled account cannot keep refreshing a session opened on another
+	// device before it was deactivated. It also backs password reset
+	// confirmation — see auth.Service.ConfirmPasswordReset.
+	RevokeAllRefreshSessionsForUser(ctx context.Context, userID uuid.UUID) (int64, error)
+	RevokeInvitation(ctx context.Context, id uuid.UUID) (int64, error)
 	RevokeRefreshFamily(ctx context.Context, familyID uuid.UUID) (int64, error)
+	// RevokeRefreshFamilyOwned is the self-service revoke-one-session path — one
+	// session meaning one family, per ListRecentRefreshSessionsByUser's doc
+	// comment, so this revokes every row in it, not just the latest rotation
+	// (RevokeRefreshFamily does the same for the unauthenticated reuse-detection
+	// path; this is that operation's ownership-scoped sibling). The WHERE
+	// clause scopes by user_id as well as family_id, so a member can never
+	// revoke someone else's session by guessing its id, and the row count
+	// tells the caller whether anything actually happened (already revoked, or
+	// not theirs — the service treats both as "not found", see
+	// ConfirmPasswordReset's sibling reasoning on not distinguishing failure
+	// causes).
+	RevokeRefreshFamilyOwned(ctx context.Context, arg RevokeRefreshFamilyOwnedParams) (int64, error)
 	// RevokeRefreshSession is idempotent: revoked_at is only set the first time,
 	// so re-revoking never moves the timestamp forward.
 	RevokeRefreshSession(ctx context.Context, id uuid.UUID) (int64, error)
+	// RevokeRefreshSessionsForUserExceptFamily backs "revoke my other sessions":
+	// every active session the user holds except the one the current request is
+	// authenticated through.
+	RevokeRefreshSessionsForUserExceptFamily(ctx context.Context, arg RevokeRefreshSessionsForUserExceptFamilyParams) (int64, error)
+	// SetIncidentSeverity lets an operator re-triage a merged incident.
+	SetIncidentSeverity(ctx context.Context, arg SetIncidentSeverityParams) error
+	UpdateDepartment(ctx context.Context, arg UpdateDepartmentParams) (Department, error)
+	UpdateOrganization(ctx context.Context, arg UpdateOrganizationParams) (Organization, error)
+	// UpdateTicket is every mutating action (assign, reassign, process note,
+	// provide info, complete, close): the service always passes the full set
+	// of columns that action changes, coalesced against the current row for
+	// the rest, and always narrows WHERE by version — see this table's own
+	// doc comment in the migration. Zero rows affected means a concurrent
+	// writer already moved the ticket to a different version; the service
+	// turns that into TICKET_VERSION_CONFLICT rather than silently doing
+	// nothing.
+	UpdateTicket(ctx context.Context, arg UpdateTicketParams) (Ticket, error)
 	// UpdateUser applies a partial update. A NULL argument means "leave alone",
 	// which is what lets one statement serve PATCH without the repository having
 	// to build SQL by string concatenation.
+	//
+	// department_id has a third state beyond "leave alone" / "set to this
+	// value": clear_department explicitly unassigns it, matching how
+	// departments.parent_id's clear_parent already works (queries/org.sql).
+	// coalesce alone cannot express that: a NULL argument is indistinguishable
+	// from "not provided".
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
 }
 

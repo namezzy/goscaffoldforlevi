@@ -21,10 +21,11 @@ func NewAccountStore(repo Repository) *AccountStore { return &AccountStore{repo:
 
 var _ auth.AccountStore = (*AccountStore)(nil)
 
-// FindByEmail looks up an account for login. The caller has already normalised
-// the address; doing it again here would hide a mismatch rather than fix it.
-func (s *AccountStore) FindByEmail(ctx context.Context, email string) (auth.Account, error) {
-	u, err := s.repo.GetByEmail(ctx, email)
+// FindByIdentifier looks up an account for login by email or username. The
+// caller has already normalised it; doing so again here would hide a
+// mismatch rather than fix it.
+func (s *AccountStore) FindByIdentifier(ctx context.Context, identifier string) (auth.Account, error) {
+	u, err := s.repo.GetByIdentifier(ctx, identifier)
 	if err != nil {
 		return auth.Account{}, err
 	}
@@ -60,6 +61,7 @@ func (s *AccountStore) UpdatePasswordHash(ctx context.Context, userID, hash stri
 func toAccount(u User) auth.Account {
 	return auth.Account{
 		UserID:       u.ID.String(),
+		Email:        u.Email,
 		PasswordHash: u.PasswordHash,
 		Role:         u.Role,
 		Active:       u.CanAuthenticate(),

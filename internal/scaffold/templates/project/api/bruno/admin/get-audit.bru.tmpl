@@ -1,0 +1,23 @@
+meta {
+  name: get audit
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/audit/{{auditEventId}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{auditEventId}}
+  res.body.result: eq success
+}
+
+docs {
+  Requires audit:read. Depends on list-audit having found at least one
+  event to store an id from; on a database with no prior activity at all
+  this would need a seeded id instead.
+}

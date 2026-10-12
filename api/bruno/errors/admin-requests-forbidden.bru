@@ -1,0 +1,26 @@
+meta {
+  name: admin requests forbidden
+  type: http
+  seq: 17
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/requests
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{memberAccessToken}}
+}
+
+assert {
+  res.status: eq 403
+  res.body.error.code: eq FORBIDDEN
+}
+
+docs {
+  Same shape as admin-outbox-status-forbidden.bru: the live request feed can
+  show every path being called by every caller, admin or not, so it is
+  gated the same way — requests:read, admin only, no ownership path.
+}

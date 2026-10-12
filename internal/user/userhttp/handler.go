@@ -29,9 +29,12 @@ func NewHandler(svc *user.Service, log *slog.Logger) *Handler {
 // Only the checks that depend solely on the caller's role are applied as
 // middleware. Read and update carry no RequirePermission, because a user may
 // perform them on their own record — that decision needs the target's identity
-// and is made in the service. List, create and delete have no such
-// self-service path, so they are gated here and never reach the service
-// without the permission.
+// and is made in the service (Update's own switch additionally distinguishes
+// a role change from a status/department change from an ordinary self-
+// editable field, since those need different permissions — see
+// user.Service.Update). List, create and delete have no such self-service
+// path, so they are gated here and never reach the service without the
+// permission.
 func (h *Handler) Routes(requirePermission func(auth.Permission) func(http.Handler) http.Handler) func(chi.Router) {
 	return func(r chi.Router) {
 		r.With(requirePermission(auth.PermUserCreate)).Post("/", h.Create)
@@ -77,7 +80,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(r.Context(), w, h.log, http.StatusOK, toResponse(found))
 }
 
-// List returns a page of users.
+// List returns a page of the member directory, optionally narrowed by a
+// search term, a role or status filter, and sorted by the requested column.
+//
+// A request with none of search/role/status/sort behaves exactly like the
+// old unfiltered listing: ListFiltered with a zero-value ListFilter and the
+// default sort is equivalent to List, so there is one code path rather than
+// a filtered and an unfiltered handler to keep in sync.
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	page, err := intQuery(r, "page", 1)
 	if err != nil {
@@ -90,7 +99,25 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.svc.List(r.Context(), page, pageSize)
+	q := r.URL.Query()
+	f := user.ListFilter{
+		Search: q.Get("search"),
+		SortBy: user.SortBy(q.Get("sort")),
+		// Descending is the default direction, matching the old unfiltered
+		// listing's fixed "newest first" order (ORDER BY created_at DESC):
+		// an absent sort_dir must not silently reverse it.
+		SortDesc: q.Get("sort_dir") != "asc",
+	}
+	if raw := q.Get("role"); raw != "" {
+		role := auth.Role(raw)
+		f.Role = &role
+	}
+	if raw := q.Get("status"); raw != "" {
+		status := user.Status(raw)
+		f.Status = &status
+	}
+
+	result, err := h.svc.ListFiltered(r.Context(), f, page, pageSize)
 	if err != nil {
 		httpx.WriteError(r.Context(), w, h.log, err)
 		return

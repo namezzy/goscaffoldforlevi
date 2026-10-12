@@ -92,7 +92,7 @@ func createAdmin(email, name string, passwordStdin bool) error {
 		Email:    email,
 		Name:     name,
 		Password: password,
-		Role:     auth.RoleAdmin,
+		Role:     auth.RoleSystemAdmin,
 	})
 	if err != nil {
 		return err
@@ -123,7 +123,7 @@ func bootstrap(
 ) (user.User, error) {
 	repo := userpg.New(pool)
 
-	admins, err := repo.CountByRole(ctx, auth.RoleAdmin)
+	admins, err := repo.CountByRole(ctx, auth.RoleSystemAdmin)
 	if err != nil {
 		return user.User{}, fmt.Errorf("count administrators: %w", err)
 	}
@@ -168,7 +168,7 @@ func bootstrap(
 func bootstrapContext(ctx context.Context) context.Context {
 	return auth.ContextWithPrincipal(ctx, auth.Principal{
 		UserID: "bootstrap",
-		Role:   auth.RoleAdmin,
+		Role:   auth.RoleSystemAdmin,
 	})
 }
 

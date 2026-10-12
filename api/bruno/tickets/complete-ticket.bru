@@ -1,0 +1,37 @@
+meta {
+  name: complete ticket
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/complete
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "note": "Replaced the part; confirmed working.",
+    "expected_version": {{ticketVersion}}
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("ticketVersion", res.body.version);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq completed
+  res.body.version: eq 7
+}
+
+docs {
+  Available to the current assignee or a ticket:manage holder, only from
+  in_progress. Moves to completed and notifies the requester — "负责人完成 →
+  成员查询结果" from the acceptance flow; get-ticket-activity and
+  get-ticket, right after this, are that query.
+}

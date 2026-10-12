@@ -1,0 +1,26 @@
+meta {
+  name: dlq list
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/dlq
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+docs {
+  Ordered by failed_at descending, matching `make dlq-list`. On a fresh
+  database this is [], not an error — an empty DLQ is the good outcome, not
+  a missing one.
+
+  Bounded by `limit` (default 50, max 200) rather than paginated: this is a
+  triage queue an operator reads end to end, not a resource a client pages
+  through.
+}

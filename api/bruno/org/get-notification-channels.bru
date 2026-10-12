@@ -1,0 +1,26 @@
+meta {
+  name: get notification channels
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/v1/org/notification-channels
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.body[0].name: isString
+  res.body[0].configured: isBoolean
+}
+
+docs {
+  Requires org:read. Deployment-controlled and read-only — there is no
+  request in this collection that changes a channel's status, because
+  nothing in the API can: it reflects what the running deployment actually
+  wired up (see cmd/api/features.go's notificationChannels), not a stored
+  setting.
+}

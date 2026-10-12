@@ -1,0 +1,24 @@
+meta {
+  name: delete department
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/org/departments/{{departmentId}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  Runs last so the folder leaves nothing behind, matching users/delete.
+
+  Requires department:write. Succeeds here because the department has no
+  sub-departments and no assigned members — DEPARTMENT_HAS_CHILDREN and
+  DEPARTMENT_HAS_MEMBERS are not exercised by this collection; producing
+  either needs state this folder does not otherwise create.
+}

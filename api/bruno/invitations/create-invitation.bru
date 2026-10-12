@@ -1,0 +1,46 @@
+meta {
+  name: create invitation
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/v1/invitations
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("inviteEmail", "bruno-invite-" + Date.now() + "@example.com");
+  bru.setVar("invitationId", "");
+  bru.setVar("inviteToken", "");
+}
+
+body:json {
+  {
+    "email": "{{inviteEmail}}",
+    "role": "read_only"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 201) {
+    bru.setVar("invitationId", res.body.id);
+    bru.setVar("inviteToken", res.body.token);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.status: eq pending
+  res.body.role: eq read_only
+  res.body.token: isString
+}
+
+docs {
+  Requires invite:create. Queues the invitation email through the same
+  outbox every other asynchronous side effect in this API uses (ADR-0009)
+  and, in the same response, hands the plaintext token directly back to the
+  caller — see CreatedInvitation's schema description for why that is
+  intentional rather than a leak. accept-invitation.bru is what uses it.
+}

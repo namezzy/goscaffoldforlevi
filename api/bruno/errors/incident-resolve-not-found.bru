@@ -1,0 +1,22 @@
+meta {
+  name: incident resolve not found
+  type: http
+  seq: 29
+}
+
+post {
+  url: {{baseUrl}}/api/v1/incidents/01a05c5c-0000-7000-8000-000000000000/resolve
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq INCIDENT_NOT_FOUND
+}
+
+docs {
+  Same fallback-to-lookup reasoning as incident-acknowledge-not-found.bru:
+  Resolve's conditional UPDATE cannot tell "no such incident" apart from
+  "already resolved" from the row count alone.
+}

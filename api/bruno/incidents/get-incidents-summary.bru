@@ -1,0 +1,23 @@
+meta {
+  name: get incidents summary
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/incidents/summary
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  Requires incident:read. Non-resolved incident counts by severity — a
+  severity with zero incidents is simply absent from the object rather than
+  present with a zero value, so this collection cannot assert its exact
+  shape without knowing what, if anything, the exception center currently
+  holds.
+}

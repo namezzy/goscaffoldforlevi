@@ -1,0 +1,30 @@
+meta {
+  name: list notifications
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/notifications?page=1&page_size=20
+  body: none
+  auth: inherit
+}
+
+script:post-response {
+  if (res.getStatus() === 200 && res.body.items.length > 0) {
+    bru.setVar("notificationId", res.body.items[0].id);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+  res.body.items[0].target_type: eq ticket
+  res.body.page_info.page: eq 1
+}
+
+docs {
+  Scoped to the caller's own account — there is no user_id parameter,
+  because there is no way to ask for anyone else's. Stores notificationId
+  for mark-notification-read.
+}

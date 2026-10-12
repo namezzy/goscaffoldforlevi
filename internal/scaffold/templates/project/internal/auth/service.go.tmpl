@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 
 	"log/slog"
 	"net/netip"
@@ -25,45 +26,62 @@ type ServiceConfig struct {
 	Audience   string
 	AccessTTL  time.Duration
 	RefreshTTL time.Duration
+	// PasswordResetTTL is how long a self-service password reset token
+	// stays usable after it is requested.
+	PasswordResetTTL time.Duration
 }
 
 // Service performs authentication. It owns no HTTP or SQL knowledge: the
 // request metadata it records (user agent, IP) arrives as plain values.
 type Service struct {
-	cfg      ServiceConfig
-	accounts AccountStore
-	sessions SessionRepository
-	hasher   PasswordHasher
-	issuer   TokenIssuer
-	tx       TxManager
-	now      Clock
-	log      *slog.Logger
+	cfg         ServiceConfig
+	accounts    AccountStore
+	sessions    SessionRepository
+	resets      PasswordResetRepository
+	resetCipher TokenEncrypter
+	hasher      PasswordHasher
+	issuer      TokenIssuer
+	events      EventPublisher
+	tx          TxManager
+	now         Clock
+	log         *slog.Logger
 
-	// observer is never nil; see SetObserver.
+	// observer and audit are never nil; see SetObserver and
+	// SetAuditRecorder.
 	observer Observer
+	audit    AuditRecorder
 }
 
 // NewService wires the service. Every collaborator is an interface, so the
-// composition root decides what backs each one.
+// composition root decides what backs each one. resets, resetCipher and
+// events back the self-service password reset flow (Phase 3) — see
+// RequestPasswordReset and ConfirmPasswordReset.
 func NewService(
 	cfg ServiceConfig,
 	accounts AccountStore,
 	sessions SessionRepository,
+	resets PasswordResetRepository,
+	resetCipher TokenEncrypter,
 	hasher PasswordHasher,
 	issuer TokenIssuer,
+	events EventPublisher,
 	tx TxManager,
 	log *slog.Logger,
 ) *Service {
 	return &Service{
-		observer: NopObserver(),
-		cfg:      cfg,
-		accounts: accounts,
-		sessions: sessions,
-		hasher:   hasher,
-		issuer:   issuer,
-		tx:       tx,
-		now:      time.Now,
-		log:      log,
+		observer:    NopObserver(),
+		audit:       nopAuditRecorder{},
+		cfg:         cfg,
+		accounts:    accounts,
+		sessions:    sessions,
+		resets:      resets,
+		resetCipher: resetCipher,
+		hasher:      hasher,
+		issuer:      issuer,
+		events:      events,
+		tx:          tx,
+		now:         time.Now,
+		log:         log,
 	}
 }
 
@@ -80,28 +98,32 @@ type RequestMeta struct {
 
 // errInvalidCredentials is the single answer to every login failure.
 //
-// Unknown email, wrong password and disabled account all produce this exact
-// value. Any difference — in code, message, or status — turns the endpoint into
-// an account enumeration oracle, and "this account is disabled" is precisely
-// the confirmation an attacker wants.
+// Unknown identifier, wrong password and disabled account all produce this
+// exact value. Any difference — in code, message, or status — turns the
+// endpoint into an account enumeration oracle, and "this account is
+// disabled" is precisely the confirmation an attacker wants.
 func errInvalidCredentials() error {
-	return apperr.Unauthorized("INVALID_CREDENTIALS", "invalid email or password")
+	return apperr.Unauthorized("INVALID_CREDENTIALS", "invalid credentials")
 }
 
-// Login exchanges an email and password for a token pair.
+// Login exchanges an identifier and password for a token pair. The
+// identifier may be an email address or a username; both are accepted in the
+// same field because a client asking a caller "email or username?" before it
+// even knows whether the account exists is already leaking which one that
+// account uses.
 //
 // The three failure paths are deliberately kept indistinguishable not only in
 // their response but in their cost: when no account matches, the service still
 // performs a full Argon2id verification against a dummy hash, and a disabled
 // account is rejected only after its real password has been checked. Skipping
 // either would make the timing of a failure reveal which case it was.
-func (s *Service) Login(ctx context.Context, email, password string, meta RequestMeta) (TokenPair, error) {
+func (s *Service) Login(ctx context.Context, identifier, password string, meta RequestMeta) (TokenPair, error) {
 	// The request is shaped before it is counted. A malformed body is a client
 	// error, not a credential check, and counting it would let anyone raise
 	// the authentication failure rate by posting empty forms — which turns a
 	// security alert into a nuisance and then into something people mute.
 	var v validate.Violations
-	v.Required("email", email)
+	v.Required("identifier", identifier)
 	v.Required("password", password)
 	if v.Any() {
 		return TokenPair{}, v.Err("INVALID_ARGUMENT", "invalid login request")
@@ -111,7 +133,7 @@ func (s *Service) Login(ctx context.Context, email, password string, meta Reques
 	// rate has attempts as its denominator. Successes as the denominator would
 	// go to zero during the one incident that matters — every login failing —
 	// and the alert would never fire.
-	pair, err := s.login(ctx, email, password, meta)
+	pair, err := s.login(ctx, identifier, password, meta)
 	s.observer.LoginAttempt(err == nil)
 	return pair, err
 }
@@ -126,9 +148,9 @@ func (s *Service) SetObserver(o Observer) {
 	s.observer = o
 }
 
-func (s *Service) login(ctx context.Context, email, password string, meta RequestMeta) (TokenPair, error) {
+func (s *Service) login(ctx context.Context, identifier, password string, meta RequestMeta) (TokenPair, error) {
 
-	account, err := s.accounts.FindByEmail(ctx, validate.NormalizeEmail(email))
+	account, err := s.accounts.FindByIdentifier(ctx, validate.NormalizeIdentifier(identifier))
 	switch {
 	case err == nil:
 	case apperr.Is(err, apperr.KindNotFound):
@@ -290,6 +312,80 @@ func (s *Service) Logout(ctx context.Context, refreshToken string) error {
 	})
 }
 
+// recentSessionLimit bounds the security center's session list — enough to
+// show every device anyone plausibly still has logged in, plus recent
+// history, without this becoming an unbounded query. Matches
+// DefaultPageSize-scale limits used elsewhere in this codebase (ADR-0004).
+const recentSessionLimit = 50
+
+// ListSessions returns the caller's own recent sessions, newest first —
+// both currently active ones and revoked/expired history, which doubles as
+// the "登录记录" the security center shows: each row already is one login.
+func (s *Service) ListSessions(ctx context.Context) ([]Session, error) {
+	principal, ok := PrincipalFrom(ctx)
+	if !ok {
+		return nil, ErrMissingCredentials()
+	}
+	return s.sessions.ListRecentByUser(ctx, principal.UserID, recentSessionLimit)
+}
+
+// RevokeSession revokes one of the caller's own sessions by id.
+//
+// "Not found" and "not yours" are reported identically — see
+// SessionRepository.RevokeOwned's doc comment — and so is "already
+// revoked": all three answer with the same not-found error, because from
+// the caller's point of view every one of them means the same thing, "this
+// session is not something you can revoke right now."
+func (s *Service) RevokeSession(ctx context.Context, id FamilyID) error {
+	principal, ok := PrincipalFrom(ctx)
+	if !ok {
+		return ErrMissingCredentials()
+	}
+	revoked, err := s.sessions.RevokeOwned(ctx, id, principal.UserID)
+	if err != nil {
+		return err
+	}
+	if !revoked {
+		return apperr.NotFound("SESSION_NOT_FOUND", "session not found")
+	}
+	return s.audit.Record(ctx, AuditEntry{
+		ActorID: &principal.UserID, Action: "session.revoked",
+		TargetType: "user", TargetID: principal.UserID,
+		After: map[string]string{"session_id": id.String()},
+	})
+}
+
+// RevokeOtherSessions revokes every one of the caller's own sessions except
+// the one the current request is authenticated through — "log out
+// everywhere else."
+func (s *Service) RevokeOtherSessions(ctx context.Context) (int64, error) {
+	principal, ok := PrincipalFrom(ctx)
+	if !ok {
+		return 0, ErrMissingCredentials()
+	}
+	family, err := ParseFamilyID(principal.TokenID)
+	if err != nil {
+		// The access token's jti is always a family id as of this
+		// version (see issuePair) — a token that fails to parse as one
+		// was not issued by this service, and Authenticate would already
+		// have rejected it. Treated as an internal error rather than a
+		// client one: nothing the caller did wrong produced this.
+		return 0, apperr.Internal(fmt.Errorf("revoke other sessions: parse current session id: %w", err))
+	}
+	revoked, err := s.sessions.RevokeAllForUserExceptFamily(ctx, principal.UserID, family)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.audit.Record(ctx, AuditEntry{
+		ActorID: &principal.UserID, Action: "session.revoked_others",
+		TargetType: "user", TargetID: principal.UserID,
+		After: map[string]int64{"sessions_revoked": revoked},
+	}); err != nil {
+		return 0, err
+	}
+	return revoked, nil
+}
+
 // issuePair mints an access token and a refresh token and records the new
 // session. Both tokens are produced together so that a caller can never end up
 // holding one without the other.
@@ -327,12 +423,20 @@ func (s *Service) issuePair(
 	}
 
 	access, err := s.issuer.Issue(AccessClaims{
-		Issuer:    s.cfg.Issuer,
-		Subject:   userID,
-		Audience:  s.cfg.Audience,
-		IssuedAt:  now,
+		Issuer:   s.cfg.Issuer,
+		Subject:  userID,
+		Audience: s.cfg.Audience,
+		IssuedAt: now,
+		// TokenID (the jti) is the session's family id, not a fresh,
+		// otherwise-unused identifier — every access token minted from
+		// the same login lineage (across refreshes) carries the same
+		// value. That is what lets Principal.TokenID answer "which
+		// session is this request authenticated through" for the
+		// security center's session list to mark as current, with no
+		// extra claim and no extra round trip — see authhttp's
+		// sessionResponse.
 		ExpiresAt: now.Add(s.cfg.AccessTTL),
-		TokenID:   NewSessionID().String(),
+		TokenID:   family.String(),
 		Role:      role,
 	})
 	if err != nil {
@@ -343,6 +447,7 @@ func (s *Service) issuePair(
 		AccessToken:  access,
 		RefreshToken: refreshToken,
 		ExpiresIn:    int(s.cfg.AccessTTL.Seconds()),
+		SessionID:    family.String(),
 	}, nil
 }
 

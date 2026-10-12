@@ -66,9 +66,9 @@ func ByUser(g *ratelimit.Guard, log *slog.Logger) func(http.Handler) http.Handle
 }
 
 // maxLoginBody bounds how much of the request body the login limiter will read
-// in order to find the email. The body has already passed the global body
-// limit; this is a second, much tighter bound so that the limiter itself cannot
-// be used to make the server buffer megabytes per attempt.
+// in order to find the identifier. The body has already passed the global
+// body limit; this is a second, much tighter bound so that the limiter
+// itself cannot be used to make the server buffer megabytes per attempt.
 const maxLoginBody = 4 << 10
 
 // Login applies both login scopes.
@@ -123,22 +123,22 @@ func Login(g *ratelimit.Guard, trustedProxies int, log *slog.Logger) func(http.H
 
 // loginIdentity derives the per-account bucket key from the request body.
 //
-// The email is hashed rather than used directly. Redis keys surface in MONITOR
-// output, slow logs and RDB snapshots, and an email address is personal data;
-// a digest limits the same account to the same bucket without putting the
-// address anywhere it would be read.
+// The identifier is hashed rather than used directly. Redis keys surface in
+// MONITOR output, slow logs and RDB snapshots, and an email address or a
+// username is personal data; a digest limits the same account to the same
+// bucket without putting the value anywhere it would be read.
 func loginIdentity(body []byte) string {
 	var req struct {
-		Email string `json:"email"`
+		Identifier string `json:"identifier"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return ""
 	}
-	email := validate.NormalizeEmail(req.Email)
-	if email == "" {
+	identifier := validate.NormalizeIdentifier(req.Identifier)
+	if identifier == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(email))
+	sum := sha256.Sum256([]byte(identifier))
 	return hex.EncodeToString(sum[:])
 }
 

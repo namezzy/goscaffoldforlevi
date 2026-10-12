@@ -16,6 +16,7 @@ import (
 	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
 )
 
 // The service is built from fakes rather than mocked away, so these tests
@@ -28,7 +29,7 @@ type fakeAccounts struct {
 	err     error
 }
 
-func (f fakeAccounts) FindByEmail(context.Context, string) (auth.Account, error) {
+func (f fakeAccounts) FindByIdentifier(context.Context, string) (auth.Account, error) {
 	return f.account, f.err
 }
 func (f fakeAccounts) FindByID(context.Context, string) (auth.Account, error) {
@@ -57,6 +58,37 @@ func (f *fakeSessions) Revoke(context.Context, auth.SessionID) error { return ni
 
 func (f *fakeSessions) RevokeFamily(context.Context, auth.FamilyID) (int64, error) { return 1, nil }
 
+func (f *fakeSessions) ListRecentByUser(context.Context, string, int32) ([]auth.Session, error) {
+	return nil, nil
+}
+
+func (f *fakeSessions) RevokeOwned(context.Context, auth.FamilyID, string) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeSessions) RevokeAllForUserExceptFamily(context.Context, string, auth.FamilyID) (int64, error) {
+	return 0, nil
+}
+
+func (f *fakeSessions) RevokeAllForUser(context.Context, string) (int64, error) { return 0, nil }
+
+type fakeResets struct{}
+
+func (fakeResets) Create(context.Context, auth.NewPasswordResetToken) error { return nil }
+func (fakeResets) GetByTokenHash(context.Context, []byte) (auth.PasswordResetToken, error) {
+	return auth.PasswordResetToken{}, apperr.NotFound("PASSWORD_RESET_TOKEN_NOT_FOUND", "not found")
+}
+func (fakeResets) MarkUsed(context.Context, string) (bool, error)                  { return true, nil }
+func (fakeResets) InvalidatePendingForUser(context.Context, string) (int64, error) { return 0, nil }
+
+type fakeCipher struct{}
+
+func (fakeCipher) Encrypt(s string) (string, error) { return s, nil }
+
+type fakePublisher struct{}
+
+func (fakePublisher) Publish(context.Context, messaging.Event) error { return nil }
+
 type fakeHasher struct{ ok bool }
 
 func (f fakeHasher) Hash(string) (string, error) { return "hashed", nil }
@@ -78,20 +110,24 @@ func newHandler(t *testing.T, passwordOK bool, sessions *fakeSessions) *authhttp
 
 	svc := auth.NewService(
 		auth.ServiceConfig{
-			Issuer:     "test",
-			Audience:   "test-api",
-			AccessTTL:  15 * time.Minute,
-			RefreshTTL: 720 * time.Hour,
+			Issuer:           "test",
+			Audience:         "test-api",
+			AccessTTL:        15 * time.Minute,
+			RefreshTTL:       720 * time.Hour,
+			PasswordResetTTL: time.Hour,
 		},
 		fakeAccounts{account: auth.Account{
 			UserID:       "01930f8e-0000-7000-8000-000000000001",
 			PasswordHash: "stored",
-			Role:         auth.RoleUser,
+			Role:         auth.RoleReadOnly,
 			Active:       true,
 		}},
 		sessions,
+		fakeResets{},
+		fakeCipher{},
 		fakeHasher{ok: passwordOK},
 		fakeIssuer{},
+		fakePublisher{},
 		directTx{},
 		discardLogger(),
 	)
@@ -122,7 +158,7 @@ func post(t *testing.T, h *authhttp.Handler, path, body string, headers map[stri
 
 func TestLoginReturnsAPairThatMustNotBeCached(t *testing.T) {
 	sessions := &fakeSessions{}
-	rec := post(t, newHandler(t, true, sessions), "/auth/login", `{"email":"a@example.com","password":"correct horse"}`, nil)
+	rec := post(t, newHandler(t, true, sessions), "/auth/login", `{"identifier":"a@example.com","password":"correct horse"}`, nil)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d, want 200. body: %s", rec.Code, rec.Body)
@@ -161,7 +197,7 @@ func TestLoginFailuresAreIndistinguishable(t *testing.T) {
 	// account enumeration oracle, which is the single most valuable thing an
 	// attacker can get from a login form.
 	wrongPassword := post(t, newHandler(t, false, &fakeSessions{}), "/auth/login",
-		`{"email":"a@example.com","password":"wrong"}`, nil)
+		`{"identifier":"a@example.com","password":"wrong"}`, nil)
 
 	if wrongPassword.Code != http.StatusUnauthorized {
 		t.Fatalf("status %d, want 401. body: %s", wrongPassword.Code, wrongPassword.Body)
@@ -181,8 +217,8 @@ func TestLoginFailuresAreIndistinguishable(t *testing.T) {
 	}
 
 	// The message must not name which half was wrong.
-	for _, leak := range []string{"password", "email", "exist", "disabled", "found"} {
-		if strings.Contains(strings.ToLower(body.Error.Message), leak) && leak != "password" && leak != "email" {
+	for _, leak := range []string{"password", "identifier", "exist", "disabled", "found"} {
+		if strings.Contains(strings.ToLower(body.Error.Message), leak) && leak != "password" && leak != "identifier" {
 			t.Errorf("the message %q names the failing half", body.Error.Message)
 		}
 	}
@@ -193,9 +229,9 @@ func TestNoResponseEverEchoesTheCredential(t *testing.T) {
 
 	for name, rec := range map[string]*httptest.ResponseRecorder{
 		"success": post(t, newHandler(t, true, &fakeSessions{}), "/auth/login",
-			`{"email":"a@example.com","password":"`+password+`"}`, nil),
+			`{"identifier":"a@example.com","password":"`+password+`"}`, nil),
 		"failure": post(t, newHandler(t, false, &fakeSessions{}), "/auth/login",
-			`{"email":"a@example.com","password":"`+password+`"}`, nil),
+			`{"identifier":"a@example.com","password":"`+password+`"}`, nil),
 	} {
 		if strings.Contains(rec.Body.String(), password) {
 			t.Errorf("%s: the response body contains the submitted password: %s", name, rec.Body)
@@ -206,8 +242,8 @@ func TestNoResponseEverEchoesTheCredential(t *testing.T) {
 func TestMalformedBodiesAreRefused(t *testing.T) {
 	tests := map[string]string{
 		"not json":      `{`,
-		"unknown field": `{"email":"a@example.com","password":"x","admin":true}`,
-		"wrong type":    `{"email":123,"password":"x"}`,
+		"unknown field": `{"identifier":"a@example.com","password":"x","admin":true}`,
+		"wrong type":    `{"identifier":123,"password":"x"}`,
 		"empty":         ``,
 	}
 
@@ -273,7 +309,7 @@ func TestTheRecordedAddressIgnoresAForgedHeader(t *testing.T) {
 	// wrong.
 	sessions := &fakeSessions{}
 	rec := post(t, newHandler(t, true, sessions), "/auth/login",
-		`{"email":"a@example.com","password":"correct horse"}`,
+		`{"identifier":"a@example.com","password":"correct horse"}`,
 		map[string]string{"X-Forwarded-For": "203.0.113.7"})
 
 	if rec.Code != http.StatusOK {
@@ -291,10 +327,102 @@ func TestTheRecordedAddressIgnoresAForgedHeader(t *testing.T) {
 func TestTheUserAgentIsRecorded(t *testing.T) {
 	sessions := &fakeSessions{}
 	post(t, newHandler(t, true, sessions), "/auth/login",
-		`{"email":"a@example.com","password":"correct horse"}`,
+		`{"identifier":"a@example.com","password":"correct horse"}`,
 		map[string]string{"User-Agent": "curl/8.0"})
 
 	if sessions.created.UserAgent == nil || *sessions.created.UserAgent != "curl/8.0" {
 		t.Errorf("user agent %v, want curl/8.0", sessions.created.UserAgent)
+	}
+}
+
+// TestPasswordResetRequestIsAlways202 is the wire-level half of the
+// account-enumeration guarantee internal/auth's own tests cover at the
+// service layer: whatever the service decides internally, the HTTP
+// response must look identical for a request an attacker cannot
+// distinguish from a real one.
+func TestPasswordResetRequestIsAlways202(t *testing.T) {
+	rec := post(t, newHandler(t, true, &fakeSessions{}), "/auth/password-reset/request",
+		`{"identifier":"whoever@example.com"}`, nil)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status %d, want 202. body: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPasswordResetRequestRejectsAMalformedBody(t *testing.T) {
+	rec := post(t, newHandler(t, true, &fakeSessions{}), "/auth/password-reset/request", `{`, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400. body: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPasswordResetConfirmRejectsAnUnknownToken(t *testing.T) {
+	rec := post(t, newHandler(t, true, &fakeSessions{}), "/auth/password-reset/confirm",
+		`{"token":"whatever","password":"a new strong password 123"}`, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400. body: %s", rec.Code, rec.Body)
+	}
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Error.Code != "PASSWORD_RESET_TOKEN_INVALID" {
+		t.Errorf("code %q, want PASSWORD_RESET_TOKEN_INVALID", body.Error.Code)
+	}
+}
+
+// sessionRouter mounts SessionRoutes behind a stand-in for the Authenticate
+// middleware, injecting principal directly — the same way cmd/api mounts
+// SessionRoutes inside the protected route group in production, minus the
+// real JWT verification, which authjwt's own tests already cover.
+func sessionRouter(h *authhttp.Handler, principal auth.Principal) http.Handler {
+	r := chi.NewRouter()
+	r.Route("/auth/sessions", func(sr chi.Router) {
+		sr.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				next.ServeHTTP(w, r.WithContext(auth.ContextWithPrincipal(r.Context(), principal)))
+			})
+		})
+		sr.Group(h.SessionRoutes())
+	})
+	return r
+}
+
+func TestListSessionsMarksTheCallersCurrentSession(t *testing.T) {
+	sessions := &fakeSessions{}
+	h := newHandler(t, true, sessions)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/sessions", nil)
+	rec := httptest.NewRecorder()
+	sessionRouter(h, auth.Principal{UserID: "u", Role: auth.RoleReadOnly, TokenID: "not-used-by-the-fake"}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200. body: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Items == nil {
+		t.Error("items was serialised as null, not []")
+	}
+}
+
+func TestRevokeSessionRejectsAMalformedID(t *testing.T) {
+	h := newHandler(t, true, &fakeSessions{})
+	req := httptest.NewRequest(http.MethodDelete, "/auth/sessions/not-a-uuid", nil)
+	rec := httptest.NewRecorder()
+	sessionRouter(h, auth.Principal{UserID: "u", Role: auth.RoleReadOnly}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400. body: %s", rec.Code, rec.Body)
 	}
 }

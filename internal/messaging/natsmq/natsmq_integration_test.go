@@ -90,7 +90,7 @@ func TestAnEventSurvivesTheRoundTrip(t *testing.T) {
 	conn := connect(t, stream, "roundtrip-consumer")
 	ctx := context.Background()
 
-	sub, err := natsmq.Subscribe(ctx, conn, "user.created.v1", discardLogger())
+	sub, err := natsmq.Subscribe(ctx, conn, discardLogger(), "user.created.v1")
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestAnUnacknowledgedEventIsRedelivered(t *testing.T) {
 	conn := connect(t, stream, "redeliver-consumer")
 	ctx := context.Background()
 
-	sub, err := natsmq.Subscribe(ctx, conn, "user.created.v1", discardLogger())
+	sub, err := natsmq.Subscribe(ctx, conn, discardLogger(), "user.created.v1")
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestAMessageWithNoEnvelopeIsNotRetriedForever(t *testing.T) {
 	conn := connect(t, stream, "poison-consumer")
 	ctx := context.Background()
 
-	sub, err := natsmq.Subscribe(ctx, conn, "user.created.v1", discardLogger())
+	sub, err := natsmq.Subscribe(ctx, conn, discardLogger(), "user.created.v1")
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestSubscribingTwiceKeepsTheConsumerPosition(t *testing.T) {
 	}
 
 	consume := func(timeout time.Duration) []uuid.UUID {
-		sub, err := natsmq.Subscribe(ctx, conn, "user.created.v1", discardLogger())
+		sub, err := natsmq.Subscribe(ctx, conn, discardLogger(), "user.created.v1")
 		if err != nil {
 			t.Fatalf("Subscribe: %v", err)
 		}

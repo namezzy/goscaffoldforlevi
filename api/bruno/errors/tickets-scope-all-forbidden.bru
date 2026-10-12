@@ -1,0 +1,26 @@
+meta {
+  name: tickets scope all forbidden
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tickets?scope=all
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{memberAccessToken}}
+}
+
+assert {
+  res.status: eq 403
+  res.body.error.code: eq FORBIDDEN
+}
+
+docs {
+  scope=mine and scope=assigned need no permission beyond ticket:create,
+  held by every role — see tickets/list-tickets.bru. scope=all requires
+  ticket:read_all, which read_only (this member's role) does not hold.
+}

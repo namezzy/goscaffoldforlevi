@@ -456,13 +456,17 @@ func TestADeadLetteredEventCanBeReplayed(t *testing.T) {
 		t.Fatalf("RecordDeadLetter: %v", err)
 	}
 
-	letters, err := store.ListDeadLetters(ctx, "", 10)
+	page, err := store.ListDeadLetters(ctx, "", 10)
 	if err != nil {
 		t.Fatalf("ListDeadLetters: %v", err)
 	}
-	if len(letters) != 1 {
-		t.Fatalf("ListDeadLetters returned %d rows, want 1", len(letters))
+	if len(page.Items) != 1 {
+		t.Fatalf("ListDeadLetters returned %d rows, want 1", len(page.Items))
 	}
+	if page.Total != 1 {
+		t.Errorf("ListDeadLetters Total = %d, want 1", page.Total)
+	}
+	letters := page.Items
 	// The reason must be stored, or an operator sees a failed event with no
 	// way to tell why it failed.
 	if letters[0].LastError == "" {

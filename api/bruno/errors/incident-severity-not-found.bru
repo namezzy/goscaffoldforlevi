@@ -1,0 +1,27 @@
+meta {
+  name: incident severity not found
+  type: http
+  seq: 25
+}
+
+post {
+  url: {{baseUrl}}/api/v1/incidents/01a05c5c-0000-7000-8000-000000000000/severity
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "severity": "critical"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq INCIDENT_NOT_FOUND
+}
+
+docs {
+  SetSeverity row-locks the incident before updating it, so a non-existent
+  id answers 404 rather than silently updating nothing.
+}

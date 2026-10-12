@@ -25,7 +25,7 @@ func TestCreatingAUserEmitsTheCreatedEvent(t *testing.T) {
 		Email:    "Ada@Example.com",
 		Name:     "Ada",
 		Password: validPassword,
-		Role:     auth.RoleUser,
+		Role:     auth.RoleReadOnly,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -54,7 +54,7 @@ func TestCreatingAUserEmitsTheCreatedEvent(t *testing.T) {
 	if payload.Email != created.Email {
 		t.Errorf("payload email = %q, want the normalised %q", payload.Email, created.Email)
 	}
-	if payload.Name != "Ada" || payload.Role != string(auth.RoleUser) {
+	if payload.Name != "Ada" || payload.Role != string(auth.RoleReadOnly) {
 		t.Errorf("payload = %+v, want the submitted name and role", payload)
 	}
 }
@@ -74,7 +74,7 @@ func TestTheCreatedEventCarriesNoCredentials(t *testing.T) {
 		Email:    "ada@example.com",
 		Name:     "Ada",
 		Password: validPassword,
-		Role:     auth.RoleUser,
+		Role:     auth.RoleReadOnly,
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -117,7 +117,7 @@ func TestAUserIsNotCreatedWhenItsEventCannotBePublished(t *testing.T) {
 		Email:    "ada@example.com",
 		Name:     "Ada",
 		Password: validPassword,
-		Role:     auth.RoleUser,
+		Role:     auth.RoleReadOnly,
 	})
 	if err == nil {
 		t.Fatal("Create succeeded even though the event could not be published")
@@ -137,7 +137,7 @@ func TestAUserIsNotCreatedWhenItsEventCannotBePublished(t *testing.T) {
 		Email:    "ada@example.com",
 		Name:     "Ada",
 		Password: validPassword,
-		Role:     auth.RoleUser,
+		Role:     auth.RoleReadOnly,
 	}); err != nil {
 		t.Errorf("the address was left unusable after the failed attempt: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestTheCreatedEventInheritsTheRequestTrace(t *testing.T) {
 		Email:    "ada@example.com",
 		Name:     "Ada",
 		Password: validPassword,
-		Role:     auth.RoleUser,
+		Role:     auth.RoleReadOnly,
 	}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestARejectedUserPublishesNothing(t *testing.T) {
 		Email:    "not-an-email",
 		Name:     "Ada",
 		Password: validPassword,
-		Role:     auth.RoleUser,
+		Role:     auth.RoleReadOnly,
 	}); err == nil {
 		t.Fatal("Create accepted an invalid email address")
 	}

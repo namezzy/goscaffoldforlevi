@@ -147,7 +147,7 @@ func TestByUserBucketsPerPrincipalAndSkipsAnonymousRequests(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		if userID != "" {
 			req = req.WithContext(auth.ContextWithPrincipal(req.Context(),
-				auth.Principal{UserID: userID, Role: auth.RoleUser}))
+				auth.Principal{UserID: userID, Role: auth.RoleReadOnly}))
 		}
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -185,7 +185,7 @@ func TestLoginHidesTheRemainingAttemptCount(t *testing.T) {
 
 	send := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/auth/login",
-			strings.NewReader(`{"email":"victim@example.com","password":"x"}`))
+			strings.NewReader(`{"identifier":"victim@example.com","password":"x"}`))
 		req.RemoteAddr = "203.0.113.30:1234"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -225,7 +225,7 @@ func TestLoginLimitsPerAccountAcrossAddresses(t *testing.T) {
 
 	send := func(addr, email string) int {
 		req := httptest.NewRequest(http.MethodPost, "/auth/login",
-			strings.NewReader(`{"email":"`+email+`","password":"x"}`))
+			strings.NewReader(`{"identifier":"`+email+`","password":"x"}`))
 		req.RemoteAddr = addr + ":1234"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -256,7 +256,7 @@ func TestEmailCasingSharesOneBucket(t *testing.T) {
 
 	send := func(email string) int {
 		req := httptest.NewRequest(http.MethodPost, "/auth/login",
-			strings.NewReader(`{"email":"`+email+`","password":"x"}`))
+			strings.NewReader(`{"identifier":"`+email+`","password":"x"}`))
 		req.RemoteAddr = "198.51.100.5:1234"
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -273,7 +273,7 @@ func TestEmailCasingSharesOneBucket(t *testing.T) {
 func TestLoginRestoresTheBodyForTheHandler(t *testing.T) {
 	t.Parallel()
 
-	const body = `{"email":"user@example.com","password":"secret"}`
+	const body = `{"identifier":"user@example.com","password":"secret"}`
 
 	var seen string
 	h := ratelimithttp.Login(newGuard(t, ratelimit.NewLocalLimiter(1000)), 0, discardLogger())(
@@ -316,7 +316,7 @@ func TestBackendFailureFailsOpenForTrafficAndClosedForLogin(t *testing.T) {
 	// protection exactly when nobody can see it happening.
 	login := ratelimithttp.Login(guard, 0, discardLogger())(okHandler())
 	req = httptest.NewRequest(http.MethodPost, "/auth/login",
-		strings.NewReader(`{"email":"victim@example.com","password":"x"}`))
+		strings.NewReader(`{"identifier":"victim@example.com","password":"x"}`))
 	req.RemoteAddr = "203.0.113.41:1234"
 	rec = httptest.NewRecorder()
 	login.ServeHTTP(rec, req)

@@ -1,0 +1,39 @@
+meta {
+  name: username already exists
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/api/v1/users
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("usernameConflictEmail", "bruno-username-conflict-" + Date.now() + "@example.com");
+}
+
+body:json {
+  {
+    "email": "{{usernameConflictEmail}}",
+    "username": "{{memberUsername}}",
+    "name": "Conflict",
+    "password": "correct horse battery staple"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.body.error.code: eq USERNAME_ALREADY_EXISTS
+}
+
+docs {
+  The username-uniqueness check the collection exists to demonstrate: a
+  different, never-before-used email, a brand new account, and it still
+  fails — because memberUsername (set by setup-member.bru) is already taken.
+
+  Runs before cleanup-member on purpose. cleanup-member deletes the member
+  and frees its username, which would turn this into a false pass for the
+  wrong reason: create would then succeed, not fail with a conflict.
+}

@@ -99,6 +99,9 @@ func Load() (Config, error) {
 			AccessTTL:  p.dur("AUTH_ACCESS_TTL", 15*time.Minute),
 			RefreshTTL: p.dur("AUTH_REFRESH_TTL", 720*time.Hour),
 
+			PasswordResetTTL:     p.dur("AUTH_PASSWORD_RESET_TTL", time.Hour),
+			PasswordResetURLBase: p.str("AUTH_PASSWORD_RESET_URL_BASE", "http://localhost:3000/reset-password"),
+
 			// OWASP's recommended Argon2id profile: 64 MiB, three passes,
 			// four lanes.
 			Argon2Time:    p.uint32("AUTH_ARGON2_TIME", 3),
@@ -164,6 +167,17 @@ func Load() (Config, error) {
 			// decides to expose it.
 			Addr: p.str("METRICS_ADDR", "127.0.0.1:9464"),
 			Path: p.str("METRICS_PATH", "/metrics"),
+		},
+		GeoIP: GeoIP{
+			DatabasePath: p.str("GEOIP_DATABASE_PATH", ""),
+			Language:     p.str("GEOIP_LANGUAGE", "zh-CN"),
+		},
+		Invite: Invite{
+			TTL:           p.dur("INVITE_TTL", 72*time.Hour),
+			AcceptURLBase: p.str("INVITE_ACCEPT_URL_BASE", "http://localhost:3000/accept-invite"),
+		},
+		Notify: Notify{
+			IncidentAlertEmail: p.str("NOTIFY_INCIDENT_ALERT_EMAIL", ""),
 		},
 	}
 
@@ -267,6 +281,13 @@ func (c Config) Validate() error {
 	probs.positive("AUTH_REFRESH_TTL", c.Auth.RefreshTTL)
 	if c.Auth.RefreshTTL <= c.Auth.AccessTTL {
 		probs.add("AUTH_REFRESH_TTL", "must be longer than AUTH_ACCESS_TTL")
+	}
+	probs.positive("AUTH_PASSWORD_RESET_TTL", c.Auth.PasswordResetTTL)
+	if c.Auth.PasswordResetURLBase == "" {
+		probs.add("AUTH_PASSWORD_RESET_URL_BASE", "is required")
+	} else if !strings.HasPrefix(c.Auth.PasswordResetURLBase, "http://") &&
+		!strings.HasPrefix(c.Auth.PasswordResetURLBase, "https://") {
+		probs.add("AUTH_PASSWORD_RESET_URL_BASE", "must be an http:// or https:// URL")
 	}
 
 	// Argon2. The floors match OWASP's minimum acceptable profile; going below
@@ -391,6 +412,22 @@ func (c Config) Validate() error {
 				"must not be the public HTTP address in production; "+
 					"use a separate port that ingress does not route to")
 		}
+	}
+
+	// Invite
+	probs.positive("INVITE_TTL", c.Invite.TTL)
+	if c.Invite.AcceptURLBase == "" {
+		probs.add("INVITE_ACCEPT_URL_BASE", "is required")
+	} else if !strings.HasPrefix(c.Invite.AcceptURLBase, "http://") &&
+		!strings.HasPrefix(c.Invite.AcceptURLBase, "https://") {
+		probs.add("INVITE_ACCEPT_URL_BASE", "must be an http:// or https:// URL")
+	}
+
+	// Notify — IncidentAlertEmail is optional (empty disables the external
+	// channel entirely), so this only rejects a non-empty value that is
+	// obviously not an address rather than requiring one be set.
+	if addr := c.Notify.IncidentAlertEmail; addr != "" && !strings.Contains(addr, "@") {
+		probs.add("NOTIFY_INCIDENT_ALERT_EMAIL", "must be an email address")
 	}
 
 	return probs.err()

@@ -37,7 +37,7 @@ func validClaims() auth.AccessClaims {
 		IssuedAt:  now,
 		ExpiresAt: now.Add(15 * time.Minute),
 		TokenID:   "01930f8e-0000-7000-8000-0000000000ff",
-		Role:      auth.RoleAdmin,
+		Role:      auth.RoleSystemAdmin,
 	}
 }
 

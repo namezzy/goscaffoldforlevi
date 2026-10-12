@@ -71,7 +71,7 @@ func TestNoSecretReachesTheLogsOrTheSpans(t *testing.T) {
 	})
 
 	body, err := json.Marshal(map[string]string{
-		"email": "victim@example.com", "password": password,
+		"identifier": "victim@example.com", "password": password,
 		"refresh_token": refreshToken,
 	})
 	if err != nil {

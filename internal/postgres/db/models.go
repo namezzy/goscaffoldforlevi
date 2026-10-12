@@ -11,6 +11,19 @@ import (
 	"github.com/google/uuid"
 )
 
+type AuditEvent struct {
+	ID         uuid.UUID
+	ActorID    *uuid.UUID
+	Action     string
+	TargetType string
+	TargetID   string
+	Result     string
+	RequestID  *string
+	BeforeData []byte
+	AfterData  []byte
+	CreatedAt  time.Time
+}
+
 type DeadLetterEvent struct {
 	ID          uuid.UUID
 	EventID     uuid.UUID
@@ -24,6 +37,81 @@ type DeadLetterEvent struct {
 	ReplayedAt  *time.Time
 }
 
+type Department struct {
+	ID        uuid.UUID
+	Name      string
+	ParentID  *uuid.UUID
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type Incident struct {
+	ID                uuid.UUID
+	Fingerprint       string
+	Severity          string
+	Status            string
+	OwnerID           *uuid.UUID
+	DeadLetterID      uuid.UUID
+	EventID           uuid.UUID
+	EventType         string
+	Consumer          string
+	LastError         string
+	OccurrenceCount   int32
+	FirstSeenAt       time.Time
+	LastSeenAt        time.Time
+	AcknowledgedAt    *time.Time
+	AcknowledgedBy    *uuid.UUID
+	ResolvedAt        *time.Time
+	ResolvedBy        *uuid.UUID
+	ReplayStatus      *string
+	ReplayRequestedAt *time.Time
+	ReplayResultAt    *time.Time
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type IncidentPollState struct {
+	ID           bool
+	LastFailedAt time.Time
+}
+
+type Invitation struct {
+	ID             uuid.UUID
+	Email          string
+	DepartmentID   *uuid.UUID
+	Role           string
+	TokenHash      []byte
+	Status         string
+	InvitedBy      uuid.UUID
+	AcceptedUserID *uuid.UUID
+	ExpiresAt      time.Time
+	AcceptedAt     *time.Time
+	RevokedAt      *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type Notification struct {
+	ID         uuid.UUID
+	UserID     uuid.UUID
+	Type       string
+	Title      string
+	Body       string
+	TargetType string
+	TargetID   string
+	ReadAt     *time.Time
+	CreatedAt  time.Time
+	DedupKey   string
+}
+
+type Organization struct {
+	ID         bool
+	Name       string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	Identifier string
+}
+
 type OutboxEvent struct {
 	ID          uuid.UUID
 	EventType   string
@@ -33,6 +121,15 @@ type OutboxEvent struct {
 	PublishedAt *time.Time
 	Attempts    int32
 	LastError   *string
+}
+
+type PasswordResetToken struct {
+	ID        uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+	CreatedAt time.Time
 }
 
 type ProcessedEvent struct {
@@ -54,6 +151,21 @@ type RefreshSession struct {
 	Ip        *netip.Addr
 }
 
+type Ticket struct {
+	ID          uuid.UUID
+	Title       string
+	Description string
+	Category    string
+	Priority    string
+	Status      string
+	RequesterID uuid.UUID
+	AssigneeID  *uuid.UUID
+	Version     int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	ClosedAt    *time.Time
+}
+
 type User struct {
 	ID    uuid.UUID
 	Email string
@@ -64,4 +176,6 @@ type User struct {
 	Role         string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	Username     *string
+	DepartmentID *uuid.UUID
 }

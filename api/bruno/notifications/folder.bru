@@ -1,0 +1,17 @@
+meta {
+  name: notifications
+  seq: 6
+}
+
+docs {
+  In-app notifications, read back with the admin token from auth/login.
+  Runs after tickets/, whose assign, reassign, request-info and complete
+  requests each notify the admin account — it is both this ticket's
+  requester and its assignee throughout that folder — so by the time this
+  folder starts there are real, non-fabricated notifications to list.
+
+  There is no admin-facing read endpoint and nothing to set up or clean up
+  here: every request is scoped to the caller's own account already, and
+  marking a notification read has no separate resource to remove
+  afterward.
+}

@@ -1,0 +1,40 @@
+meta {
+  name: create department
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/v1/org/departments
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("departmentName", "Bruno Dept " + Date.now());
+  // Cleared for the same reason as userId in users/create: a failed create
+  // must not leave update/delete acting on an earlier run's department.
+  bru.setVar("departmentId", "");
+}
+
+body:json {
+  {
+    "name": "{{departmentName}}"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 201) {
+    bru.setVar("departmentId", res.body.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.name: eq {{departmentName}}
+}
+
+docs {
+  Requires department:write. Stores departmentId for the rest of this
+  folder. No parent_id: a top-level department.
+}

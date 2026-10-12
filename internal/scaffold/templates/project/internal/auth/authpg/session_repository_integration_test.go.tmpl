@@ -36,7 +36,7 @@ func seedUser(t *testing.T, pg *pgtest.Container, email string) user.User {
 		Email:        email,
 		Name:         "Session Owner",
 		Status:       user.StatusActive,
-		Role:         auth.RoleUser,
+		Role:         auth.RoleReadOnly,
 		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA",
 	})
 	if err != nil {
@@ -271,7 +271,7 @@ func TestWritesAcrossTwoRepositoriesShareOneTransaction(t *testing.T) {
 			Email:        "atomic@example.com",
 			Name:         "Atomic",
 			Status:       user.StatusActive,
-			Role:         auth.RoleUser,
+			Role:         auth.RoleReadOnly,
 			PasswordHash: "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA",
 		})
 		if err != nil {

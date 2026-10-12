@@ -1,0 +1,23 @@
+meta {
+  name: get unread count
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/notifications/unread-count
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.count: gt 0
+}
+
+docs {
+  What the sidebar badge shows. Asserted greater than zero, not a pinned
+  number: exactly how many notifications the admin account has accumulated
+  depends on how many times this whole collection has run against this
+  database, not on this folder alone.
+}

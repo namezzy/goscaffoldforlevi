@@ -1,0 +1,25 @@
+meta {
+  name: tickets overview forbidden
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tickets/overview
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{memberAccessToken}}
+}
+
+assert {
+  res.status: eq 403
+  res.body.error.code: eq FORBIDDEN
+}
+
+docs {
+  Same shape as admin-outbox-status-forbidden.bru: ticket:read_all is an
+  org-wide view, and read_only (this member's role) does not hold it.
+}

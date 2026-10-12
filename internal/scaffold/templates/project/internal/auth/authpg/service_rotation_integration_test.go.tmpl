@@ -21,6 +21,7 @@ import (
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authjwt"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
 	"github.com/namezzy/goscaffoldforlevi/internal/openapitest"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
@@ -63,7 +64,7 @@ func newRotationService(t *testing.T, pg *pgtest.Container) (*auth.Service, user
 		Email:        "rotation@example.com",
 		Name:         "Rotation",
 		Status:       user.StatusActive,
-		Role:         auth.RoleUser,
+		Role:         auth.RoleReadOnly,
 		PasswordHash: hash,
 	})
 	if err != nil {
@@ -77,15 +78,19 @@ func newRotationService(t *testing.T, pg *pgtest.Container) (*auth.Service, user
 
 	svc := auth.NewService(
 		auth.ServiceConfig{
-			Issuer:     "test",
-			Audience:   "test-api",
-			AccessTTL:  15 * time.Minute,
-			RefreshTTL: 24 * time.Hour,
+			Issuer:           "test",
+			Audience:         "test-api",
+			AccessTTL:        15 * time.Minute,
+			RefreshTTL:       24 * time.Hour,
+			PasswordResetTTL: time.Hour,
 		},
 		user.NewAccountStore(users),
 		authpg.NewSessionRepository(pg.Pool),
+		authpg.NewPasswordResetRepository(pg.Pool),
+		plaintextCipher{},
 		hasher,
 		tokens,
+		messaging.NewMemoryPublisher(),
 		postgres.NewTxManager(pg.Pool),
 		log,
 	)
@@ -233,7 +238,7 @@ func TestTokenResponsesMatchTheDocumentedSchema(t *testing.T) {
 		return rec
 	}
 
-	login := post("/login", `{"email":"rotation@example.com","password":"`+rotationPassword+`"}`)
+	login := post("/login", `{"identifier":"rotation@example.com","password":"`+rotationPassword+`"}`)
 	if login.Code != http.StatusOK {
 		t.Fatalf("login: status = %d: %s", login.Code, login.Body)
 	}
@@ -252,7 +257,7 @@ func TestTokenResponsesMatchTheDocumentedSchema(t *testing.T) {
 	}
 	spec.AssertMatches(t, "TokenPair", refreshed.Body.Bytes())
 
-	rejected := post("/login", `{"email":"rotation@example.com","password":"wrong"}`)
+	rejected := post("/login", `{"identifier":"rotation@example.com","password":"wrong"}`)
 	if rejected.Code != http.StatusUnauthorized {
 		t.Fatalf("bad login: status = %d: %s", rejected.Code, rejected.Body)
 	}

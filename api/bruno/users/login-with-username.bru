@@ -1,0 +1,34 @@
+meta {
+  name: login with username
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "identifier": "{{userUsername}}",
+    "password": "{{userPassword}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.token_type: eq Bearer
+}
+
+docs {
+  Proves the username update.bru just set actually works as a second way to
+  log in, not just a field that round-trips through PATCH.
+
+  userPassword was stored by create.bru and never changed since, so the
+  identifier is the only thing this request varies from auth/login.bru.
+
+  This spends one of the five per-identifier login attempts in the 15-minute
+  window, same as any other login — see auth/login.bru's docs on the quota.
+}

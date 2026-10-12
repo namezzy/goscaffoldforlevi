@@ -1,0 +1,24 @@
+meta {
+  name: incident acknowledge not found
+  type: http
+  seq: 27
+}
+
+post {
+  url: {{baseUrl}}/api/v1/incidents/01a05c5c-0000-7000-8000-000000000000/acknowledge
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq INCIDENT_NOT_FOUND
+}
+
+docs {
+  The conditional UPDATE behind Acknowledge cannot on its own tell "no such
+  incident" apart from "exists but not open" — both match zero rows — so
+  incidentpg.Store.Acknowledge falls back to a lookup on zero rows, which is
+  what makes this 404 rather than the misleading 409
+  INCIDENT_INVALID_TRANSITION that "not open" would imply.
+}

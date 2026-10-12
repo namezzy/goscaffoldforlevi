@@ -1,6 +1,7 @@
 package validate_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
@@ -112,6 +113,44 @@ func TestIntRange(t *testing.T) {
 	}
 	if v.IntRange("page", 101, 1, 100) {
 		t.Fatal("IntRange accepted a value above the upper bound")
+	}
+}
+
+func TestUsername(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"ada", true},
+		{"ada_lovelace", true},
+		{"ada-lovelace-2", true},
+		{"a1", false},                    // too short
+		{strings.Repeat("a", 33), false}, // too long
+		{"1ada", false},                  // must start with a letter
+		{"_ada", false},                  // must start with a letter
+		{"ada lovelace", false},          // no spaces
+		{"ada@lovelace", false},          // must not be confusable with an email
+		{"", false},
+	}
+
+	for _, c := range cases {
+		var v validate.Violations
+		if got := v.Username("username", c.in); got != c.want {
+			t.Errorf("Username(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestNormalizeUsername(t *testing.T) {
+	cases := map[string]string{
+		"  Ada_Lovelace  ": "ada_lovelace",
+		"ada_lovelace":     "ada_lovelace",
+	}
+
+	for in, want := range cases {
+		if got := validate.NormalizeUsername(in); got != want {
+			t.Errorf("NormalizeUsername(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

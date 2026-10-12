@@ -1,0 +1,33 @@
+meta {
+  name: update department
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/api/v1/org/departments/{{departmentId}}
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("departmentRenamed", "Bruno Dept Renamed " + Date.now());
+}
+
+body:json {
+  {
+    "name": "{{departmentRenamed}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.name: eq {{departmentRenamed}}
+}
+
+docs {
+  Requires department:write. parent_id is omitted, which leaves the parent
+  unchanged — clearing it back to the top level needs clear_parent: true
+  instead, since a bare null parent_id has nowhere to be distinguished from
+  "not present" once the request is decoded.
+}

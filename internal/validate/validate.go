@@ -7,6 +7,7 @@ package validate
 
 import (
 	"net/mail"
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -67,6 +68,25 @@ func (v *Violations) Email(field, s string) bool {
 	}
 	if !strings.Contains(strings.SplitN(s, "@", 2)[1], ".") {
 		v.Add(field, "invalid_email")
+		return false
+	}
+	return true
+}
+
+// usernamePattern mirrors the users_username_format_check constraint: a
+// letter, then 2-31 letters, digits, underscores or hyphens. Restrictive on
+// purpose — a username appears in URLs and alongside an email in the login
+// form, so the two must never be confusable with each other.
+var usernamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{2,31}$`)
+
+// Username records a violation when s is not 3-32 characters starting with a
+// letter, containing only letters, digits, underscore and hyphen.
+func (v *Violations) Username(field, s string) bool {
+	if !v.Required(field, s) {
+		return false
+	}
+	if !usernamePattern.MatchString(s) {
+		v.Add(field, "invalid_username")
 		return false
 	}
 	return true
@@ -146,5 +166,20 @@ func (v *Violations) IntRange(field string, n, minVal, maxVal int) bool {
 // provider in practice treats the local part that way too, and treating
 // "A@x.com" and "a@x.com" as different accounts is a security problem.
 func NormalizeEmail(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// NormalizeUsername lowercases and trims a username, for the same reason and
+// by the same rule as NormalizeEmail: the unique index and every comparison
+// must agree on what "the same username" means.
+func NormalizeUsername(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// NormalizeIdentifier lowercases and trims a login identifier, which may be
+// an email address or a username. Both are compared case-insensitively, so
+// one normalisation serves both without the caller needing to know which
+// kind it received.
+func NormalizeIdentifier(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }

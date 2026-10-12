@@ -1,0 +1,46 @@
+meta {
+  name: create ticket
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets
+  body: json
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("ticketId", "");
+  bru.setVar("ticketTitle", "Bruno ticket " + Date.now());
+}
+
+body:json {
+  {
+    "title": "{{ticketTitle}}",
+    "description": "Created by the api/bruno collection's tickets folder.",
+    "category": "facilities",
+    "priority": "normal"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 201) {
+    bru.setVar("ticketId", res.body.id);
+    bru.setVar("ticketVersion", res.body.version);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.status: eq pending
+  res.body.version: eq 1
+  res.body.requester_id: eq {{adminId}}
+}
+
+docs {
+  Requires ticket:create, held by every role. Stores ticketId and
+  ticketVersion for the rest of this folder; every mutating request from
+  here on updates ticketVersion from its own response, since each action
+  bumps the optimistic-concurrency token — see Ticket.version.
+}

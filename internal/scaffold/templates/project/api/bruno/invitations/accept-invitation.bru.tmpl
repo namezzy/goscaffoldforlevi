@@ -1,0 +1,51 @@
+meta {
+  name: accept invitation
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/invitations/accept
+  body: json
+  auth: none
+}
+
+script:pre-request {
+  bru.setVar("acceptedMemberPassword", "correct horse battery staple");
+}
+
+body:json {
+  {
+    "token": "{{inviteToken}}",
+    "name": "Bruno Invitee",
+    "password": "{{acceptedMemberPassword}}"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 201) {
+    bru.setVar("acceptedMemberId", res.body.member_id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.member_id: isString
+}
+
+docs {
+  The one request in this whole collection that authenticates with neither
+  a bearer token nor none-by-virtue-of-being-login: it is `auth: none`
+  because there is no account yet to hold a token, and the one-time token
+  from create-invitation is the entire authorization. Redeeming it here
+  provisions a real, loginable account — auth/login-by-username or a fresh
+  login request could authenticate as {{inviteEmail}} /
+  {{acceptedMemberPassword}} afterwards, though this collection does not
+  chain into that to keep this folder focused on the invitation lifecycle
+  itself.
+
+  A second run of this exact request, token unchanged, would answer 409
+  INVITATION_NOT_PENDING — the one-time-use guarantee — but this folder
+  does not assert that directly since running it twice in the same
+  collection run only happens by mistake, not as a documented case.
+}

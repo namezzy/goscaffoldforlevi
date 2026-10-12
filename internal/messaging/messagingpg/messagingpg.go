@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres/db"
@@ -155,6 +156,22 @@ func (s *Store) PendingCount(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
+// OutboxStatus reports the same four numbers `make outbox-status` prints,
+// for the admin API.
+func (s *Store) OutboxStatus(ctx context.Context) (messaging.OutboxStatus, error) {
+	queries := db.New(postgres.Querier(ctx, s.pool))
+	row, err := queries.OutboxSummary(ctx)
+	if err != nil {
+		return messaging.OutboxStatus{}, fmt.Errorf("outbox summary: %w", err)
+	}
+	return messaging.OutboxStatus{
+		Pending:       row.Pending,
+		Published:     row.Published,
+		Failing:       row.Failing,
+		WorstAttempts: row.WorstAttempts,
+	}, nil
+}
+
 // PrunePublished deletes events delivered before cutoff.
 func (s *Store) PrunePublished(ctx context.Context, cutoff time.Time) (int64, error) {
 	queries := db.New(postgres.Querier(ctx, s.pool))
@@ -236,33 +253,35 @@ func (s *Store) RecordDeadLetter(
 	return nil
 }
 
-// DeadLetter is a parked message.
-type DeadLetter struct {
-	ID         uuid.UUID
-	Event      messaging.Event
-	Consumer   string
-	Attempts   int32
-	LastError  string
-	FailedAt   time.Time
-	ReplayedAt *time.Time
-}
-
-// ListDeadLetters returns outstanding dead letters, newest first.
+// ListDeadLetters returns outstanding dead letters, newest first, together
+// with how many are outstanding in total (see messaging.DeadLetterPage).
+//
+// The count is a second query rather than a window function shared with the
+// list, and the two are not run in one transaction: this is a dashboard
+// figure, not a value anything reconciles against, and the same
+// non-atomic-but-good-enough tradeoff already governs user.Service.List's
+// count alongside its page.
 func (s *Store) ListDeadLetters(
 	ctx context.Context, eventType string, limit int32,
-) ([]DeadLetter, error) {
+) (messaging.DeadLetterPage, error) {
 	queries := db.New(postgres.Querier(ctx, s.pool))
+
 	rows, err := queries.ListDeadLetters(ctx, db.ListDeadLettersParams{
 		Limit:     limit,
 		EventType: nullableString(eventType),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list dead letters: %w", err)
+		return messaging.DeadLetterPage{}, fmt.Errorf("list dead letters: %w", err)
 	}
 
-	letters := make([]DeadLetter, 0, len(rows))
+	total, err := queries.CountDeadLetters(ctx, nullableString(eventType))
+	if err != nil {
+		return messaging.DeadLetterPage{}, fmt.Errorf("count dead letters: %w", err)
+	}
+
+	letters := make([]messaging.DeadLetter, 0, len(rows))
 	for _, row := range rows {
-		letters = append(letters, DeadLetter{
+		letters = append(letters, messaging.DeadLetter{
 			ID: row.ID,
 			Event: messaging.Event{
 				ID:          row.EventID,
@@ -278,7 +297,7 @@ func (s *Store) ListDeadLetters(
 			ReplayedAt: row.ReplayedAt,
 		})
 	}
-	return letters, nil
+	return messaging.DeadLetterPage{Items: letters, Total: total}, nil
 }
 
 // Replay puts a dead letter back into the outbox.
@@ -293,7 +312,7 @@ func (s *Store) Replay(ctx context.Context, id uuid.UUID) error {
 		row, err := queries.GetDeadLetter(ctx, id)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("dead letter %s not found", id)
+				return apperr.NotFound("DEAD_LETTER_NOT_FOUND", "dead letter not found")
 			}
 			return fmt.Errorf("get dead letter: %w", err)
 		}
@@ -303,7 +322,12 @@ func (s *Store) Replay(ctx context.Context, id uuid.UUID) error {
 			return fmt.Errorf("mark dead letter replayed: %w", err)
 		}
 		if marked == 0 {
-			return fmt.Errorf("dead letter %s was already replayed", id)
+			// GetDeadLetter above already proved the row exists, so the only way
+			// zero rows changed is that replayed_at was no longer null: a replay
+			// that raced this one, or ran before it. Either way the letter has
+			// already been requeued once, and requeuing it again would duplicate
+			// the event in the outbox.
+			return apperr.Conflict("DEAD_LETTER_ALREADY_REPLAYED", "dead letter was already replayed")
 		}
 
 		// A fresh outbox row, because the original was published long ago and

@@ -1,0 +1,23 @@
+meta {
+  name: revoke session
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/auth/sessions/{{secondarySessionId}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  Revokes the "secondary" login from login-secondary.bru, using the primary
+  session's access token — proving a session id handed back at login
+  (session_id) is the same id the session list and revoke-by-id endpoints
+  use, with no lookup needed in between. Requires no permission beyond
+  being signed in: this is entirely self-service.
+}

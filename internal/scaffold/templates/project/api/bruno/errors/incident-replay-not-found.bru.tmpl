@@ -1,0 +1,22 @@
+meta {
+  name: incident replay not found
+  type: http
+  seq: 30
+}
+
+post {
+  url: {{baseUrl}}/api/v1/incidents/01a05c5c-0000-7000-8000-000000000000/replay
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq INCIDENT_NOT_FOUND
+}
+
+docs {
+  RequestReplay looks up the incident (to find the dead letter behind it)
+  before calling messaging.Admin.ReplayDeadLetter, so a non-existent
+  incident id answers 404 without ever reaching the replay path.
+}

@@ -4,14 +4,22 @@ meta {
   seq: 6
 }
 
-get {
+post {
   url: {{baseUrl}}/api/v1/users
-  body: none
+  body: json
   auth: bearer
 }
 
 auth:bearer {
   token: {{memberAccessToken}}
+}
+
+body:json {
+  {
+    "email": "should-not-be-created@example.com",
+    "name": "Should Not Exist",
+    "password": "correct horse battery staple"
+  }
 }
 
 assert {
@@ -25,4 +33,9 @@ docs {
   that has every right to be told it lacks access.
 
   Contrast with users-no-token.bru, which is 401: no identity at all.
+
+  This is POST, not GET: read_only — the default role setup-member relies
+  on, by omitting role entirely — holds user:list and user:read, so listing
+  or reading with a member token now succeeds. user:create is exactly the
+  gap that role does not close.
 }

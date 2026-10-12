@@ -1,0 +1,23 @@
+meta {
+  name: list tickets
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tickets?scope=mine&page=1&page_size=20
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.page_info.page: eq 1
+  res.body.items: isArray
+}
+
+docs {
+  scope=mine needs no permission beyond ticket:create — it is the caller's
+  own submitted tickets by construction. errors/tickets-scope-all-forbidden
+  is this same idea from the other side: scope=all without ticket:read_all.
+}

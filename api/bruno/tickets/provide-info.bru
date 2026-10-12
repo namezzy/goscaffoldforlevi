@@ -1,0 +1,37 @@
+meta {
+  name: provide info
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/provide-info
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "note": "Third floor, west wing.",
+    "expected_version": {{ticketVersion}}
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("ticketVersion", res.body.version);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq in_progress
+  res.body.version: eq 6
+}
+
+docs {
+  Only the requester may answer — enforced by ownership, not ticket:manage,
+  which is why this succeeds here specifically because the admin account
+  is also this ticket's requester (see create-ticket.bru). Valid only from
+  needs_info; moves back to in_progress and notifies the assignee.
+}

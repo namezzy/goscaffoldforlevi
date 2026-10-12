@@ -1,0 +1,22 @@
+meta {
+  name: get organization
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/org
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.name: isString
+}
+
+docs {
+  Requires org:read. There is exactly one organization row — see the
+  org_roles_audit migration's boolean-primary-key singleton table — so this
+  request takes no id.
+}

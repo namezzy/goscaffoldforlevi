@@ -1,0 +1,22 @@
+meta {
+  name: list incidents
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/incidents
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+docs {
+  Requires incident:read. On a fresh database this is [], not an error —
+  matching admin/dlq-list.bru's reasoning: an empty exception center is the
+  good outcome, not a missing one.
+}

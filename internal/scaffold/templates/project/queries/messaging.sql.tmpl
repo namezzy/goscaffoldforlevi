@@ -51,6 +51,19 @@ SELECT count(*)::bigint AS pending
 FROM outbox_events
 WHERE published_at IS NULL;
 
+-- OutboxSummary is the admin API's view of the outbox: the same four numbers
+-- `make outbox-status` prints, behind an endpoint rather than a raw SQL
+-- connection. worst_attempts is coalesced to 0 because max() over an empty
+-- FILTER is NULL, and a NULL "how bad is the worst one" reads as a query
+-- failure rather than as "nothing is failing".
+-- name: OutboxSummary :one
+SELECT
+    count(*) FILTER (WHERE published_at IS NULL)::bigint AS pending,
+    count(*) FILTER (WHERE published_at IS NOT NULL)::bigint AS published,
+    count(*) FILTER (WHERE published_at IS NULL AND attempts > 0)::bigint AS failing,
+    coalesce(max(attempts) FILTER (WHERE published_at IS NULL), 0)::int AS worst_attempts
+FROM outbox_events;
+
 -- DeletePublishedOutboxEventsBefore prunes delivered rows.
 -- name: DeletePublishedOutboxEventsBefore :execrows
 DELETE FROM outbox_events
@@ -97,6 +110,15 @@ WHERE replayed_at IS NULL
   AND (sqlc.narg('event_type')::text IS NULL OR event_type = sqlc.narg('event_type')::text)
 ORDER BY failed_at DESC
 LIMIT $1;
+
+-- CountDeadLetters answers "how many, in total" for the same filter
+-- ListDeadLetters uses. A LIMIT-ed list has no way to say that on its own,
+-- and reporting len(rows) as the total silently under-counts a queue larger
+-- than the page it was asked to hand back.
+-- name: CountDeadLetters :one
+SELECT count(*) FROM dead_letter_events
+WHERE replayed_at IS NULL
+  AND (sqlc.narg('event_type')::text IS NULL OR event_type = sqlc.narg('event_type')::text);
 
 -- GetDeadLetter fetches one parked message for replay.
 -- name: GetDeadLetter :one

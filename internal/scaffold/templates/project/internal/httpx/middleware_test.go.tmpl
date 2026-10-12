@@ -15,6 +15,8 @@ import (
 
 	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/geoip"
+	"github.com/namezzy/goscaffoldforlevi/internal/requesttrack"
 	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
@@ -219,8 +221,19 @@ func TestCORS(t *testing.T) {
 		if rec.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, want 204", rec.Code)
 		}
-		if got := rec.Header().Get("Access-Control-Allow-Methods"); got == "" {
+		got := rec.Header().Get("Access-Control-Allow-Methods")
+		if got == "" {
 			t.Fatal("Allow-Methods is missing")
+		}
+		// Every method an actual route uses must be listed, or a browser's
+		// preflight rejects a request curl and the Bruno collection would
+		// have let straight through — see the PUT regression this guards.
+		for _, method := range []string{
+			http.MethodGet, http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete,
+		} {
+			if !strings.Contains(got, method) {
+				t.Errorf("Allow-Methods = %q, missing %s", got, method)
+			}
 		}
 	})
 }
@@ -338,6 +351,89 @@ func TestDecodeJSONRejectsEmptyAndTrailingContent(t *testing.T) {
 	two := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"a"}{"name":"b"}`))
 	if err := DecodeJSON(two, &target); err == nil {
 		t.Fatal("DecodeJSON accepted two documents")
+	}
+}
+
+// TestTrackRecordsIPAndCountry is the reason Track takes a trustedProxies
+// argument and a geoip.Resolver at all, rather than just the tracker: an
+// event with no IP or an always-unresolved country would still exercise
+// every other field this middleware sets.
+func TestTrackRecordsIPAndCountry(t *testing.T) {
+	t.Parallel()
+
+	tracker := requesttrack.NewTracker(10)
+	// No database configured — geoip.Open("", ...) still classifies a
+	// private address, which a request from a test's loopback peer is.
+	geo, err := geoip.Open("", "zh-CN")
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+
+	h := Track(tracker, geo, 0)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/things", nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := tracker.Recent()
+	if len(got) != 1 {
+		t.Fatalf("Recent() has %d events, want 1", len(got))
+	}
+	if got[0].IP != "203.0.113.7" {
+		t.Errorf("IP = %q, want 203.0.113.7", got[0].IP)
+	}
+	// 203.0.113.0/24 is TEST-NET-3 (RFC 5737): documentation space, not
+	// private, so this proves the address reached the resolver rather than
+	// being short-circuited — the resolver just has no database to answer
+	// from, so the country comes back unresolved.
+	if got[0].CountryCode != "" {
+		t.Errorf("CountryCode = %q, want empty with no database configured", got[0].CountryCode)
+	}
+}
+
+func TestTrackRecordsAPrivateAddressAsSuch(t *testing.T) {
+	t.Parallel()
+
+	tracker := requesttrack.NewTracker(10)
+	geo, err := geoip.Open("", "zh-CN")
+	if err != nil {
+		t.Fatalf("geoip.Open: %v", err)
+	}
+
+	h := Track(tracker, geo, 0)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/things", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := tracker.Recent()
+	if len(got) != 1 || got[0].CountryName != "内网" {
+		t.Fatalf("Recent() = %+v, want one event with CountryName 内网", got)
+	}
+}
+
+// TestTrackWithoutAResolverStillRecordsTheIP is what makes a nil Geo a
+// supported RouterDeps configuration rather than a crash waiting for
+// whoever forgets to set it.
+func TestTrackWithoutAResolverStillRecordsTheIP(t *testing.T) {
+	t.Parallel()
+
+	tracker := requesttrack.NewTracker(10)
+	h := Track(tracker, nil, 0)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/things", nil)
+	req.RemoteAddr = "203.0.113.7:54321"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := tracker.Recent()
+	if len(got) != 1 || got[0].IP != "203.0.113.7" || got[0].CountryName != "" {
+		t.Fatalf("Recent() = %+v, want the IP recorded with no country", got)
 	}
 }
 

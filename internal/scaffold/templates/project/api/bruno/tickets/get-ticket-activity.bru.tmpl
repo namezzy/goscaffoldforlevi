@@ -1,0 +1,25 @@
+meta {
+  name: get ticket activity
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/activity
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.body[0].target_type: eq ticket
+  res.body[0].target_id: eq {{ticketId}}
+}
+
+docs {
+  The ticket's timeline: audit_events rows with target_type=ticket, one per
+  action this folder has performed so far (created, assigned, reassigned,
+  note added, info requested, info provided, completed) — no separate
+  activity table, see internal/ticket's package doc comment.
+}

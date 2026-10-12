@@ -2,3 +2,25 @@ meta {
   name: auth
   seq: 2
 }
+
+docs {
+  Login, refresh, logout — and, added in Phase 3, the security center's
+  self-service session list/revocation and self-service password reset.
+
+  Sessions: login-secondary and login-tertiary open two more sessions
+  under the same admin account (a stand-in for "another device"), without
+  touching accessToken/refreshToken — the primary login from login.bru
+  keeps authenticating every request in this folder, including logout at
+  the very end. revoke-session revokes the secondary one specifically, by
+  the session_id login itself returns; revoke-other-sessions then revokes
+  everything but the primary, which by that point is only the tertiary
+  login.
+
+  Password reset: password-reset-request only ever proves the endpoint
+  answers 202 — the response deliberately never contains the token (that
+  is the whole point, see RequestPasswordReset's own doc comment), and
+  this collection has no mailbox to read one out of an email, so nothing
+  here can exercise a successful confirm. errors/
+  password-reset-confirm-invalid-token.bru covers the confirm endpoint's
+  failure shape instead.
+}

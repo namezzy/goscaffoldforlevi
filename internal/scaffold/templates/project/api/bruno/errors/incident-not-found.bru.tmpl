@@ -1,0 +1,21 @@
+meta {
+  name: incident not found
+  type: http
+  seq: 23
+}
+
+get {
+  url: {{baseUrl}}/api/v1/incidents/01a05c5c-0000-7000-8000-000000000000
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq INCIDENT_NOT_FOUND
+}
+
+docs {
+  A well-formed UUID that resolves to nothing — nothing in this collection
+  can produce a real incident, see incidents/folder.bru.
+}

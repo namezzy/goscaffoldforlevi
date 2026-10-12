@@ -12,6 +12,7 @@ post {
 
 script:pre-request {
   bru.setVar("memberEmail", "bruno-member-" + Date.now() + "@example.com");
+  bru.setVar("memberUsername", "bruno_member_" + Date.now());
   bru.setVar("memberPassword", "correct horse battery staple");
   // Cleared for the same reason as userId in users/create: a failed setup
   // must not leave cleanup-member deleting an earlier run's account.
@@ -21,6 +22,7 @@ script:pre-request {
 body:json {
   {
     "email": "{{memberEmail}}",
+    "username": "{{memberUsername}}",
     "name": "Bruno Member",
     "password": "{{memberPassword}}"
   }
@@ -34,7 +36,8 @@ script:post-response {
 
 assert {
   res.status: eq 201
-  res.body.role: eq user
+  res.body.role: eq read_only
+  res.body.username: eq {{memberUsername}}
 }
 
 docs {
@@ -46,4 +49,7 @@ docs {
 
   role is omitted so the assertion tests the server's default rather than
   echoing what was sent.
+
+  A username is set here too, not just an email, so
+  username-already-exists.bru has a real value to collide with.
 }

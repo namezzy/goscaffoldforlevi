@@ -1,0 +1,28 @@
+meta {
+  name: incidents
+  seq: 11
+}
+
+docs {
+  The exception/processing center. Every request here requires an admin
+  token: system_admin holds both incident:read and incident:manage.
+
+  There are no happy-path requests here for acknowledge, resolve, add-note,
+  set-severity, assign-owner or request-replay — the same limitation
+  admin/folder.bru documents for DLQ replay, one level further down: an
+  incident only exists after internal/incident.Watcher merges a real dead
+  letter into one, and a dead letter only exists after a consumer exhausts
+  its retries. Neither is a thing an HTTP client can trigger on demand, so
+  this collection cannot produce a real incident to act on. Those six
+  operations are each still exercised once, honestly, as a 404 against a
+  well-formed but non-existent id — see errors/incident-*-not-found.bru —
+  which is what TestEveryDocumentedOperationHasARequest requires and all
+  this collection can truthfully offer. The happy path for all six, plus
+  the merge/dedup rule and the real (not assumed) replay-result resolution,
+  is covered by internal/incident's unit and real-Postgres integration
+  tests instead.
+
+  list-incidents and get-incidents-summary answer meaningfully on a fresh
+  database: an empty exception center is items: [] and counts: {}, not an
+  error.
+}

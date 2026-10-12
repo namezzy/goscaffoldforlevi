@@ -1,0 +1,38 @@
+meta {
+  name: add note
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/notes
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "note": "Checked the equipment, diagnosing the issue.",
+    "expected_version": {{ticketVersion}}
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("ticketVersion", res.body.version);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq in_progress
+  res.body.version: eq 4
+}
+
+docs {
+  Available to the current assignee or a ticket:manage holder, from
+  in_progress or needs_info. Does not change status, but still bumps
+  version under the same optimistic-concurrency check as every other
+  action — this is the request that proves that: version goes up with no
+  status field in the response changing.
+}

@@ -1,0 +1,21 @@
+meta {
+  name: list departments
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/v1/org/departments
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+docs {
+  Requires department:read. Not paginated — see ListDepartments in
+  queries/org.sql for why: the client builds the tree from this flat list.
+}

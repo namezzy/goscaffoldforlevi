@@ -1,0 +1,34 @@
+meta {
+  name: list audit
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/audit?page=1&page_size=20
+  body: none
+  auth: inherit
+}
+
+script:post-response {
+  if (res.getStatus() === 200 && res.body.items.length > 0) {
+    bru.setVar("auditEventId", res.body.items[0].id);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+  res.body.page_info.page: eq 1
+}
+
+docs {
+  Requires audit:read. By the time this runs, users/ (seq 3) has already
+  created, updated and deleted an account, each producing at least one
+  audit event, so items is non-empty on any run of the full collection —
+  though this request does not depend on that and would still pass against
+  an empty log.
+
+  Stores auditEventId from the first item for get-audit.bru, when there is
+  one to store.
+}

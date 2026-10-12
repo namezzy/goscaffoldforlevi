@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/geoip"
+	"github.com/namezzy/goscaffoldforlevi/internal/requesttrack"
 	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
@@ -229,6 +232,58 @@ func BodyLimit(n int64) func(http.Handler) http.Handler {
 	}
 }
 
+// Track records a summary of each completed request into tracker, for the
+// live admin request feed.
+//
+// It is a separate wrap from Logging rather than folded into it: this
+// concern is optional (a nil tracker disables it entirely) and disposable
+// (in-memory only, see package requesttrack), and coupling it to Logging
+// would make every existing logging test carry a tracker it has no reason to
+// care about.
+//
+// geo may be nil, in which case IP is still recorded but every request is
+// reported with an unresolved country — the same degraded-not-broken
+// behaviour package geoip gives a Resolver built with no database
+// configured, extended to cover "no resolver at all" for tests and for any
+// future caller that has no use for it.
+func Track(tracker *requesttrack.Tracker, geo *geoip.Resolver, trustedProxies int) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if tracker == nil {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+			next.ServeHTTP(rec, r)
+
+			status, written := rec.snapshot()
+			addr := ClientIP(r, trustedProxies)
+			loc := geo.Lookup(addr)
+
+			tracker.Record(requesttrack.Event{
+				Time:        start,
+				RequestID:   telemetry.RequestIDFromContext(r.Context()),
+				Method:      r.Method,
+				Path:        r.URL.Path,
+				Status:      status,
+				Bytes:       written,
+				DurationMS:  float64(time.Since(start)) / float64(time.Millisecond),
+				IP:          addrString(addr),
+				CountryCode: loc.CountryCode,
+				CountryName: loc.CountryName,
+			})
+		})
+	}
+}
+
+func addrString(addr netip.Addr) string {
+	if !addr.IsValid() {
+		return ""
+	}
+	return addr.String()
+}
+
 // CORS answers preflight requests and adds the response headers.
 //
 // Only origins on the configured list are echoed back. A wildcard is never
@@ -245,9 +300,15 @@ func CORS(cfg config.HTTP) func(http.Handler) http.Handler {
 		allowed[o] = struct{}{}
 	}
 
+	// PUT is here for /users/{id}/password (ADR: a password is replaced
+	// wholesale, so it is PUT rather than PATCH). It was missing from this
+	// list once before: curl and the Bruno collection do not enforce CORS
+	// preflight, so a route reachable by every other client still failed
+	// silently in a browser, as "Failed to fetch" with no server-side log to
+	// point at.
 	methods := strings.Join([]string{
 		http.MethodGet, http.MethodPost, http.MethodPatch,
-		http.MethodDelete, http.MethodOptions,
+		http.MethodPut, http.MethodDelete, http.MethodOptions,
 	}, ", ")
 	headers := strings.Join([]string{"Authorization", "Content-Type", HeaderRequestID}, ", ")
 	maxAge := strconv.Itoa(int(corsPreflightMaxAge.Seconds()))

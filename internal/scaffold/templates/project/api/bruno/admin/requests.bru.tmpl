@@ -1,0 +1,30 @@
+meta {
+  name: requests
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/requests
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+docs {
+  One operation, two shapes, chosen by Accept — this request sends no
+  Accept override, so it gets the JSON snapshot and completes immediately.
+  `Accept: text/event-stream` on the same URL instead holds the connection
+  open and streams one `data:` line per request recorded from that point;
+  see requesttrackhttp's own handler tests for that path; a Bruno request
+  cannot demonstrate it without hanging the collection for the length of
+  the connection.
+
+  items is never empty by the time this collection reaches this request —
+  everything run so far (health, auth/login, users/create, ...) is itself
+  in the buffer, this request included, once the *next* one runs.
+}

@@ -40,7 +40,7 @@ func TestAuthenticateRejectsAnythingButAValidBearerToken(t *testing.T) {
 	t.Parallel()
 
 	const good = "good-token"
-	verifier := stubVerifier{token: good, claims: auth.AccessClaims{Subject: "u1", Role: auth.RoleUser}}
+	verifier := stubVerifier{token: good, claims: auth.AccessClaims{Subject: "u1", Role: auth.RoleReadOnly}}
 
 	cases := []struct {
 		name       string
@@ -89,7 +89,7 @@ func TestAuthenticateRejectsAnythingButAValidBearerToken(t *testing.T) {
 func TestAuthenticateAttachesThePrincipal(t *testing.T) {
 	t.Parallel()
 
-	claims := auth.AccessClaims{Subject: "user-123", Role: auth.RoleAdmin, TokenID: "jti-1"}
+	claims := auth.AccessClaims{Subject: "user-123", Role: auth.RoleSystemAdmin, TokenID: "jti-1"}
 	verifier := stubVerifier{token: "t", claims: claims}
 
 	var got auth.Principal
@@ -165,8 +165,10 @@ func TestRequirePermission(t *testing.T) {
 		want      int
 	}{
 		{"unauthenticated is 401", nil, http.StatusUnauthorized},
-		{"wrong role is 403", &auth.Principal{UserID: "u", Role: auth.RoleUser}, http.StatusForbidden},
-		{"right role passes", &auth.Principal{UserID: "u", Role: auth.RoleAdmin}, http.StatusOK},
+		// RoleOperator, not RoleReadOnly: ReadOnly holds PermUserList, which
+		// would defeat the point of this case.
+		{"wrong role is 403", &auth.Principal{UserID: "u", Role: auth.RoleOperator}, http.StatusForbidden},
+		{"right role passes", &auth.Principal{UserID: "u", Role: auth.RoleSystemAdmin}, http.StatusOK},
 		// An unrecognised role must be treated as having no permissions rather
 		// than as an error to investigate later.
 		{"unknown role is 403", &auth.Principal{UserID: "u", Role: auth.Role("superuser")}, http.StatusForbidden},

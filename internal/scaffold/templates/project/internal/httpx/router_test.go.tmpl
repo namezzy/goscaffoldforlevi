@@ -248,6 +248,40 @@ func TestMethodNotAllowedAdvertisesTheAllowedMethods(t *testing.T) {
 	}
 }
 
+// TestFlushReachesTheRealResponseWriter is the regression for a streaming
+// handler (an SSE feed, in practice) that silently could not flush: every
+// request passes through jsonMethodNotAllowed's own wrapper, and that
+// wrapper embedded http.ResponseWriter without an Unwrap method, which is
+// what http.ResponseController needs to see past it to the Flusher several
+// layers further down. The handler never learned why — it just always got
+// http.ErrNotSupported, on every route, regardless of which one actually
+// hit the 405 path this wrapper exists for.
+func TestFlushReachesTheRealResponseWriter(t *testing.T) {
+	t.Parallel()
+
+	logger := discardLogger()
+	var flushErr error
+	router := NewRouter(RouterDeps{
+		Config: config.Config{HTTP: config.HTTP{MaxBodyBytes: 1 << 20, RequestTimeout: 5_000_000_000}},
+		Logger: logger,
+		Health: NewHealth(logger, Build{Version: "test", Commit: "testcommit"}),
+		Register: func(v1 chi.Router) {
+			v1.Get("/stream", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				flushErr = http.NewResponseController(w).Flush()
+			})
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/stream", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if flushErr != nil {
+		t.Errorf("Flush() = %v, want a handler mounted through the router to reach a real Flusher", flushErr)
+	}
+}
+
 // TestTheRouterPutsTheRequestTraceOnTheContext checks that TraceContext is
 // actually mounted, not merely written. A middleware that exists, is correct
 // and is never added to the stack behaves exactly like one that was never

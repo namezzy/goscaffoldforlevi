@@ -63,6 +63,21 @@ type Config struct {
 	Messaging Messaging
 	OTel      OTel
 	Metrics   Metrics
+	GeoIP     GeoIP
+	Invite    Invite
+	Notify    Notify
+}
+
+// GeoIP configures country lookups for the live request feed
+// (internal/requesttrack). See .env.example for how to obtain the database.
+type GeoIP struct {
+	// DatabasePath points at a MaxMind GeoLite2 Country or City .mmdb file.
+	// Empty — the default — disables lookups for public addresses; private
+	// and loopback ones are still classified without one.
+	DatabasePath string
+	// Language selects which locale to read out of the database's name
+	// tables.
+	Language string
 }
 
 // Messaging configures the outbox relay, the broker and the consumer.
@@ -204,6 +219,15 @@ type Auth struct {
 	AccessTTL  time.Duration
 	RefreshTTL time.Duration
 
+	// PasswordResetTTL is how long a self-service password reset token stays
+	// usable after it is requested. Short-lived by design, same reasoning
+	// as AccessTTL: a leaked link stays useful only this long.
+	PasswordResetTTL time.Duration
+	// PasswordResetURLBase is the frontend page the reset email links to;
+	// the one-time token is appended as a query parameter — same pattern
+	// as Invite.AcceptURLBase.
+	PasswordResetURLBase string
+
 	// Argon2 cost parameters. They are configurable because the right values
 	// depend on the hardware the service runs on, and because raising them is
 	// how the deployment responds to hardware getting cheaper. Lowering them
@@ -281,6 +305,29 @@ type Metrics struct {
 	Enabled bool
 	Addr    string
 	Path    string
+}
+
+// Invite configures member invitations (package invite).
+type Invite struct {
+	// TTL is how long an invitation stays acceptable after it is sent.
+	TTL time.Duration
+	// AcceptURLBase is the frontend page the invitation email links to; the
+	// invitation's one-time token is appended as a query parameter. It
+	// points at the frontend dev server by default because that is where
+	// Phase 1 development runs — production deployments must set this to
+	// the real public origin.
+	AcceptURLBase string
+}
+
+// Notify configures the exception center's external (non-in-app) alert
+// channel. See docs/security.md's exception center section for why this is
+// one optional address rather than a full alerting platform.
+type Notify struct {
+	// IncidentAlertEmail receives one email per newly opened incident (never
+	// per merge — see incident.EventIncidentOpened's doc comment). Empty —
+	// the default — disables the external channel entirely; the in-app
+	// notification to every incident:manage holder still fires regardless.
+	IncidentAlertEmail string
 }
 
 // Addr returns the listen address for the HTTP server.

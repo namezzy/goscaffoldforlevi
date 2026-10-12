@@ -1,0 +1,28 @@
+meta {
+  name: admin outbox status forbidden
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/api/v1/admin/outbox/status
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{memberAccessToken}}
+}
+
+assert {
+  res.status: eq 403
+  res.body.error.code: eq FORBIDDEN
+}
+
+docs {
+  Same shape as users-forbidden.bru: an ordinary member is authenticated
+  but holds no messaging:read, so this is 403, not 404. There is no
+  ownership path here at all — unlike a user record, a dead letter belongs
+  to the system, so every non-admin caller gets the same refusal regardless
+  of which one they ask about.
+}

@@ -41,17 +41,18 @@ script:post-response {
 assert {
   res.status: eq 201
   res.body.status: eq active
-  res.body.role: eq user
+  res.body.role: eq read_only
 }
 
 docs {
   Stores userId for the rest of this folder.
 
-  role is omitted on purpose. It is an accepted field, but sending "user"
-  and then asserting the response says "user" would only prove the server
-  echoes what it was given. Leaving it out makes that assertion test the
-  thing worth testing: that the default is the least privileged value, so a
-  forgotten field cannot quietly produce an administrator.
+  role is omitted on purpose. It is an accepted field, but sending
+  "read_only" and then asserting the response says "read_only" would only
+  prove the server echoes what it was given. Leaving it out makes that
+  assertion test the thing worth testing: that the default is the least
+  privileged value, so a forgotten field cannot quietly produce an
+  administrator.
 
   status is not accepted on create; the service sets it to active. PATCH
   does accept it, which is what errors/setup-disable-member uses.

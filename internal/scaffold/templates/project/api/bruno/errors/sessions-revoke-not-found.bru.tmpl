@@ -1,0 +1,22 @@
+meta {
+  name: sessions revoke not found
+  type: http
+  seq: 22
+}
+
+delete {
+  url: {{baseUrl}}/api/v1/auth/sessions/00000000-0000-7000-8000-000000000000
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq SESSION_NOT_FOUND
+}
+
+docs {
+  A well-formed id that names no session. The same response a session
+  belonging to someone else would get — see RevokeSession's own doc
+  comment on why those two cases are not distinguished.
+}

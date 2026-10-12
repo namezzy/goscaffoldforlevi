@@ -1,0 +1,23 @@
+meta {
+  name: list invitations
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/v1/invitations?status=pending&page=1&page_size=20
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.page_info.page: eq 1
+  res.body.items: isArray
+}
+
+docs {
+  Requires invite:read. status and email are both optional filters; this
+  request exercises status only, since the created invitation is still
+  pending at this point in the folder.
+}

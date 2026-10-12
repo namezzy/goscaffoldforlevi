@@ -1,0 +1,31 @@
+meta {
+  name: close ticket
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/close
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "expected_version": {{ticketVersion}}
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq closed
+  res.body.closed_at: isString
+  res.body.version: eq 8
+}
+
+docs {
+  Runs last. The requester may close once completed, confirming the
+  result; a ticket:manage holder may close from any non-closed status. The
+  admin account here qualifies both ways. Terminal — there is no reopen
+  endpoint, matching the fixed state machine internal/ticket documents.
+}

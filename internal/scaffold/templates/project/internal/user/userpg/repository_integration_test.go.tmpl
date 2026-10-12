@@ -26,7 +26,7 @@ func newUser(email string) user.User {
 		Email:        email,
 		Name:         "Test User",
 		Status:       user.StatusActive,
-		Role:         auth.RoleUser,
+		Role:         auth.RoleReadOnly,
 		PasswordHash: "$argon2id$v=19$m=65536,t=3,p=4$c2FsdHNhbHRzYWx0$aGFzaGhhc2hoYXNoaGFzaA",
 	}
 }

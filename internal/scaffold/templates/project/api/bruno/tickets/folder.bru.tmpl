@@ -1,0 +1,26 @@
+meta {
+  name: tickets
+  seq: 5
+}
+
+docs {
+  The full ticket lifecycle: submit, assign, reassign, request info,
+  provide info, add a processing note, complete, and close. Every request
+  here uses the admin token from auth/login: system_admin holds
+  ticket:create (as every role does), ticket:manage and ticket:read_all,
+  and — as this folder's own requester — the requester-only actions
+  (provide-info, close-after-completion) too. That is not a shortcut around
+  authorization; it means every request in this folder is a real,
+  independently-authorized call, just one where the same account happens to
+  qualify under more than one of the rules — see internal/ticket's Service
+  methods for what each rule actually is.
+
+  resolve-admin-id runs first to capture the admin's own user id (nothing
+  in /auth/login returns it), since assign needs a real assignee_id and
+  tickets.assignee_id is a foreign key into users.
+
+  Tickets have no delete endpoint — closed is the terminal state, not
+  removal — so this folder does not "leave nothing behind" the way users/
+  and org/ do. That is by design: an audit trail for a closed ticket is
+  meant to persist.
+}

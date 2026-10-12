@@ -1,0 +1,20 @@
+meta {
+  name: admin
+  seq: 4
+}
+
+docs {
+  Outbox/dead-letter triage, the live request feed, and the audit log.
+  Every request here requires an admin token and its own permission
+  (messaging:read, requests:read or audit:read); system_admin holds all
+  three, so one token covers the folder. Outbox status and the DLQ list
+  answer meaningfully on a fresh database: the outbox table is empty rather
+  than absent, so status reads all zeros and the DLQ list is [].
+
+  There is no "replay" request in this folder. Replay needs an existing
+  dead letter, and nothing in this collection can produce one — a message
+  only reaches the DLQ after a consumer exhausts its retries, which is not
+  a thing an HTTP client can trigger on demand. The one replay case this
+  collection can exercise honestly is "the id does not exist", and that
+  lives in errors/ next to the rest of the 404s.
+}

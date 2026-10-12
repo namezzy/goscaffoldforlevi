@@ -6,11 +6,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
 )
 
 // The fakes below are hand-written rather than generated. Each is a few lines,
@@ -42,11 +44,11 @@ func (f *fakeAccounts) with(email string, a auth.Account) *fakeAccounts {
 	return f
 }
 
-func (f *fakeAccounts) FindByEmail(_ context.Context, email string) (auth.Account, error) {
+func (f *fakeAccounts) FindByIdentifier(_ context.Context, identifier string) (auth.Account, error) {
 	if f.err != nil {
 		return auth.Account{}, f.err
 	}
-	a, ok := f.byEmail[email]
+	a, ok := f.byEmail[identifier]
 	if !ok {
 		return auth.Account{}, apperr.NotFound("USER_NOT_FOUND", "user not found")
 	}
@@ -128,6 +130,124 @@ func (f *fakeSessions) activeCount() int {
 	return n
 }
 
+// ListRecentByUser collapses to one row per family — its most recent row —
+// matching queries/auth.sql's ListRecentRefreshSessionsByUser exactly:
+// a "session" in this list's terms is one login lineage, not one
+// refresh-token rotation.
+func (f *fakeSessions) ListRecentByUser(_ context.Context, userID string, limit int32) ([]auth.Session, error) {
+	latest := map[auth.FamilyID]auth.Session{}
+	for _, row := range f.rows {
+		if row.UserID != userID {
+			continue
+		}
+		if current, ok := latest[row.FamilyID]; !ok || row.CreatedAt.After(current.CreatedAt) {
+			latest[row.FamilyID] = row
+		}
+	}
+	out := make([]auth.Session, 0, len(latest))
+	for _, row := range latest {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if int32(len(out)) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (f *fakeSessions) RevokeOwned(_ context.Context, family auth.FamilyID, userID string) (bool, error) {
+	var revoked bool
+	for i := range f.rows {
+		if f.rows[i].FamilyID == family && f.rows[i].UserID == userID && f.rows[i].RevokedAt == nil {
+			at := f.now()
+			f.rows[i].RevokedAt = &at
+			revoked = true
+		}
+	}
+	return revoked, nil
+}
+
+func (f *fakeSessions) RevokeAllForUserExceptFamily(_ context.Context, userID string, exceptFamily auth.FamilyID) (int64, error) {
+	var n int64
+	for i := range f.rows {
+		if f.rows[i].UserID == userID && f.rows[i].FamilyID != exceptFamily && f.rows[i].RevokedAt == nil {
+			at := f.now()
+			f.rows[i].RevokedAt = &at
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeSessions) RevokeAllForUser(_ context.Context, userID string) (int64, error) {
+	var n int64
+	for i := range f.rows {
+		if f.rows[i].UserID == userID && f.rows[i].RevokedAt == nil {
+			at := f.now()
+			f.rows[i].RevokedAt = &at
+			n++
+		}
+	}
+	return n, nil
+}
+
+// fakeResets is a hand-written PasswordResetRepository, matching
+// fakeSessions' style.
+type fakeResets struct {
+	rows map[string]auth.PasswordResetToken
+	now  func() time.Time
+}
+
+func newFakeResets(now func() time.Time) *fakeResets {
+	return &fakeResets{rows: make(map[string]auth.PasswordResetToken), now: now}
+}
+
+func (f *fakeResets) Create(_ context.Context, t auth.NewPasswordResetToken) error {
+	f.rows[t.ID] = auth.PasswordResetToken{
+		ID: t.ID, UserID: t.UserID, TokenHash: t.TokenHash, ExpiresAt: t.ExpiresAt, CreatedAt: f.now(),
+	}
+	return nil
+}
+
+func (f *fakeResets) GetByTokenHash(_ context.Context, hash []byte) (auth.PasswordResetToken, error) {
+	for _, row := range f.rows {
+		if bytes.Equal(row.TokenHash, hash) {
+			return row, nil
+		}
+	}
+	return auth.PasswordResetToken{}, apperr.NotFound("PASSWORD_RESET_TOKEN_NOT_FOUND", "password reset token not found")
+}
+
+func (f *fakeResets) MarkUsed(_ context.Context, id string) (bool, error) {
+	row, ok := f.rows[id]
+	if !ok || row.UsedAt != nil {
+		return false, nil
+	}
+	at := f.now()
+	row.UsedAt = &at
+	f.rows[id] = row
+	return true, nil
+}
+
+func (f *fakeResets) InvalidatePendingForUser(_ context.Context, userID string) (int64, error) {
+	var n int64
+	for id, row := range f.rows {
+		if row.UserID == userID && row.UsedAt == nil {
+			delete(f.rows, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+// plaintextCipher is a no-op TokenEncrypter, matching invite's own test
+// fixture: what matters to these tests is that the service calls the
+// cipher, not that AES-GCM in particular runs (that is TokenCipher's own
+// test's job).
+type plaintextCipher struct{}
+
+func (plaintextCipher) Encrypt(s string) (string, error) { return s, nil }
+
 // rollbackTx models the one property of a real transaction that changes the
 // meaning of the code under test: an error discards every write made inside it.
 //
@@ -137,12 +257,25 @@ func (f *fakeSessions) activeCount() int {
 // was rolled back and the stolen family stayed live. The fake passed, the
 // database did not. A fake that omits the behaviour a caller depends on is
 // worse than no test, because it reports success.
-type rollbackTx struct{ sessions *fakeSessions }
+type rollbackTx struct {
+	sessions *fakeSessions
+	resets   *fakeResets
+}
 
 func (t rollbackTx) WithTx(ctx context.Context, fn func(context.Context) error) error {
-	snapshot := append([]auth.Session(nil), t.sessions.rows...)
+	sessionsSnapshot := append([]auth.Session(nil), t.sessions.rows...)
+	var resetsSnapshot map[string]auth.PasswordResetToken
+	if t.resets != nil {
+		resetsSnapshot = make(map[string]auth.PasswordResetToken, len(t.resets.rows))
+		for k, v := range t.resets.rows {
+			resetsSnapshot[k] = v
+		}
+	}
 	if err := fn(ctx); err != nil {
-		t.sessions.rows = snapshot
+		t.sessions.rows = sessionsSnapshot
+		if t.resets != nil {
+			t.resets.rows = resetsSnapshot
+		}
 		return err
 	}
 	return nil
@@ -161,6 +294,8 @@ type serviceFixture struct {
 	svc      *auth.Service
 	accounts *fakeAccounts
 	sessions *fakeSessions
+	resets   *fakeResets
+	events   *messaging.MemoryPublisher
 	issuer   *staticIssuer
 	now      time.Time
 }
@@ -171,22 +306,28 @@ func newServiceFixture(t *testing.T, accounts *fakeAccounts) *serviceFixture {
 	f := &serviceFixture{
 		accounts: accounts,
 		issuer:   &staticIssuer{},
+		events:   messaging.NewMemoryPublisher(),
 		now:      time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
 	}
 	f.sessions = &fakeSessions{now: func() time.Time { return f.now }}
+	f.resets = newFakeResets(func() time.Time { return f.now })
 
 	f.svc = auth.NewService(
 		auth.ServiceConfig{
-			Issuer:     "test-issuer",
-			Audience:   "test-audience",
-			AccessTTL:  15 * time.Minute,
-			RefreshTTL: 30 * 24 * time.Hour,
+			Issuer:           "test-issuer",
+			Audience:         "test-audience",
+			AccessTTL:        15 * time.Minute,
+			RefreshTTL:       30 * 24 * time.Hour,
+			PasswordResetTTL: time.Hour,
 		},
 		accounts,
 		f.sessions,
+		f.resets,
+		plaintextCipher{},
 		newTestHasher(t),
 		f.issuer,
-		rollbackTx{sessions: f.sessions},
+		f.events,
+		rollbackTx{sessions: f.sessions, resets: f.resets},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 	f.svc.SetClock(func() time.Time { return f.now })
@@ -201,7 +342,7 @@ func accountFor(t *testing.T, userID string, active bool) auth.Account {
 	if err != nil {
 		t.Fatalf("Hash() = %v", err)
 	}
-	return auth.Account{UserID: userID, PasswordHash: hash, Role: auth.RoleUser, Active: active}
+	return auth.Account{UserID: userID, PasswordHash: hash, Role: auth.RoleReadOnly, Active: active}
 }
 
 func TestLoginIssuesATokenPair(t *testing.T) {
@@ -234,6 +375,25 @@ func TestLoginIssuesATokenPair(t *testing.T) {
 	// Only the digest is stored; the token itself must not be recoverable.
 	if bytes.Equal(f.sessions.rows[0].TokenHash, []byte(pair.RefreshToken)) {
 		t.Error("the refresh token was stored verbatim")
+	}
+}
+
+// TestLoginAcceptsAUsernameAsTheIdentifier is the reason the field is called
+// identifier rather than email: AccountStore.FindByIdentifier resolves
+// whatever it is given against both columns, and the service does not need
+// to know, or normalise differently, which kind of value arrived.
+func TestLoginAcceptsAUsernameAsTheIdentifier(t *testing.T) {
+	t.Parallel()
+
+	account := accountFor(t, "user-1", true)
+	f := newServiceFixture(t, newFakeAccounts().with("ada_lovelace", account))
+
+	pair, err := f.svc.Login(context.Background(), "  Ada_Lovelace  ", testPassword, auth.RequestMeta{})
+	if err != nil {
+		t.Fatalf("Login() with a username = %v", err)
+	}
+	if pair.AccessToken == "" {
+		t.Fatal("Login() returned an incomplete token pair")
 	}
 }
 
@@ -305,7 +465,7 @@ func TestLoginRehashesWeakStoredPasswords(t *testing.T) {
 	}
 
 	accounts := newFakeAccounts().with("a@example.com", auth.Account{
-		UserID: "user-1", PasswordHash: oldHash, Role: auth.RoleUser, Active: true,
+		UserID: "user-1", PasswordHash: oldHash, Role: auth.RoleReadOnly, Active: true,
 	})
 
 	strong, err := auth.NewArgon2Hasher(auth.Argon2Params{
@@ -316,13 +476,20 @@ func TestLoginRehashesWeakStoredPasswords(t *testing.T) {
 	}
 
 	sessions := &fakeSessions{now: time.Now}
+	resets := newFakeResets(time.Now)
 	svc := auth.NewService(
-		auth.ServiceConfig{Issuer: "i", Audience: "a", AccessTTL: time.Minute, RefreshTTL: time.Hour},
+		auth.ServiceConfig{
+			Issuer: "i", Audience: "a", AccessTTL: time.Minute, RefreshTTL: time.Hour,
+			PasswordResetTTL: time.Hour,
+		},
 		accounts,
 		sessions,
+		resets,
+		plaintextCipher{},
 		strong,
 		&staticIssuer{},
-		rollbackTx{sessions: sessions},
+		messaging.NewMemoryPublisher(),
+		rollbackTx{sessions: sessions, resets: resets},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 	)
 

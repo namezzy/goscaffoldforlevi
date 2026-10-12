@@ -8,6 +8,8 @@ import (
 
 	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/geoip"
+	"github.com/namezzy/goscaffoldforlevi/internal/requesttrack"
 	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
 )
 
@@ -46,6 +48,15 @@ type RouterDeps struct {
 	// Metrics records one observation per request. Nil disables recording;
 	// the scrape endpoint is a separate listener and is not mounted here.
 	Metrics *telemetry.Metrics
+
+	// Tracker feeds the live admin request feed. Nil disables it.
+	Tracker *requesttrack.Tracker
+
+	// Geo resolves each request's client address to a country for the
+	// feed. Nil leaves every event's country unresolved, the same
+	// degraded-not-broken behaviour as a Resolver with no database
+	// configured — see package geoip.
+	Geo *geoip.Resolver
 }
 
 // NewRouter assembles the middleware stack and the route tree.
@@ -55,6 +66,8 @@ type RouterDeps struct {
 //
 //   - Recovery is outermost so a panic anywhere still produces a response.
 //   - RequestID precedes Logging so every line can be correlated.
+//   - Track sits next to Logging for the same reason and captures the same
+//     summary, into memory instead of onto disk — see package requesttrack.
 //   - CORS precedes the rate limiters so a preflight never consumes quota.
 //   - Metrics (Phase 5) precede the rate limiters so that 429s are counted.
 //   - Timeout precedes the handlers so its deadline reaches the database.
@@ -84,6 +97,7 @@ func NewRouter(deps RouterDeps) http.Handler {
 	}
 	r.Use(Tracing(tracer))
 	r.Use(Logging(deps.Logger))
+	r.Use(Track(deps.Tracker, deps.Geo, deps.Config.HTTP.TrustedProxyCount))
 	// Metrics precedes rate limiting, so that rejected requests are counted.
 	// After it, a service under attack would look idle.
 	if deps.Metrics != nil {
@@ -178,6 +192,14 @@ type methodNotAllowedWriter struct {
 	status    int
 	wroteBody bool
 }
+
+// Unwrap exposes the underlying writer so that http.ResponseController can
+// reach optional interfaces such as Flusher and Hijacker straight through
+// this wrapper — see statusRecorder.Unwrap for the failure mode this avoids.
+// Without it, every request in the process — not just the ones that end up
+// 405 — loses the ability to stream or hijack, because this middleware runs
+// on all of them.
+func (w *methodNotAllowedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 func (w *methodNotAllowedWriter) WriteHeader(status int) {
 	w.status = status

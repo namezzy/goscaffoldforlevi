@@ -1,0 +1,22 @@
+meta {
+  name: get ticket overview
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tickets/overview
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.counts: isJson
+}
+
+docs {
+  Requires ticket:read_all. One entry per status currently present across
+  every ticket in the database — errors/tickets-overview-forbidden is the
+  same request with a token that lacks the permission.
+}

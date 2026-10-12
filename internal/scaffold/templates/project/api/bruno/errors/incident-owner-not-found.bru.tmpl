@@ -1,0 +1,28 @@
+meta {
+  name: incident owner not found
+  type: http
+  seq: 26
+}
+
+post {
+  url: {{baseUrl}}/api/v1/incidents/01a05c5c-0000-7000-8000-000000000000/owner
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "owner_id": "{{adminId}}"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq INCIDENT_NOT_FOUND
+}
+
+docs {
+  AssignOwner row-locks the incident before updating it, so a non-existent
+  id answers 404. Uses adminId from users/create so the request is
+  otherwise well-formed — the id in the path is what is being tested.
+}

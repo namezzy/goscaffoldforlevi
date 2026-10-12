@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -9,20 +10,43 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/namezzy/goscaffoldforlevi/internal/audit"
+	"github.com/namezzy/goscaffoldforlevi/internal/audit/audithttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/audit/auditpg"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authjwt"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authpg"
 	"github.com/namezzy/goscaffoldforlevi/internal/config"
+	"github.com/namezzy/goscaffoldforlevi/internal/incident"
+	"github.com/namezzy/goscaffoldforlevi/internal/incident/incidenthttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/incident/incidentpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/invite"
+	"github.com/namezzy/goscaffoldforlevi/internal/invite/invitehttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/invite/invitepg"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging/messaginghttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/messaging/messagingpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/notification"
+	"github.com/namezzy/goscaffoldforlevi/internal/notification/notificationhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/notification/notificationpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/org"
+	"github.com/namezzy/goscaffoldforlevi/internal/org/orghttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/org/orgpg"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
 	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit"
 	"github.com/namezzy/goscaffoldforlevi/internal/ratelimit/ratelimithttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/requesttrack"
+	"github.com/namezzy/goscaffoldforlevi/internal/requesttrack/requesttrackhttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/telemetry"
+	"github.com/namezzy/goscaffoldforlevi/internal/ticket"
+	"github.com/namezzy/goscaffoldforlevi/internal/ticket/tickethttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/ticket/ticketpg"
 	"github.com/namezzy/goscaffoldforlevi/internal/user"
 	"github.com/namezzy/goscaffoldforlevi/internal/user/userhttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/user/userpg"
+	"github.com/namezzy/goscaffoldforlevi/internal/workbench"
+	"github.com/namezzy/goscaffoldforlevi/internal/workbench/workbenchhttp"
 )
 
 // features is the assembled application: everything the router needs, built
@@ -44,6 +68,7 @@ func buildFeatures(
 	txManager postgres.TxManager,
 	logger *slog.Logger,
 	metrics *telemetry.Metrics,
+	tracker *requesttrack.Tracker,
 ) (*features, error) {
 	hasher, err := auth.NewArgon2Hasher(auth.Argon2Params{
 		Time:    cfg.Auth.Argon2Time,
@@ -67,33 +92,107 @@ func buildFeatures(
 	// as the API is concerned. With messaging off, events are discarded and no
 	// relay, broker or worker is needed; with it on, the event is written in
 	// the same transaction as the user and a separate process delivers it.
-	// Neither the service nor the handler can tell the difference.
-	var events user.EventPublisher
+	// Neither the service nor the handler can tell the difference. The same
+	// publisher backs invite.Service's invitation emails, for the same
+	// reason (ADR-0009): one messaging decision, not two.
+	var events messaging.Publisher
 	if cfg.Messaging.Enabled {
 		events = messagingpg.NewOutboxPublisher(pool)
 	} else {
 		events = messaging.NewNoopPublisher(logger)
 	}
 
+	// The audit log has no ownership or messaging concept of its own — it is
+	// a plain recorder every other feature's service calls into — so it is
+	// built before anything that depends on it. The repository is kept
+	// separately from the service: ticket.Service depends on the storage
+	// interface directly (ActivityReader), bypassing audit.Service's own
+	// audit:read gate — see internal/ticket's doc comment.
+	auditRepo := auditpg.New(pool)
+	auditService := audit.NewService(auditRepo)
+
+	notificationService := notification.NewService(notificationpg.New(pool))
+
 	userService := user.NewService(userRepo, hasher, txManager, events, logger)
 	userService.SetObserver(metrics)
+	userService.SetAuditRecorder(auditService)
+	userService.SetNotificationRecorder(notificationService)
 
 	sessionRepo := authpg.NewSessionRepository(pool)
+	// user.Service depends on the narrow SessionRevoker interface it
+	// declares itself (ADR-0002); *authpg.SessionRepository happens to
+	// satisfy it via RevokeAllForUser, wired here rather than reused from
+	// auth.SessionRepository, which auth.Service depends on for a different,
+	// wider set of operations.
+	userService.SetSessionRevoker(sessionRepo)
+
+	// The same derivation technique invite.NewTokenCipher uses below, under
+	// its own purpose label — auth.NewTokenCipher's doc comment explains
+	// why this is a second cipher rather than a shared one: auth cannot
+	// import invite without a cycle.
+	resetCipher := auth.NewTokenCipher(cfg.Auth.JWTSecret.Reveal())
 	authService := auth.NewService(
 		auth.ServiceConfig{
-			Issuer:     cfg.Auth.Issuer,
-			Audience:   cfg.Auth.Audience,
-			AccessTTL:  cfg.Auth.AccessTTL,
-			RefreshTTL: cfg.Auth.RefreshTTL,
+			Issuer:           cfg.Auth.Issuer,
+			Audience:         cfg.Auth.Audience,
+			AccessTTL:        cfg.Auth.AccessTTL,
+			RefreshTTL:       cfg.Auth.RefreshTTL,
+			PasswordResetTTL: cfg.Auth.PasswordResetTTL,
 		},
 		user.NewAccountStore(userRepo),
 		sessionRepo,
+		authpg.NewPasswordResetRepository(pool),
+		resetCipher,
 		hasher,
 		tokens,
+		events,
 		txManager,
 		logger,
 	)
 	authService.SetObserver(metrics)
+	authService.SetAuditRecorder(authAuditAdapter{audit: auditService})
+
+	// notificationChannels is static, deployment-computed: this scaffold
+	// wires a real in-app channel (the notification feature above) and no
+	// real email sender — cmd/worker's InvitationHandler is built with
+	// notify.NewLogSender, a placeholder that logs instead of delivering
+	// (see that constructor's doc comment) — so reporting email as
+	// configured here would be dishonest regardless of MESSAGING_ENABLED.
+	// Wiring a real internal/notify.EmailSender and switching cmd/worker to
+	// it is what would flip this to true; see the Phase 2 completion report
+	// for this exact instruction.
+	notificationChannels := []org.NotificationChannel{
+		{Name: "in_app", Configured: true, Detail: "always available; no configuration required"},
+		{Name: "email", Configured: false, Detail: "no email sender is wired; deliveries would only be logged (see cmd/worker/run.go's LogSender)"},
+	}
+	orgService := org.NewService(orgpg.New(pool), txManager, auditService, notificationChannels)
+
+	ticketService := ticket.NewService(ticketpg.New(pool), txManager, auditService, auditRepo, notificationService)
+
+	// The admin store reads the outbox and dead-letter tables directly, not
+	// through the publisher above: those tables exist once the baseline
+	// migrations run, whether or not MESSAGING_ENABLED is set, so triage stays
+	// available even when nothing is currently publishing into them. Built
+	// here, ahead of workbenchService below, since the workbench's system-
+	// anomaly summary depends on it too.
+	messagingAdmin := messaging.NewAdmin(messagingpg.NewStore(pool, txManager))
+
+	workbenchService := workbench.NewService(ticketService, notificationService, auditService, messagingAdmin)
+
+	// incident.Service reuses messagingAdmin for replay (never a second
+	// replay path) and auditRepo for its processing record, the same
+	// relationship ticketService has to both — see internal/incident's doc
+	// comment on why there is no separate incident timeline table.
+	incidentService := incident.NewService(incidentpg.New(pool), txManager, auditService, auditRepo, messagingAdmin)
+
+	// The same cipher, built from the same secret, is what lets cmd/worker
+	// decrypt the token this encrypts — see invite.NewTokenCipher's doc
+	// comment.
+	inviteTokenCipher := invite.NewTokenCipher(cfg.Auth.JWTSecret.Reveal())
+	inviteService := invite.NewService(
+		invitepg.New(pool), txManager, events, auditService, hasher,
+		memberProvisioner{users: userService}, inviteTokenCipher, cfg.Invite.TTL,
+	)
 
 	// A nil primary limiter is a supported state: the Guard then serves every
 	// decision from its in-process fallback. That is the right behaviour when
@@ -112,6 +211,16 @@ func buildFeatures(
 
 	authHandler := authhttp.NewHandler(authService, cfg.HTTP.TrustedProxyCount, logger)
 	userHandler := userhttp.NewHandler(userService, logger)
+	orgHandler := orghttp.NewHandler(orgService, logger)
+	inviteHandler := invitehttp.NewHandler(inviteService, logger)
+	auditHandler := audithttp.NewHandler(auditService, logger)
+	messagingHandler := messaginghttp.NewHandler(messagingAdmin, logger)
+	notificationHandler := notificationhttp.NewHandler(notificationService, logger)
+	ticketHandler := tickethttp.NewHandler(ticketService, logger)
+	workbenchHandler := workbenchhttp.NewHandler(workbenchService, logger)
+	incidentHandler := incidenthttp.NewHandler(incidentService, logger)
+
+	requestsHandler := requesttrackhttp.NewHandler(tracker, logger)
 
 	requirePermission := func(p auth.Permission) func(http.Handler) http.Handler {
 		return authhttp.RequirePermission(p, logger)
@@ -120,6 +229,15 @@ func buildFeatures(
 	register := registerRoutes(routeDeps{
 		auth:              authHandler,
 		users:             userHandler,
+		org:               orgHandler,
+		invitations:       inviteHandler,
+		audit:             auditHandler,
+		messaging:         messagingHandler,
+		notifications:     notificationHandler,
+		tickets:           ticketHandler,
+		workbench:         workbenchHandler,
+		incidents:         incidentHandler,
+		requests:          requestsHandler,
 		loginLimiter:      ratelimithttp.Login(guard, cfg.HTTP.TrustedProxyCount, logger),
 		authenticate:      authhttp.Authenticate(tokens, logger),
 		rateLimitByUser:   ratelimithttp.ByUser(guard, logger),
@@ -129,11 +247,60 @@ func buildFeatures(
 	return &features{guard: guard, register: register}, nil
 }
 
+// memberProvisioner adapts *user.Service to invite.MemberProvisioner.
+//
+// It lives here, in the composition root, rather than as a method on
+// *user.Service or a type in package invite: invite.MemberProvisioner
+// deliberately uses no type from package user (see that interface's doc
+// comment, on why that would create an import cycle), so something has to
+// translate between invite.ProvisionedMember and user.ProvisionInput. cmd/api
+// is the one place already allowed to import every feature, which is what
+// makes it the right place for that translation rather than a new package.
+type memberProvisioner struct{ users *user.Service }
+
+func (p memberProvisioner) Provision(ctx context.Context, in invite.ProvisionedMember) (string, error) {
+	created, err := p.users.ProvisionFromInvite(ctx, user.ProvisionInput{
+		Email: in.Email, Name: in.Name, PasswordHash: in.PasswordHash,
+		Role: in.Role, DepartmentID: in.DepartmentID,
+	})
+	if err != nil {
+		return "", err
+	}
+	return created.ID.String(), nil
+}
+
+// authAuditAdapter adapts *audit.Service to auth.AuditRecorder.
+//
+// auth.AuditEntry exists, distinct from audit.Entry, only because package
+// audit itself depends on auth (for auth.Authorize's permission checks) —
+// auth importing audit back would be a cycle, so auth declares its own
+// minimal, pure-data entry shape instead (see that type's doc comment).
+// cmd/api is the one place already allowed to import every feature, which
+// is what makes it the right place to translate between the two, the same
+// way memberProvisioner above translates between invite and user.
+type authAuditAdapter struct{ audit *audit.Service }
+
+func (a authAuditAdapter) Record(ctx context.Context, e auth.AuditEntry) error {
+	return a.audit.Record(ctx, audit.Entry{
+		ActorID: e.ActorID, Action: e.Action, TargetType: e.TargetType, TargetID: e.TargetID,
+		Result: audit.ResultSuccess, After: e.After,
+	})
+}
+
 // routeDeps is everything the route table needs, with the handlers and the
 // middleware already built.
 type routeDeps struct {
 	auth              *authhttp.Handler
 	users             *userhttp.Handler
+	org               *orghttp.Handler
+	invitations       *invitehttp.Handler
+	audit             *audithttp.Handler
+	messaging         *messaginghttp.Handler
+	notifications     *notificationhttp.Handler
+	tickets           *tickethttp.Handler
+	workbench         *workbenchhttp.Handler
+	incidents         *incidenthttp.Handler
+	requests          *requesttrackhttp.Handler
 	loginLimiter      func(http.Handler) http.Handler
 	authenticate      func(http.Handler) http.Handler
 	rateLimitByUser   func(http.Handler) http.Handler
@@ -153,6 +320,13 @@ func registerRoutes(d routeDeps) func(chi.Router) {
 		// present a token before it has one. Login carries its own limiter.
 		r.Route("/auth", d.auth.Routes(d.loginLimiter))
 
+		// Accepting an invitation is the same kind of case: the caller has no
+		// account yet to authenticate as, so this cannot live behind
+		// Authenticate. It still passes through the global IP rate limiter
+		// mounted ahead of this split (internal/httpx's middleware chain),
+		// which is what stands between this endpoint and abuse.
+		r.Route("/invitations/accept", d.invitations.AcceptRoute())
+
 		// Everything else requires a principal. The per-user limiter is mounted
 		// immediately after authentication, which is the first point at which
 		// the user is known.
@@ -161,6 +335,16 @@ func registerRoutes(d routeDeps) func(chi.Router) {
 			protected.Use(d.rateLimitByUser)
 
 			protected.Route("/users", d.users.Routes(d.requirePermission))
+			protected.Route("/org", d.org.Routes(d.requirePermission))
+			protected.Route("/invitations", d.invitations.Routes(d.requirePermission))
+			protected.Route("/admin", d.messaging.Routes(d.requirePermission))
+			protected.Route("/admin/requests", d.requests.Routes(d.requirePermission))
+			protected.Route("/admin/audit", d.audit.Routes(d.requirePermission))
+			protected.Route("/auth/sessions", d.auth.SessionRoutes())
+			protected.Route("/notifications", d.notifications.Routes())
+			protected.Route("/tickets", d.tickets.Routes(d.requirePermission))
+			protected.Route("/dashboard", d.workbench.Routes())
+			protected.Route("/incidents", d.incidents.Routes(d.requirePermission))
 		})
 	}
 }

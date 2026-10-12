@@ -1,0 +1,27 @@
+meta {
+  name: incident notes not found
+  type: http
+  seq: 28
+}
+
+post {
+  url: {{baseUrl}}/api/v1/incidents/01a05c5c-0000-7000-8000-000000000000/notes
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "note": "Investigating."
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq INCIDENT_NOT_FOUND
+}
+
+docs {
+  ProcessNote looks up the incident before recording anything, so a
+  non-existent id answers 404 rather than writing an orphaned audit entry.
+}

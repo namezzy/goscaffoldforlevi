@@ -1,0 +1,25 @@
+meta {
+  name: get invitation
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/invitations/{{invitationId}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{invitationId}}
+  res.body.status: eq pending
+  res.body.token: isUndefined
+}
+
+docs {
+  Requires invite:read. Unlike create, the response here carries no token
+  field: the plaintext is never persisted, so by the time a read runs it no
+  longer exists anywhere to include — see Invitation vs CreatedInvitation in
+  api/openapi.yaml.
+}

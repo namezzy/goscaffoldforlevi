@@ -1,0 +1,35 @@
+meta {
+  name: reinvite
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/invitations/{{reinviteInvitationId}}/reinvite
+  body: none
+  auth: inherit
+}
+
+script:pre-request {
+  bru.setVar("reinvitedInvitationId", "");
+}
+
+script:post-response {
+  if (res.getStatus() === 201) {
+    bru.setVar("reinvitedInvitationId", res.body.id);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.status: eq pending
+  res.body.email: eq {{reinviteEmail}}
+  res.body.token: isString
+}
+
+docs {
+  Requires invite:create. The prior invitation (reinviteInvitationId) is
+  revoked and a new row is created with a fresh token and expiry — a new id,
+  not the same one — which is why this stores reinvitedInvitationId
+  separately rather than reusing reinviteInvitationId for the next request.
+}

@@ -1,0 +1,20 @@
+meta {
+  name: revoke invitation
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/v1/invitations/{{reinvitedInvitationId}}/revoke
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  Runs last so the folder leaves no pending invitation behind. Requires
+  invite:revoke.
+}

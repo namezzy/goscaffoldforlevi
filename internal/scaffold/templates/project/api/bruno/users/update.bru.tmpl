@@ -10,16 +10,34 @@ patch {
   auth: inherit
 }
 
+script:pre-request {
+  // Unique per run for the same reason userEmail is: a fixed value would
+  // make the second run fail with 409 and look like a bug in update rather
+  // than leftover state from the first run. login-with-username.bru reads
+  // userUsername, so it must be set before this request, not after.
+  bru.setVar("userUsername", "bruno_user_" + Date.now());
+  bru.setVar("userRenamedEmail", "bruno-user-renamed-" + Date.now() + "@example.com");
+}
+
 body:json {
   {
-    "name": "Bruno User Renamed"
+    "name": "Bruno User Renamed",
+    "email": "{{userRenamedEmail}}",
+    "username": "{{userUsername}}"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("userEmail", res.body.email);
   }
 }
 
 assert {
   res.status: eq 200
   res.body.name: eq Bruno User Renamed
-  res.body.email: eq {{userEmail}}
+  res.body.email: eq {{userRenamedEmail}}
+  res.body.username: eq {{userUsername}}
 }
 
 docs {
@@ -29,4 +47,14 @@ docs {
 
   An empty body is rejected with 400 rather than answered 200: a patch that
   changes nothing is a client bug, and a success would hide it.
+
+  email and username are here for the same reason name is: both are owner-
+  editable, requiring no more than the caller's own admin token, the same
+  way renaming yourself does. Neither changing your address nor changing
+  your handle can grant a capability, so ownership alone is enough — role
+  and status are the ones that need `user:update` regardless of ownership.
+
+  userEmail is overwritten from the response afterward. Nothing later in
+  this folder reads the old value, but errors/setup-member's account is
+  separate from this one, so there is no cross-folder dependency to break.
 }

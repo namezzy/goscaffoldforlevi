@@ -1,0 +1,24 @@
+-- audit_actor_id_no_fk (up)
+--
+-- audit_events.actor_id referenced users(id) ON DELETE SET NULL. That is
+-- exactly wrong for an append-only log: deleting a user who was ever the
+-- actor of a past audit event made PostgreSQL try to UPDATE every one of
+-- those rows to NULL out the reference, and audit_events' own trigger
+-- (org_roles_audit) refuses UPDATE unconditionally — so deleting a member
+-- who had, say, ever changed their own password failed outright with
+-- "audit_events is append-only: UPDATE is not permitted", not because the
+-- delete was wrong but because the audit table's two guarantees (immutable,
+-- and referentially consistent with a table whose rows do get deleted)
+-- cannot both hold.
+--
+-- Immutability is the one this project actually needs — the whole point of
+-- audit_events is a durable record of what an id did, even after the
+-- account behind that id is gone. So the foreign key is dropped, not the
+-- trigger: actor_id keeps the UUID value forever, traceable by value, with
+-- no expectation that a users row still exists behind it. A reader that
+-- wants "is this actor still a member" already has to handle that (a
+-- disabled or deleted account is unremarkable in an audit log spanning any
+-- real amount of time) and joins against users explicitly when it needs
+-- the actor's current name/email rather than relying on the database to
+-- enforce that the row still exists.
+ALTER TABLE audit_events DROP CONSTRAINT audit_events_actor_id_fkey;

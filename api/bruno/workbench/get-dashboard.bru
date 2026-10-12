@@ -1,0 +1,34 @@
+meta {
+  name: get dashboard
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/dashboard
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.my_open_tickets: gte 0
+  res.body.assigned_to_me: gte 0
+  res.body.unread_notifications: gte 0
+  res.body.admin.tickets_by_status: isJson
+  res.body.admin.recent_audit_events: isArray
+  res.body.admin.outbox: isJson
+}
+
+docs {
+  The admin account holds ticket:read_all, audit:read and messaging:read,
+  so every field of admin is present here — see DashboardAdminOverview's
+  schema description for why a role holding only some of those permissions
+  would see only some of these fields.
+
+  my_open_tickets and assigned_to_me are asserted as "at least zero," not a
+  specific number: by the time this folder runs, tickets/close-ticket has
+  already moved this folder's own ticket to closed, which does not count
+  as open — so the real value legitimately depends on what else exists in
+  the database, not on this folder alone.
+}

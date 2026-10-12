@@ -1,0 +1,29 @@
+meta {
+  name: resolve admin id
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/v1/users?search={{adminEmail}}&page=1&page_size=1
+  body: none
+  auth: inherit
+}
+
+script:post-response {
+  if (res.getStatus() === 200 && res.body.items.length > 0) {
+    bru.setVar("adminId", res.body.items[0].id);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.items[0].email: eq {{adminEmail}}
+}
+
+docs {
+  /auth/login answers only tokens, not the account's own id, and
+  tickets.assignee_id is a foreign key into users — so this folder resolves
+  it once, here, via the same search filter users/list.bru exercises for a
+  member instead of the admin.
+}

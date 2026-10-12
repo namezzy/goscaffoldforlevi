@@ -30,7 +30,7 @@ func TestOnlyACommittedRegistrationIsCounted(t *testing.T) {
 	svc.SetObserver(obs)
 
 	if _, err := svc.Create(context.Background(), user.CreateInput{
-		Email: "not an email", Name: "N", Password: validPassword, Role: auth.RoleUser,
+		Email: "not an email", Name: "N", Password: validPassword, Role: auth.RoleReadOnly,
 	}); err == nil {
 		t.Fatal("Create() accepted an invalid email")
 	}
@@ -39,7 +39,7 @@ func TestOnlyACommittedRegistrationIsCounted(t *testing.T) {
 	}
 
 	if _, err := svc.Create(context.Background(), user.CreateInput{
-		Email: "new@example.com", Name: "N", Password: validPassword, Role: auth.RoleUser,
+		Email: "new@example.com", Name: "N", Password: validPassword, Role: auth.RoleReadOnly,
 	}); err != nil {
 		t.Fatalf("Create() = %v", err)
 	}
@@ -54,7 +54,7 @@ func TestAUserServiceWithoutAnObserverStillRegisters(t *testing.T) {
 	svc := newService(newFakeRepository())
 
 	if _, err := svc.Create(context.Background(), user.CreateInput{
-		Email: "new@example.com", Name: "N", Password: validPassword, Role: auth.RoleUser,
+		Email: "new@example.com", Name: "N", Password: validPassword, Role: auth.RoleReadOnly,
 	}); err != nil {
 		t.Fatalf("Create() = %v", err)
 	}
@@ -75,7 +75,7 @@ func TestARolledBackRegistrationIsNotCounted(t *testing.T) {
 	svc.SetObserver(obs)
 
 	if _, err := svc.Create(context.Background(), user.CreateInput{
-		Email: "new@example.com", Name: "N", Password: validPassword, Role: auth.RoleUser,
+		Email: "new@example.com", Name: "N", Password: validPassword, Role: auth.RoleReadOnly,
 	}); err == nil {
 		t.Fatal("Create() succeeded despite the transaction failing")
 	}

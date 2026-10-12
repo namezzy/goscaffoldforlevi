@@ -1,0 +1,38 @@
+meta {
+  name: reassign ticket
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/reassign
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "assignee_id": "{{adminId}}",
+    "expected_version": {{ticketVersion}}
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("ticketVersion", res.body.version);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq in_progress
+  res.body.version: eq 3
+}
+
+docs {
+  Requires ticket:manage, valid from in_progress or needs_info; does not
+  change status. Reassigns to the same account for the same reason
+  assign-ticket does — there is only one account in this folder — which is
+  enough to prove the endpoint's own contract (it does not, for example,
+  reject "reassign to the current assignee").
+}

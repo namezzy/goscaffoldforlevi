@@ -1,6 +1,6 @@
 meta {
   name: errors
-  seq: 4
+  seq: 10
 }
 
 docs {
@@ -12,9 +12,9 @@ docs {
   minutes: wrong-password, unknown-email, malformed-body, as-member and
   disabled-account. The malformed body still costs one, because the limiter
   charges the IP before it discovers the body will not parse. With
-  auth/login that is six per full run, so a second run inside the same
-  window runs out partway through and answers 429 from login-as-member
-  onwards.
+  auth/login and users/login-with-username that is seven per full run, so a
+  second run inside the same window runs out partway through and answers
+  429 from login-as-member onwards.
 
   That is a limiter, not a fault. Clear it and run again:
 

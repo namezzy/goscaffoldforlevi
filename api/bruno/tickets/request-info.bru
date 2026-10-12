@@ -1,0 +1,36 @@
+meta {
+  name: request info
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/request-info
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "note": "Which floor is this on?",
+    "expected_version": {{ticketVersion}}
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("ticketVersion", res.body.version);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq needs_info
+  res.body.version: eq 5
+}
+
+docs {
+  Available to the current assignee or a ticket:manage holder, only from
+  in_progress. Moves the ticket to needs_info and notifies the requester —
+  "负责人收到通知 → 要求补充" from the acceptance flow this folder walks.
+}

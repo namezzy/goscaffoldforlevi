@@ -1,0 +1,37 @@
+meta {
+  name: login secondary
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "identifier": "{{adminEmail}}",
+    "password": "{{process.env.BRUNO_ADMIN_PASSWORD}}"
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("secondarySessionId", res.body.session_id);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.session_id: isString
+}
+
+docs {
+  A second, independent login as the same admin account — a stand-in for
+  "signed in on another device". Deliberately does not overwrite
+  accessToken/refreshToken: the rest of this folder, and revoke-session and
+  revoke-other-sessions right after it, need the first login's session to
+  keep working throughout.
+}

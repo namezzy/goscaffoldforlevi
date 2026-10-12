@@ -1,0 +1,41 @@
+meta {
+  name: assign ticket
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}/assign
+  body: json
+  auth: inherit
+}
+
+body:json {
+  {
+    "assignee_id": "{{adminId}}",
+    "expected_version": {{ticketVersion}}
+  }
+}
+
+script:post-response {
+  if (res.getStatus() === 200) {
+    bru.setVar("ticketVersion", res.body.version);
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq in_progress
+  res.body.assignee_id: eq {{adminId}}
+  res.body.version: eq 2
+}
+
+docs {
+  Requires ticket:manage, only valid from pending. Assigns to the admin's
+  own account — a self-assignment is a real, ordinary case (the same
+  account holds ticket:manage and is available to do the work), not a
+  workaround; see the folder's own docs for why one token can exercise
+  every rule in this lifecycle. This also queues an in-app notification to
+  the assignee — see notifications/list-notifications.bru, which reads it
+  back.
+}

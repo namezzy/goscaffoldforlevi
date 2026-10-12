@@ -1,0 +1,30 @@
+meta {
+  name: login tertiary
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/v1/auth/login
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "identifier": "{{adminEmail}}",
+    "password": "{{process.env.BRUNO_ADMIN_PASSWORD}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  A third login, for revoke-other-sessions.bru right after this to have
+  something to revoke — the secondary login was already individually
+  revoked by revoke-session.bru, so without this, revoke-other-sessions
+  would legitimately revoke nothing and the assertion below could not tell
+  "it works" apart from "it does nothing".
+}

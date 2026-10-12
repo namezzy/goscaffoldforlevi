@@ -16,30 +16,43 @@ import (
 // the only thing standing between that and a leak would be a struct tag that
 // someone must remember to write. Here, the field simply has nowhere to go.
 type userResponse struct {
-	ID        string    `json:"id"`
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	Role      string    `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	// Username is omitted rather than sent as "" for an account that never
+	// set one — a client checking `if user.username` should not have to also
+	// know that empty string means the same as absent.
+	Username     *string   `json:"username,omitempty"`
+	Name         string    `json:"name"`
+	Status       string    `json:"status"`
+	Role         string    `json:"role"`
+	DepartmentID *string   `json:"department_id,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func toResponse(u user.User) userResponse {
-	return userResponse{
-		ID:        u.ID.String(),
-		Email:     u.Email,
-		Name:      u.Name,
-		Status:    u.Status.String(),
-		Role:      u.Role.String(),
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
+	resp := userResponse{
+		ID:           u.ID.String(),
+		Email:        u.Email,
+		Name:         u.Name,
+		Status:       u.Status.String(),
+		Role:         u.Role.String(),
+		DepartmentID: u.DepartmentID,
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
 	}
+	if u.Username != "" {
+		resp.Username = &u.Username
+	}
+	return resp
 }
 
 // createUserRequest is the body of POST /users.
 type createUserRequest struct {
-	Email    string `json:"email"`
+	Email string `json:"email"`
+	// Username is optional; an account can be created, and can operate
+	// indefinitely, without one. Login by username only works once it is set.
+	Username string `json:"username"`
 	Name     string `json:"name"`
 	Password string `json:"password"`
 	// Role is optional; omitting it creates an ordinary user. Defaulting to the
@@ -50,10 +63,11 @@ type createUserRequest struct {
 func (r createUserRequest) toInput() user.CreateInput {
 	role := auth.Role(r.Role)
 	if r.Role == "" {
-		role = auth.RoleUser
+		role = auth.RoleReadOnly
 	}
 	return user.CreateInput{
 		Email:    r.Email,
+		Username: r.Username,
 		Name:     r.Name,
 		Password: r.Password,
 		Role:     role,
@@ -66,13 +80,27 @@ func (r createUserRequest) toInput() user.CreateInput {
 // distinguishable. Without that, clearing a field and not mentioning it look
 // identical on the wire, and PATCH becomes PUT with extra steps.
 type updateUserRequest struct {
-	Name   *string `json:"name"`
-	Status *string `json:"status"`
-	Role   *string `json:"role"`
+	Email        *string `json:"email"`
+	Username     *string `json:"username"`
+	Name         *string `json:"name"`
+	Status       *string `json:"status"`
+	Role         *string `json:"role"`
+	DepartmentID *string `json:"department_id"`
+	// ClearDepartment unassigns the member's department. It is a separate
+	// field from DepartmentID, not "send department_id: null", for the same
+	// reason every other field here is a pointer: this patch already needs
+	// to distinguish "absent" from "present", and department_id needs a
+	// third state on top of that — assign, or explicitly clear — which one
+	// field cannot express, matching departments.parent_id/clear_parent in
+	// api/openapi.yaml's UpdateDepartmentRequest.
+	ClearDepartment bool `json:"clear_department"`
 }
 
 func (r updateUserRequest) toPatch() user.Patch {
-	p := user.Patch{Name: r.Name}
+	p := user.Patch{
+		Email: r.Email, Username: r.Username, Name: r.Name,
+		DepartmentID: r.DepartmentID, ClearDepartment: r.ClearDepartment,
+	}
 	if r.Status != nil {
 		s := user.Status(*r.Status)
 		p.Status = &s

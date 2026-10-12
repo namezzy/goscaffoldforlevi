@@ -1,0 +1,24 @@
+meta {
+  name: list sessions
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/v1/auth/sessions
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+  res.body.items[0].id: isString
+}
+
+docs {
+  The security center's session list — self-scoped, no permission beyond
+  being signed in. auth/login's own session (session_id from its response)
+  is expected to appear here with current: true, since this request is
+  authenticated through the same access token.
+}

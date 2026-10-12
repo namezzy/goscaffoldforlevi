@@ -11,9 +11,17 @@ import (
 	"github.com/go-chi/chi/v5"
 	"gopkg.in/yaml.v3"
 
+	"github.com/namezzy/goscaffoldforlevi/internal/audit/audithttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth"
 	"github.com/namezzy/goscaffoldforlevi/internal/auth/authhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/invite/invitehttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/messaging/messaginghttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/notification/notificationhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/org/orghttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/requesttrack/requesttrackhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/ticket/tickethttp"
 	"github.com/namezzy/goscaffoldforlevi/internal/user/userhttp"
+	"github.com/namezzy/goscaffoldforlevi/internal/workbench/workbenchhttp"
 )
 
 // TestOpenAPIMatchesTheRouteTable compares the served routes against
@@ -118,6 +126,14 @@ func buildTestRouter() chi.Router {
 	r.Route("/api/v1", registerRoutes(routeDeps{
 		auth:            authhttp.NewHandler(nil, 0, nil),
 		users:           userhttp.NewHandler(nil, nil),
+		org:             orghttp.NewHandler(nil, nil),
+		invitations:     invitehttp.NewHandler(nil, nil),
+		audit:           audithttp.NewHandler(nil, nil),
+		messaging:       messaginghttp.NewHandler(nil, nil),
+		notifications:   notificationhttp.NewHandler(nil, nil),
+		tickets:         tickethttp.NewHandler(nil, nil),
+		workbench:       workbenchhttp.NewHandler(nil, nil),
+		requests:        requesttrackhttp.NewHandler(nil, nil),
 		loginLimiter:    passthrough,
 		authenticate:    passthrough,
 		rateLimitByUser: passthrough,

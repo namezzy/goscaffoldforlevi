@@ -93,6 +93,23 @@ func (q *Queries) ClaimOutboxEvents(ctx context.Context, limit int32) ([]ClaimOu
 	return items, nil
 }
 
+const countDeadLetters = `-- name: CountDeadLetters :one
+SELECT count(*) FROM dead_letter_events
+WHERE replayed_at IS NULL
+  AND ($1::text IS NULL OR event_type = $1::text)
+`
+
+// CountDeadLetters answers "how many, in total" for the same filter
+// ListDeadLetters uses. A LIMIT-ed list has no way to say that on its own,
+// and reporting len(rows) as the total silently under-counts a queue larger
+// than the page it was asked to hand back.
+func (q *Queries) CountDeadLetters(ctx context.Context, eventType *string) (int64, error) {
+	row := q.db.QueryRow(ctx, countDeadLetters, eventType)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUnpublishedOutboxEvents = `-- name: CountUnpublishedOutboxEvents :one
 SELECT count(*)::bigint AS pending
 FROM outbox_events
@@ -265,6 +282,39 @@ WHERE id = $1
 func (q *Queries) MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, markOutboxEventPublished, id)
 	return err
+}
+
+const outboxSummary = `-- name: OutboxSummary :one
+SELECT
+    count(*) FILTER (WHERE published_at IS NULL)::bigint AS pending,
+    count(*) FILTER (WHERE published_at IS NOT NULL)::bigint AS published,
+    count(*) FILTER (WHERE published_at IS NULL AND attempts > 0)::bigint AS failing,
+    coalesce(max(attempts) FILTER (WHERE published_at IS NULL), 0)::int AS worst_attempts
+FROM outbox_events
+`
+
+type OutboxSummaryRow struct {
+	Pending       int64
+	Published     int64
+	Failing       int64
+	WorstAttempts int32
+}
+
+// OutboxSummary is the admin API's view of the outbox: the same four numbers
+// `make outbox-status` prints, behind an endpoint rather than a raw SQL
+// connection. worst_attempts is coalesced to 0 because max() over an empty
+// FILTER is NULL, and a NULL "how bad is the worst one" reads as a query
+// failure rather than as "nothing is failing".
+func (q *Queries) OutboxSummary(ctx context.Context) (OutboxSummaryRow, error) {
+	row := q.db.QueryRow(ctx, outboxSummary)
+	var i OutboxSummaryRow
+	err := row.Scan(
+		&i.Pending,
+		&i.Published,
+		&i.Failing,
+		&i.WorstAttempts,
+	)
+	return i, err
 }
 
 const recordDeadLetter = `-- name: RecordDeadLetter :exec

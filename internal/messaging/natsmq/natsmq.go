@@ -251,8 +251,19 @@ type Processor interface {
 }
 
 // Subscribe creates or updates the durable consumer and returns a handle.
-func Subscribe(ctx context.Context, conn *Conn, filter string, logger *slog.Logger) (*Subscription, error) {
-	subject := conn.cfg.SubjectPrefix + "." + filter
+//
+// filters takes one or more event types. Passing more than one is how a
+// single worker process runs one durable consumer — one dedupe log, one
+// in-flight drain on shutdown — across several unrelated event types (the
+// welcome email and the invitation email, say) instead of standing up a
+// separate consumer per type: JetStream's FilterSubjects accepts multiple
+// subjects on one consumer, and the delivered messages still carry their own
+// Event.Type for a Processor to dispatch on.
+func Subscribe(ctx context.Context, conn *Conn, logger *slog.Logger, filters ...string) (*Subscription, error) {
+	subjects := make([]string, len(filters))
+	for i, filter := range filters {
+		subjects[i] = conn.cfg.SubjectPrefix + "." + filter
+	}
 
 	consumer, err := conn.stream.CreateOrUpdateConsumer(ctx, jetstream.ConsumerConfig{
 		Durable:   conn.cfg.ConsumerName,
@@ -264,7 +275,7 @@ func Subscribe(ctx context.Context, conn *Conn, filter string, logger *slog.Logg
 		// did not exist.
 		DeliverPolicy:  jetstream.DeliverAllPolicy,
 		MaxDeliver:     conn.cfg.MaxDeliver,
-		FilterSubjects: []string{subject},
+		FilterSubjects: subjects,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create consumer %s: %w", conn.cfg.ConsumerName, err)
@@ -272,7 +283,7 @@ func Subscribe(ctx context.Context, conn *Conn, filter string, logger *slog.Logg
 
 	logger.InfoContext(ctx, "subscribed to nats",
 		slog.String("consumer", conn.cfg.ConsumerName),
-		slog.String("subject", subject))
+		slog.Any("subjects", subjects))
 
 	return &Subscription{conn: consumer, logger: logger, tracer: telemetry.NoopTracerProvider()}, nil
 }

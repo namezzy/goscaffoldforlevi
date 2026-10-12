@@ -1,0 +1,21 @@
+meta {
+  name: mark all read
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/v1/notifications/read-all
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 204
+}
+
+docs {
+  Runs last in this folder. get-unread-count, if run again after this,
+  would answer 0 — not re-asserted here since that would just be the same
+  claim checked twice.
+}

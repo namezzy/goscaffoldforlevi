@@ -1,0 +1,22 @@
+meta {
+  name: invitations
+  seq: 9
+}
+
+docs {
+  The full invitation lifecycle: invite, list, get, accept, reinvite,
+  revoke. Every request except accept requires an admin token; accept
+  requires none, by design — see accept-invitation.bru.
+
+  No department_id is set on the invitations this folder creates. The org
+  folder runs before this one and deletes the department it created, so
+  referencing it here would fail with REFERENCE_CONFLICT once the
+  collection has run past org/delete-department.
+
+  create-invitation and reinvite-invitation both answer with a one-time
+  token field, alongside the invitation — see CreatedInvitation in
+  api/openapi.yaml for why the API hands it back directly rather than only
+  emailing it. accept-invitation is what makes that token real: it is the
+  only way this collection can exercise the accept endpoint at all, since
+  nothing here has a mailbox to read.
+}

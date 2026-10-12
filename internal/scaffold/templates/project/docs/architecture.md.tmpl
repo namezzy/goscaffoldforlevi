@@ -549,10 +549,60 @@ Client
    POST /auth/logout {refresh_token}
      → 撤销该 family 全部 session → 204
      → access token 最多 15 分钟后自然失效
+
+⑤ 安全中心：会话
+   GET    /auth/sessions              列出本账户最近的 session（每个登录
+                                       family 一条，而不是每次 refresh
+                                       轮转一条——见 queries/auth.sql 的
+                                       ListRecentRefreshSessionsByUser）
+   DELETE /auth/sessions/{id}         撤销指定 family（id 即
+                                       TokenPair.session_id，也是 JWT 的
+                                       jti——见 issuePair）
+   POST   /auth/sessions/revoke-others 撤销除当前请求所在 family 外的全部
+
+⑥ 自助密码重置（Phase 3）
+   POST /auth/password-reset/request {identifier}
+     → 查账户（不存在或已停用都不告知，只返回 202）
+     → 命中且启用：
+        【事务】撤销该用户此前未消费的重置令牌
+                插入 password_reset_tokens(token_hash=sha256(t))
+                cipher.Encrypt(t) 后发布 password_reset_requested 事件
+                （outbox 明文永不落地——见 auth.TokenCipher）
+     → 202（响应体与未命中时完全一致）
+
+   POST /auth/password-reset/confirm {token, password}
+     → 按 sha256(token) 加锁查找（FOR UPDATE，防并发重复兑现）
+     → 不存在/已过期/已使用 → 同一个 400 PASSWORD_RESET_TOKEN_INVALID
+     → 有效：
+        【事务】更新密码哈希
+                标记令牌已使用
+                撤销该用户名下**全部** refresh_session（不保留任何一个）
+     → 204
 ```
 
 授权判定分两类，见 [ADR-0007](./adr/0007-auth.md)：
 角色权限走中间件，资源所有权走 Service 层的统一 helper。
+
+### 已签发访问令牌的失效策略
+
+这是整套设计里唯一无法绕开的限制，必须诚实写清楚：**access token 一旦签发，只
+会在自己最长 1 小时（`AUTH_ACCESS_TTL`，硬上限见 `internal/config/load.go` 的
+校验）的有效期内自然过期，没有任何操作能提前让它失效**——见
+[ADR-0007](./adr/0007-auth.md)。以下每一行"生效时间"里的"立即"，指的都是
+refresh session 层面：这个用户名下已签发的 refresh token 立即失效，但同一批
+access token 要等到各自的 `exp` 才真正停止工作。
+
+| 触发操作 | 影响范围 | refresh session | 已签发的 access token |
+|---|---|---|---|
+| 登出 (`/auth/logout`) | 该 refresh token 所在的 family | 立即撤销 | 不受影响，最多 1h 内自然过期 |
+| 撤销指定会话 (`DELETE /auth/sessions/{id}`) | 调用者自己的一个 family | 立即撤销 | 同上 |
+| 撤销其他会话 (`/auth/sessions/revoke-others`) | 调用者自己的其余全部 family | 立即撤销 | 同上 |
+| 自助密码重置确认 (`/auth/password-reset/confirm`) | 该账户**全部** family，不保留任何一个 | 立即撤销 | 同上 |
+| 管理员停用账户 (`PATCH /users/{id}` 置 `disabled`) | 该账户全部 family（`user.SessionRevoker` → `RevokeAllForUser`） | 立即撤销 | 同上；见 `internal/user/service.go` |
+| 角色变更 | 不撤销任何 session | 不受影响 | 同上——**新角色最多要等到下一次 refresh 才写入新 JWT**；这段窗口内旧 access token 仍带着旧角色的权限，是当前设计明确接受的滞后，不是遗漏 |
+
+一个直接后果：把 `AUTH_ACCESS_TTL` 调得越大，上表"不受影响"这一列的实际风险
+窗口就越大。生产环境不应超过配置校验允许的 1 小时上限，多数部署应更短。
 
 ---
 

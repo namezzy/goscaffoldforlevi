@@ -28,7 +28,7 @@ func input(email, password string) user.CreateInput {
 		Email:    email,
 		Name:     "Administrator",
 		Password: password,
-		Role:     auth.RoleAdmin,
+		Role:     auth.RoleSystemAdmin,
 	}
 }
 
@@ -50,8 +50,8 @@ func TestBootstrapCreatesAnAccountThePasswordVerifiesAgainst(t *testing.T) {
 		t.Fatalf("bootstrap: %v", err)
 	}
 
-	if created.Role != auth.RoleAdmin {
-		t.Errorf("role = %q, want %q", created.Role, auth.RoleAdmin)
+	if created.Role != auth.RoleSystemAdmin {
+		t.Errorf("role = %q, want %q", created.Role, auth.RoleSystemAdmin)
 	}
 	if created.Status != user.StatusActive {
 		t.Errorf("status = %q, want %q", created.Status, user.StatusActive)
@@ -121,7 +121,7 @@ func TestBootstrapIsNotBlockedByNonAdministrators(t *testing.T) {
 		Email:        "member@example.com",
 		Name:         "Member",
 		Status:       user.StatusActive,
-		Role:         auth.RoleUser,
+		Role:         auth.RoleReadOnly,
 		PasswordHash: hash,
 	}); err != nil {
 		t.Fatalf("seed an ordinary user: %v", err)

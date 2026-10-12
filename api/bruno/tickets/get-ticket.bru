@@ -1,0 +1,22 @@
+meta {
+  name: get ticket
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/v1/tickets/{{ticketId}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{ticketId}}
+  res.body.status: eq completed
+}
+
+docs {
+  Access is the requester, the current assignee, or a ticket:read_all
+  holder — the admin account here is all three at once.
+}

@@ -99,6 +99,78 @@ func (r *SessionRepository) RevokeFamily(ctx context.Context, id auth.FamilyID) 
 	return n, nil
 }
 
+// RevokeAllForUser revokes every active session a user holds, across every
+// login family — unlike RevokeFamily, which only reaches the one descended
+// from a single login. It backs member deactivation (user.Service.Update):
+// a disabled account must not be able to keep refreshing a session opened on
+// another device before it was deactivated. This method, not the narrower
+// auth.SessionRepository interface, is what user.SessionRevoker is wired to
+// in cmd/api — see that interface's doc comment for why it is declared
+// there rather than reused from this package.
+func (r *SessionRepository) RevokeAllForUser(ctx context.Context, userID string) (int64, error) {
+	id, err := uuid.Parse(userID)
+	if err != nil {
+		return 0, apperr.Internal(fmt.Errorf("revoke all for user: %w", err))
+	}
+	n, err := r.q(ctx).RevokeAllRefreshSessionsForUser(ctx, id)
+	if err != nil {
+		return 0, translate(err, "revoke all refresh sessions for user")
+	}
+	return n, nil
+}
+
+// ListRecentByUser returns the user's most recent sessions, newest first.
+func (r *SessionRepository) ListRecentByUser(ctx context.Context, userID string, limit int32) ([]auth.Session, error) {
+	id, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, apperr.Internal(fmt.Errorf("list recent sessions: %w", err))
+	}
+	rows, err := r.q(ctx).ListRecentRefreshSessionsByUser(ctx, db.ListRecentRefreshSessionsByUserParams{
+		UserID: id, Limit: limit,
+	})
+	if err != nil {
+		return nil, translate(err, "list recent refresh sessions")
+	}
+	out := make([]auth.Session, len(rows))
+	for i, row := range rows {
+		out[i] = toDomain(row)
+	}
+	return out, nil
+}
+
+// RevokeOwned revokes one session (one family — see
+// ListRecentRefreshSessionsByUser's doc comment) scoped to its owner. See
+// auth.SessionRepository's doc comment on why a false result deliberately
+// does not distinguish "no such session" from "not yours".
+func (r *SessionRepository) RevokeOwned(ctx context.Context, family auth.FamilyID, userID string) (bool, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return false, apperr.Internal(fmt.Errorf("revoke owned session: %w", err))
+	}
+	n, err := r.q(ctx).RevokeRefreshFamilyOwned(ctx, db.RevokeRefreshFamilyOwnedParams{FamilyID: family.UUID(), UserID: uid})
+	if err != nil {
+		return false, translate(err, "revoke owned refresh session")
+	}
+	return n > 0, nil
+}
+
+// RevokeAllForUserExceptFamily revokes every active session the user holds
+// other than the one behind the current request — "revoke my other
+// sessions".
+func (r *SessionRepository) RevokeAllForUserExceptFamily(ctx context.Context, userID string, exceptFamily auth.FamilyID) (int64, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return 0, apperr.Internal(fmt.Errorf("revoke other sessions: %w", err))
+	}
+	n, err := r.q(ctx).RevokeRefreshSessionsForUserExceptFamily(ctx, db.RevokeRefreshSessionsForUserExceptFamilyParams{
+		UserID: uid, FamilyID: exceptFamily.UUID(),
+	})
+	if err != nil {
+		return 0, translate(err, "revoke refresh sessions except family")
+	}
+	return n, nil
+}
+
 // DeleteExpired removes sessions past their expiry. It is used by the cleanup
 // job; nothing in the request path depends on it, because expiry is enforced by
 // comparison rather than by the row's absence.

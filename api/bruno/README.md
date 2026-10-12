@@ -41,13 +41,21 @@ npx --yes @usebruno/cli@latest run . --env local -r
 
 必须在集合根目录执行,在上层跑会报 `You can run only at the root of a collection`。
 
-24 个请求,覆盖 `api/openapi.yaml` 全部 12 个 operation。
+88 个请求,覆盖 `api/openapi.yaml` 全部 63 个 operation。
 
 ## 顺序
 
-文件夹按 `folder.bru` 的 `seq` 执行:health → auth → users → errors。
+文件夹按 `folder.bru` 的 `seq` 执行:health → auth → users → admin → tickets
+→ notifications → workbench → org → invitations → errors → incidents。
 顺序不是审美问题——`users/get` 依赖 `users/create` 写入的 `userId`,
-`errors/login-disabled-account` 依赖前面两个 setup 请求。
+`tickets/assign-ticket` 依赖 `tickets/resolve-admin-id` 写入的 `adminId`,
+`notifications/` 依赖 `tickets/` 里 assign/reassign/request-info/complete
+各自触发的站内通知,`auth/revoke-session` 依赖 `auth/login-secondary` 写入的
+`secondarySessionId`,`errors/login-disabled-account` 依赖前面两个 setup 请求。
+`incidents/` 排在最后但不依赖任何前面的文件夹——它两个请求都在空/任意状态下
+可断言,放在末尾只是因为 `errors/` 里那 8 个 `incident-*-not-found` 请求需要
+`adminId`(`incident-owner-not-found` 用它做 `owner_id`),而 `adminId` 由
+`tickets/resolve-admin-id` 写入。
 
 单独点某个请求时,先确认它依赖的变量已经有值。
 
@@ -62,7 +70,7 @@ npx --yes @usebruno/cli@latest run . --env local -r
 
 `errors/` 里的 `login-wrong-password`、`login-unknown-email`、
 `login-disabled-account` 必须返回**逐字相同**的响应:401、
-`INVALID_CREDENTIALS`、`invalid email or password`。
+`INVALID_CREDENTIALS`、`invalid credentials`。
 
 第三个尤其值得盯:那组凭据是对的,几个请求之前还返回 200,唯一的变化是
 账号被停用。三者只要有一处不同,这个接口就变成了账号枚举器。
@@ -73,10 +81,11 @@ npx --yes @usebruno/cli@latest run . --env local -r
 
 ## 已知限制
 
-- **一次完整运行发起 6 次登录**,配额是 10 次 /15 分钟(按 IP)与
-  5 次 /15 分钟(按邮箱地址)。**连着跑第二遍会从 `login-as-member`
-  开始 429。** 畸形 body 那次也算数——限流器在发现 body 解析不了之前
-  就已经扣过账了。清掉限流键即可继续:
+- **一次完整运行发起 7 次登录**(含 `users/login-with-username`),配额是
+  10 次 /15 分钟(按 IP)与 5 次 /15 分钟(按标识符,邮箱或用户名共用同
+  一个配额)。**连着跑第二遍会从 `login-as-member` 开始 429。** 畸形
+  body 那次也算数——限流器在发现 body 解析不了之前就已经扣过账了。清掉
+  限流键即可继续:
 
   ```bash
   docker exec goscaffold-redis redis-cli --scan --pattern 'rl:*' \
@@ -96,7 +105,7 @@ npx --yes @usebruno/cli@latest run . --env local -r
 
 - **一致性检查只覆盖路径。** `collection_test.go` 双向断言每个请求的
   `(method, path)` 与 `api/openapi.yaml` 的 operation 一一对应(上面那句
-  「全部 12 个」就靠它守着),另外检查同级 `seq` 不重复。但它不检查请求体
+  「全部 63 个」就靠它守着),另外检查同级 `seq` 不重复。但它不检查请求体
   字段和响应 schema。后者是 `internal/openapitest` 的职责,它比对的是实现
   与文档。
 

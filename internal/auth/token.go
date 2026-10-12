@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/namezzy/goscaffoldforlevi/internal/apperr"
 )
 
 // AccessClaims is the payload of an access token.
@@ -80,6 +82,13 @@ type TokenPair struct {
 	// ExpiresIn is the access token lifetime in seconds. Clients need it to
 	// schedule renewal without parsing the token, which they should not do.
 	ExpiresIn int
+	// SessionID identifies which of the account's sessions this pair
+	// belongs to — the family id, also embedded as the access token's jti
+	// (see issuePair). Handed back directly for the same reason ExpiresIn
+	// is: a client should not have to decode a JWT to answer "which
+	// session am I" for the security center's session list to mark as
+	// current.
+	SessionID string
 }
 
 // SessionID identifies a refresh session row.
@@ -101,6 +110,20 @@ type FamilyID uuid.UUID
 // NewFamilyID mints an identifier for a new session family, which is created
 // once per login and preserved across every rotation that follows.
 func NewFamilyID() FamilyID { return FamilyID(uuid.Must(uuid.NewV7())) }
+
+// ParseFamilyID parses a family id from its string form — the shape
+// Principal.TokenID arrives in (the access token's jti is the family id,
+// see issuePair) and also the shape a "session id" URL path parameter
+// arrives in, since the security center's notion of "one session" is one
+// family (see authhttp.Handler.RevokeSession and
+// queries/auth.sql's ListRecentRefreshSessionsByUser).
+func ParseFamilyID(s string) (FamilyID, error) {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return FamilyID{}, apperr.Invalid("INVALID_SESSION_ID", "session id must be a UUID")
+	}
+	return FamilyID(id), nil
+}
 
 // UUID exposes the underlying value for the persistence layer.
 func (id FamilyID) UUID() uuid.UUID { return uuid.UUID(id) }

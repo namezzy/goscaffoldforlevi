@@ -12,7 +12,7 @@ post {
 
 body:json {
   {
-    "email": "{{adminEmail}}",
+    "identifier": "{{adminEmail}}",
     "password": "{{process.env.BRUNO_ADMIN_PASSWORD}}"
   }
 }
@@ -46,8 +46,11 @@ docs {
   A remaining count next to a refused login is a progress meter for whoever
   is guessing. Only Retry-After survives.
 
-  Two limits apply: 10 attempts per IP and 5 per email address, both per 15
-  minutes. A full collection run spends six of the ten, so running it twice
-  in a row runs out partway through the second. A 429 is the limiter, not a
-  broken service; errors/folder.bru gives the command to clear it.
+  Two limits apply: 10 attempts per IP and 5 per identifier, both per 15
+  minutes. A full collection run spends seven of the ten, so running it
+  twice in a row runs out partway through the second. A 429 is the limiter,
+  not a broken service; errors/folder.bru gives the command to clear it.
+
+  `identifier` accepts an email address or a username interchangeably — see
+  auth/login-by-username.bru.
 }

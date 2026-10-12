@@ -1,0 +1,15 @@
+meta {
+  name: org
+  seq: 8
+}
+
+docs {
+  The single-tenant organization record and its department tree. Every
+  request here requires an admin token: system_admin holds every org:* and
+  department:* permission, so the same token auth/login stored covers the
+  whole folder.
+
+  Departments are created, renamed and deleted within this folder so it
+  leaves nothing behind — the same discipline users/ follows for the
+  account it owns.
+}
