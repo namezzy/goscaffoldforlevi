@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+}
+
+/* Highlights a row the instant it lands in the live request feed, then
+   settles to normal — a live tail view needs the eye drawn to what just
+   arrived without every row staying lit. */
+@keyframes fadeIn {
+  from {
+    background-color: rgba(34, 211, 238, 0.12);
+  }
+  to {
+    background-color: transparent;
+  }
+}
