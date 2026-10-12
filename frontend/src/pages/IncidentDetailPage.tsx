@@ -334,8 +334,14 @@ function OwnerForm({
       .catch(() => {})
   }, [canListUsers])
 
+  // A group, not Field's <label>: a label activates its first labelable
+  // child, and with no select rendered that is "指派给我" — clicking the
+  // caption would assign the incident.
   return (
-    <Field label="负责人">
+    <div role="group" aria-labelledby="incident-owner-label">
+      <span id="incident-owner-label" className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+        负责人
+      </span>
       <div className="flex flex-wrap gap-2">
         {canListUsers && (
           <form
@@ -345,7 +351,12 @@ function OwnerForm({
               onSubmit(value)
             }}
           >
-            <select value={value} onChange={(e) => setValue(e.target.value)} className={inputClass}>
+            <select
+              aria-labelledby="incident-owner-label"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              className={inputClass}
+            >
               <option value="">未指派</option>
               {users.map((u) => (
                 <option key={u.id} value={u.id}>
@@ -369,7 +380,7 @@ function OwnerForm({
           </button>
         )}
       </div>
-    </Field>
+    </div>
   )
 }
 
