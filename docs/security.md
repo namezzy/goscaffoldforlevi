@@ -298,6 +298,10 @@ OS 包的 distroless 镜像上,再加一个扫描器的增量价值很低。
   不另开一条投递路径;提交后状态是 `pending`,真实结果由 worker 的
   `Watcher.ResolvePendingReplays` 查去重日志后写回。界面与 API 都不会把
   `pending` 显示成成功。
+- **已解决是终态,由后端强制**:对 `resolved` 的异常,改级别、指派、写备注、
+  重放一律返回 `409 INCIDENT_INVALID_TRANSITION`,不写审计、不触发重放。
+  检查与动作在同一事务里先 `SELECT … FOR UPDATE` 锁行,不会被并发的解决
+  操作插队。前端隐藏按钮只是体验,不是防线。同类故障再次出现(同一指纹)会开一条新异常。
 - **外部告警只有一个可选邮箱**(`NOTIFY_INCIDENT_ALERT_EMAIL`,默认关闭),
   每个**新开**的异常发一封,归并不重复发。分级呼叫、升级、值班表、短信是
   另一类产品(PagerDuty、Opsgenie 等),这里只提供扩展点:订阅

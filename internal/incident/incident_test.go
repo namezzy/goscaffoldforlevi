@@ -94,6 +94,10 @@ func (f *fakeRepository) Get(_ context.Context, id string) (incident.Incident, e
 	return inc, nil
 }
 
+func (f *fakeRepository) GetForUpdate(ctx context.Context, id string) (incident.Incident, error) {
+	return f.Get(ctx, id)
+}
+
 func (f *fakeRepository) SetSeverity(_ context.Context, id string, severity incident.Severity) (incident.Incident, error) {
 	inc, ok := f.byID[id]
 	if !ok {
@@ -361,6 +365,55 @@ func TestProcessNoteRecordsAnAuditEntryWithoutChangingStatus(t *testing.T) {
 	}
 	if len(rec.entries) != 1 || rec.entries[0].Action != "incident.note_added" {
 		t.Errorf("audit entries = %+v, want one incident.note_added", rec.entries)
+	}
+}
+
+// TestAResolvedIncidentRefusesFurtherTriage: resolved is terminal. Before,
+// only Acknowledge and Resolve checked status, so a resolved incident could
+// still be re-triaged, annotated and — worst — replayed, re-running a
+// consumer against a problem the team had already closed. The frontend hid
+// the buttons; the API did not.
+func TestAResolvedIncidentRefusesFurtherTriage(t *testing.T) {
+	t.Parallel()
+	actions := map[string]func(*incident.Service, context.Context, string) error{
+		"SetSeverity": func(s *incident.Service, ctx context.Context, id string) error {
+			_, err := s.SetSeverity(ctx, id, incident.SeverityCritical)
+			return err
+		},
+		"AssignOwner": func(s *incident.Service, ctx context.Context, id string) error {
+			_, err := s.AssignOwner(ctx, id, "op1")
+			return err
+		},
+		"ProcessNote": func(s *incident.Service, ctx context.Context, id string) error {
+			_, err := s.ProcessNote(ctx, id, "late note")
+			return err
+		},
+		"RequestReplay": func(s *incident.Service, ctx context.Context, id string) error {
+			_, err := s.RequestReplay(ctx, id)
+			return err
+		},
+	}
+	for name, act := range actions {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			repo := newFakeRepository()
+			inc := seedIncident(repo, incident.StatusResolved)
+			svc, rec, replay := newService(repo)
+
+			err := act(svc, managerContext("op1"), inc.ID)
+			if !apperr.Is(err, apperr.KindConflict) {
+				t.Fatalf("%s() on a resolved incident: kind = %v, want conflict", name, apperr.KindOf(err))
+			}
+			if len(rec.entries) != 0 {
+				t.Errorf("audit entries = %d, want 0 for a refused action", len(rec.entries))
+			}
+			if len(replay.replayed) != 0 {
+				t.Errorf("dead letters replayed = %v, want none", replay.replayed)
+			}
+			if after, _ := repo.Get(context.Background(), inc.ID); after.Severity != inc.Severity || after.OwnerID != nil || after.ReplayStatus != nil {
+				t.Errorf("incident changed: %+v", after)
+			}
+		})
 	}
 }
 

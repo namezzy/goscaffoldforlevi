@@ -149,6 +149,10 @@ type Repository interface {
 	// many non-resolved incidents at each severity.
 	CountOpenBySeverity(ctx context.Context) (map[Severity]int64, error)
 	Get(ctx context.Context, id string) (Incident, error)
+	// GetForUpdate is Get with the row locked until the caller's transaction
+	// ends, so a status check and the action it guards cannot be split by a
+	// concurrent Resolve. Must run inside a transaction.
+	GetForUpdate(ctx context.Context, id string) (Incident, error)
 	// SetSeverity, AssignOwner, Acknowledge, Resolve and RequestReplay each
 	// run their update under a row lock (FOR UPDATE on the read that
 	// precedes them), so an operator action and the watcher's merge cannot
@@ -281,6 +285,21 @@ func (s *Service) GetActivity(ctx context.Context, id string) ([]audit.Record, e
 	return s.activity.List(ctx, audit.Filter{TargetType: &targetType, TargetID: &id}, 200, 0)
 }
 
+// lockUnresolved row-locks the incident and refuses one that is resolved.
+// Resolved is terminal: re-triaging, annotating or replaying a closed
+// incident would act on a problem the team has already signed off. Must run
+// inside the action's transaction.
+func (s *Service) lockUnresolved(ctx context.Context, id string) (Incident, error) {
+	current, err := s.repo.GetForUpdate(ctx, id)
+	if err != nil {
+		return Incident{}, err
+	}
+	if current.Status == StatusResolved {
+		return Incident{}, apperr.Conflict("INCIDENT_INVALID_TRANSITION", "incident is resolved")
+	}
+	return current, nil
+}
+
 func (s *Service) record(ctx context.Context, actorID, action, incidentID string, after any) error {
 	return s.audit.Record(ctx, audit.Entry{
 		ActorID: &actorID, Action: action, TargetType: "incident", TargetID: incidentID,
@@ -300,6 +319,9 @@ func (s *Service) SetSeverity(ctx context.Context, id string, severity Severity)
 	principal, _ := auth.PrincipalFrom(ctx)
 	var updated Incident
 	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+		if _, err := s.lockUnresolved(ctx, id); err != nil {
+			return err
+		}
 		var err error
 		updated, err = s.repo.SetSeverity(ctx, id, severity)
 		if err != nil {
@@ -326,6 +348,9 @@ func (s *Service) AssignOwner(ctx context.Context, id, ownerID string) (Incident
 	}
 	var updated Incident
 	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+		if _, err := s.lockUnresolved(ctx, id); err != nil {
+			return err
+		}
 		var err error
 		updated, err = s.repo.AssignOwner(ctx, id, ptr)
 		if err != nil {
@@ -382,11 +407,12 @@ func (s *Service) ProcessNote(ctx context.Context, id, note string) (Incident, e
 		return Incident{}, v.Err("INVALID_ARGUMENT", "invalid note")
 	}
 	principal, _ := auth.PrincipalFrom(ctx)
-	current, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return Incident{}, err
-	}
-	err = s.tx.WithTx(ctx, func(ctx context.Context) error {
+	var current Incident
+	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		if current, err = s.lockUnresolved(ctx, id); err != nil {
+			return err
+		}
 		return s.record(ctx, principal.UserID, "incident.note_added", id, map[string]any{"note": note})
 	})
 	if err != nil {
@@ -434,21 +460,19 @@ func (s *Service) RequestReplay(ctx context.Context, id string) (Incident, error
 		return Incident{}, err
 	}
 	principal, _ := auth.PrincipalFrom(ctx)
-	current, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return Incident{}, err
-	}
-	deadLetterID, err := uuid.Parse(current.DeadLetterID)
-	if err != nil {
-		return Incident{}, apperr.Internal(err)
-	}
-
 	var updated Incident
-	err = s.tx.WithTx(ctx, func(ctx context.Context) error {
+	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+		current, err := s.lockUnresolved(ctx, id)
+		if err != nil {
+			return err
+		}
+		deadLetterID, err := uuid.Parse(current.DeadLetterID)
+		if err != nil {
+			return apperr.Internal(err)
+		}
 		if err := s.replay.ReplayDeadLetter(ctx, deadLetterID); err != nil {
 			return err
 		}
-		var err error
 		updated, err = s.repo.RequestReplay(ctx, id)
 		if err != nil {
 			return err

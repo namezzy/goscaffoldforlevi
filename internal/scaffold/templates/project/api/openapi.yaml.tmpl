@@ -2025,6 +2025,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IncidentConflict"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -2063,6 +2065,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IncidentConflict"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -2137,6 +2141,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IncidentConflict"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -2207,6 +2213,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/IncidentConflict"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -3528,7 +3536,8 @@ components:
       description: |
         The incident's current status does not allow this action
         (`INCIDENT_INVALID_TRANSITION`) — for example, acknowledging one
-        that is already resolved. Reload the incident and retry.
+        that is already resolved. Resolved is terminal: severity, owner,
+        notes and replay are refused too. Reload the incident and retry.
       content:
         application/json:
           schema:

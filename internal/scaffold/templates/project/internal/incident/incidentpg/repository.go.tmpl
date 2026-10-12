@@ -176,8 +176,8 @@ func (s *Store) Get(ctx context.Context, id string) (incident.Incident, error) {
 	return toDomain(row), nil
 }
 
-// getForUpdate loads an incident row-locked, for a mutating action.
-func (s *Store) getForUpdate(ctx context.Context, id string) (incident.Incident, error) {
+// GetForUpdate loads an incident row-locked, for a mutating action.
+func (s *Store) GetForUpdate(ctx context.Context, id string) (incident.Incident, error) {
 	parsed, err := parseUUID(id)
 	if err != nil {
 		return incident.Incident{}, err
@@ -191,7 +191,7 @@ func (s *Store) getForUpdate(ctx context.Context, id string) (incident.Incident,
 
 // SetSeverity re-triages an incident.
 func (s *Store) SetSeverity(ctx context.Context, id string, severity incident.Severity) (incident.Incident, error) {
-	if _, err := s.getForUpdate(ctx, id); err != nil {
+	if _, err := s.GetForUpdate(ctx, id); err != nil {
 		return incident.Incident{}, err
 	}
 	parsed, _ := parseUUID(id)
@@ -203,7 +203,7 @@ func (s *Store) SetSeverity(ctx context.Context, id string, severity incident.Se
 
 // AssignOwner sets or clears the incident's owner.
 func (s *Store) AssignOwner(ctx context.Context, id string, ownerID *string) (incident.Incident, error) {
-	if _, err := s.getForUpdate(ctx, id); err != nil {
+	if _, err := s.GetForUpdate(ctx, id); err != nil {
 		return incident.Incident{}, err
 	}
 	parsed, _ := parseUUID(id)
