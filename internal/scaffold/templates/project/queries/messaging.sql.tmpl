@@ -9,6 +9,19 @@
 INSERT INTO outbox_events (id, event_type, payload, traceparent)
 VALUES ($1, $2, $3, $4);
 
+-- RequeueOutboxEvent puts a dead-lettered event back into the outbox under
+-- its original ID. The delivered row is usually still there (it is kept for
+-- the published-retention window), so a plain insert collides with it; this
+-- resets that row to unpublished instead, or recreates it if it was pruned.
+-- Either way replay_generation moves past every earlier delivery, so the
+-- broker does not discard the replay as a duplicate.
+-- name: RequeueOutboxEvent :exec
+INSERT INTO outbox_events (id, event_type, payload, traceparent, replay_generation)
+VALUES ($1, $2, $3, $4, 1)
+ON CONFLICT (id) DO UPDATE
+SET published_at = NULL, attempts = 0, last_error = NULL,
+    replay_generation = outbox_events.replay_generation + 1;
+
 -- ClaimOutboxEvents takes the next batch for delivery.
 --
 -- FOR UPDATE SKIP LOCKED is what allows more than one relay to run: each
@@ -21,7 +34,7 @@ VALUES ($1, $2, $3, $4);
 -- different order than they inserted, and no ordering guarantee is offered to
 -- consumers.
 -- name: ClaimOutboxEvents :many
-SELECT id, event_type, payload, traceparent, created_at, attempts
+SELECT id, event_type, payload, traceparent, created_at, attempts, replay_generation
 FROM outbox_events
 WHERE published_at IS NULL
 ORDER BY created_at

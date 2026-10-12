@@ -272,6 +272,9 @@ OS 包的 distroless 镜像上,再加一个扫描器的增量价值很低。
 - `MESSAGING_ACK_WAIT` 必须大于整个重试预算,否则 broker 会在消费者还在处理时
   重投;启动时会拒绝不满足这一条的配置
 - DLQ 是数据库表,可查询、可重放,不是一个没人看的死信队列
+- **重放保留事件 id**(消费者去重靠它),但 broker 的去重键是"事件 id + 重放代数"
+  (`outbox_events.replay_generation`):relay 崩溃后重发同一次投递仍被 broker
+  去重,而 2 分钟去重窗口内的第二次重放不会被当作重复丢掉
 - **NATS 凭据走 Secret**,不进 ConfigMap
 
 外部副作用(发邮件)无法 exactly-once,只能依赖外部系统的幂等 —— 这是 ADR-0009

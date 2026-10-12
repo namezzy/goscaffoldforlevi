@@ -43,6 +43,13 @@ type Event struct {
 	// Payload is the event body. It is deliberately raw: this package must not
 	// grow a switch over every event type in the system.
 	Payload json.RawMessage
+	// ReplayGeneration counts how many times a dead-letter replay put this
+	// event back into the outbox; zero for its first delivery. It is not part
+	// of the event's identity: consumers deduplicate on ID, which is what
+	// makes a replay safe. A broker that deduplicates publishes must key on
+	// ID and ReplayGeneration together, or a replay inside its window is
+	// dropped as a copy of the previous delivery.
+	ReplayGeneration int32
 }
 
 // NewEvent builds an event with a fresh ID and the current time.

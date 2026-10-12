@@ -398,3 +398,50 @@ func consumerInfo(t *testing.T, stream, consumer string) *jetstream.ConsumerInfo
 	}
 	return info
 }
+
+// TestAReplayIsNotSwallowedByBrokerDedupe is the regression test for a replay
+// that never reached the consumer. The event ID was the broker's
+// deduplication key, and a replay keeps the event ID on purpose (consumer
+// dedupe relies on it), so a second replay inside the stream's duplicate
+// window was dropped by JetStream as a copy of the first. A relay re-sending
+// the same delivery must still be deduplicated; a replay must not.
+func TestAReplayIsNotSwallowedByBrokerDedupe(t *testing.T) {
+	stream := uniqueName("REPLAYDEDUPE")
+	conn := connect(t, stream, "replay-dedupe-consumer")
+	ctx := context.Background()
+	publisher := natsmq.NewPublisher(conn)
+
+	event := newEvent(t, "user.created.v1", `{"email":"ada@example.com"}`)
+	replay := event
+	replay.ReplayGeneration = 1
+	for _, e := range []messaging.Event{event, event, replay, replay} {
+		if err := publisher.Publish(ctx, e); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+	}
+
+	url := os.Getenv("MESSAGING_NATS_URLS")
+	if url == "" {
+		url = "nats://localhost:4222"
+	}
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer nc.Close()
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	s, err := js.Stream(ctx, stream)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	info, err := s.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if info.State.Msgs != 2 {
+		t.Fatalf("stream holds %d messages, want 2: one per delivery generation, relay re-sends deduplicated", info.State.Msgs)
+	}
+}

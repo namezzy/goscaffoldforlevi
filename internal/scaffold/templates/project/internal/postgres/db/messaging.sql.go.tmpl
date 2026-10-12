@@ -38,7 +38,7 @@ func (q *Queries) ClaimEventForConsumer(ctx context.Context, arg ClaimEventForCo
 }
 
 const claimOutboxEvents = `-- name: ClaimOutboxEvents :many
-SELECT id, event_type, payload, traceparent, created_at, attempts
+SELECT id, event_type, payload, traceparent, created_at, attempts, replay_generation
 FROM outbox_events
 WHERE published_at IS NULL
 ORDER BY created_at
@@ -47,12 +47,13 @@ FOR UPDATE SKIP LOCKED
 `
 
 type ClaimOutboxEventsRow struct {
-	ID          uuid.UUID
-	EventType   string
-	Payload     []byte
-	Traceparent *string
-	CreatedAt   time.Time
-	Attempts    int32
+	ID               uuid.UUID
+	EventType        string
+	Payload          []byte
+	Traceparent      *string
+	CreatedAt        time.Time
+	Attempts         int32
+	ReplayGeneration int32
 }
 
 // ClaimOutboxEvents takes the next batch for delivery.
@@ -82,6 +83,7 @@ func (q *Queries) ClaimOutboxEvents(ctx context.Context, limit int32) ([]ClaimOu
 			&i.Traceparent,
 			&i.CreatedAt,
 			&i.Attempts,
+			&i.ReplayGeneration,
 		); err != nil {
 			return nil, err
 		}
@@ -375,5 +377,36 @@ type RecordOutboxEventFailureParams struct {
 // is a broker problem, and dropping it would turn an outage into data loss.
 func (q *Queries) RecordOutboxEventFailure(ctx context.Context, arg RecordOutboxEventFailureParams) error {
 	_, err := q.db.Exec(ctx, recordOutboxEventFailure, arg.ID, arg.LastError)
+	return err
+}
+
+const requeueOutboxEvent = `-- name: RequeueOutboxEvent :exec
+INSERT INTO outbox_events (id, event_type, payload, traceparent, replay_generation)
+VALUES ($1, $2, $3, $4, 1)
+ON CONFLICT (id) DO UPDATE
+SET published_at = NULL, attempts = 0, last_error = NULL,
+    replay_generation = outbox_events.replay_generation + 1
+`
+
+type RequeueOutboxEventParams struct {
+	ID          uuid.UUID
+	EventType   string
+	Payload     []byte
+	Traceparent *string
+}
+
+// RequeueOutboxEvent puts a dead-lettered event back into the outbox under
+// its original ID. The delivered row is usually still there (it is kept for
+// the published-retention window), so a plain insert collides with it; this
+// resets that row to unpublished instead, or recreates it if it was pruned.
+// Either way replay_generation moves past every earlier delivery, so the
+// broker does not discard the replay as a duplicate.
+func (q *Queries) RequeueOutboxEvent(ctx context.Context, arg RequeueOutboxEventParams) error {
+	_, err := q.db.Exec(ctx, requeueOutboxEvent,
+		arg.ID,
+		arg.EventType,
+		arg.Payload,
+		arg.Traceparent,
+	)
 	return err
 }

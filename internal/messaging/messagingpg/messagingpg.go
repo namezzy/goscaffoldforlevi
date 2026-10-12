@@ -106,11 +106,12 @@ func (s *Store) ClaimBatch(
 		for _, row := range rows {
 			pending = append(pending, messaging.PendingOutboxEvent{
 				Event: messaging.Event{
-					ID:          row.ID,
-					Type:        row.EventType,
-					OccurredAt:  row.CreatedAt,
-					TraceParent: derefString(row.Traceparent),
-					Payload:     row.Payload,
+					ID:               row.ID,
+					Type:             row.EventType,
+					OccurredAt:       row.CreatedAt,
+					TraceParent:      derefString(row.Traceparent),
+					Payload:          row.Payload,
+					ReplayGeneration: row.ReplayGeneration,
 				},
 				Attempts: row.Attempts,
 			})
@@ -330,9 +331,10 @@ func (s *Store) Replay(ctx context.Context, id uuid.UUID) error {
 			return apperr.Conflict("DEAD_LETTER_ALREADY_REPLAYED", "dead letter was already replayed")
 		}
 
-		// A fresh outbox row, because the original was published long ago and
-		// the relay only looks at unpublished rows.
-		err = queries.InsertOutboxEvent(ctx, db.InsertOutboxEventParams{
+		// Back to unpublished, because the relay only looks at unpublished
+		// rows. The original row is usually still retained, so this resets it
+		// rather than inserting a second row under the same ID.
+		err = queries.RequeueOutboxEvent(ctx, db.RequeueOutboxEventParams{
 			ID:          row.EventID,
 			EventType:   row.EventType,
 			Payload:     row.Payload,

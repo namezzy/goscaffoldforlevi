@@ -365,6 +365,13 @@ type Querier interface {
 	// RequestIncidentReplay records that a replay was submitted — not that it
 	// succeeded. See ResolveIncidentReplay for how the real result is learned.
 	RequestIncidentReplay(ctx context.Context, id uuid.UUID) error
+	// RequeueOutboxEvent puts a dead-lettered event back into the outbox under
+	// its original ID. The delivered row is usually still there (it is kept for
+	// the published-retention window), so a plain insert collides with it; this
+	// resets that row to unpublished instead, or recreates it if it was pruned.
+	// Either way replay_generation moves past every earlier delivery, so the
+	// broker does not discard the replay as a duplicate.
+	RequeueOutboxEvent(ctx context.Context, arg RequeueOutboxEventParams) error
 	// ResolveIncident closes the incident out. Resolving is what lets a later,
 	// unrelated recurrence of the same fingerprint open a fresh incident instead
 	// of reopening this one's history. Returns 0 rows changed when it was

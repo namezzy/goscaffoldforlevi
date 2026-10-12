@@ -210,8 +210,10 @@ func (p *Publisher) Publish(ctx context.Context, event messaging.Event) error {
 	defer cancel()
 
 	// The event ID is the deduplication key, so a relay that publishes twice
-	// after crashing before the mark produces one stored message.
-	_, err := p.conn.js.PublishMsg(ctx, msg, jetstream.WithMsgID(event.ID.String()))
+	// after crashing before the mark produces one stored message. A replay
+	// keeps the ID, so its generation is part of the key: otherwise a replay
+	// inside the stream's duplicate window is silently dropped.
+	_, err := p.conn.js.PublishMsg(ctx, msg, jetstream.WithMsgID(msgIDFor(event)))
 	if err != nil {
 		// The span records that the publish failed and not why. The broker's
 		// error text quotes the subject, and a subject is derived from the
@@ -221,6 +223,14 @@ func (p *Publisher) Publish(ctx context.Context, event messaging.Event) error {
 		return fmt.Errorf("publish %s to nats: %w", event.Type, err)
 	}
 	return nil
+}
+
+// msgIDFor is the broker's deduplication key for one delivery of an event.
+func msgIDFor(event messaging.Event) string {
+	if event.ReplayGeneration == 0 {
+		return event.ID.String()
+	}
+	return fmt.Sprintf("%s/replay-%d", event.ID, event.ReplayGeneration)
 }
 
 // subjectFor maps an event type to a subject.

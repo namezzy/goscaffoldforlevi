@@ -489,6 +489,65 @@ func TestADeadLetteredEventCanBeReplayed(t *testing.T) {
 	}
 }
 
+// TestReplayWhileTheOriginalOutboxRowIsRetained is the regression test for
+// replay failing with a duplicate key on outbox_events_pkey. A dead letter
+// comes from an event that went through the outbox, and the delivered row is
+// kept for PublishedRetention, so in practice the original row is still there
+// when an operator replays. Replay inserted a second row under the same ID
+// (the ID is kept on purpose, for consumer dedupe) and always failed inside
+// the retention window. The test above missed it by never writing that row.
+func TestReplayWhileTheOriginalOutboxRowIsRetained(t *testing.T) {
+	c := pgtest.Start(t)
+	ctx := context.Background()
+
+	txm := postgres.NewTxManager(c.Pool)
+	store := messagingpg.NewStore(c.Pool, txm)
+	publisher := messagingpg.NewOutboxPublisher(c.Pool)
+	event := newEvent(t, `{"email":"ada@example.com"}`)
+
+	if err := txm.WithTx(ctx, func(ctx context.Context) error {
+		return publisher.Publish(ctx, event)
+	}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if err := store.MarkPublished(ctx, event.ID); err != nil {
+		t.Fatalf("MarkPublished: %v", err)
+	}
+	if err := store.RecordDeadLetter(ctx, event, "welcome-email", 5,
+		errors.New("the mail provider rejected the address")); err != nil {
+		t.Fatalf("RecordDeadLetter: %v", err)
+	}
+	page, err := store.ListDeadLetters(ctx, "", 10)
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("ListDeadLetters = %d rows, %v; want 1 row", len(page.Items), err)
+	}
+
+	if err := store.Replay(ctx, page.Items[0].ID); err != nil {
+		t.Fatalf("Replay() with the original outbox row retained = %v, want nil", err)
+	}
+
+	pending, err := store.PendingCount(ctx)
+	if err != nil {
+		t.Fatalf("PendingCount: %v", err)
+	}
+	if pending != 1 {
+		t.Errorf("PendingCount = %d after a replay, want the event back in the outbox", pending)
+	}
+
+	// The relay must see the replay as a new delivery, or the broker drops it
+	// as a duplicate of the original publish (see natsmq's msgIDFor).
+	var claimed []messaging.PendingOutboxEvent
+	if err := store.ClaimBatch(ctx, 10, func(_ context.Context, events []messaging.PendingOutboxEvent) error {
+		claimed = events
+		return nil
+	}); err != nil {
+		t.Fatalf("ClaimBatch: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].Event.ID != event.ID || claimed[0].Event.ReplayGeneration != 1 {
+		t.Fatalf("ClaimBatch after a replay = %+v, want the same event ID with ReplayGeneration 1", claimed)
+	}
+}
+
 // TestRetentionDeletesOnlyWhatItShould checks the sweep does not take
 // undelivered events with it. Pruning by age alone would silently discard a
 // backlog that built up during a broker outage.

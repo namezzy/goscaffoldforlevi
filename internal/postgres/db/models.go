@@ -113,14 +113,15 @@ type Organization struct {
 }
 
 type OutboxEvent struct {
-	ID          uuid.UUID
-	EventType   string
-	Payload     []byte
-	Traceparent *string
-	CreatedAt   time.Time
-	PublishedAt *time.Time
-	Attempts    int32
-	LastError   *string
+	ID               uuid.UUID
+	EventType        string
+	Payload          []byte
+	Traceparent      *string
+	CreatedAt        time.Time
+	PublishedAt      *time.Time
+	Attempts         int32
+	LastError        *string
+	ReplayGeneration int32
 }
 
 type PasswordResetToken struct {
