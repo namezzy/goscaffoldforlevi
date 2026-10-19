@@ -6,13 +6,17 @@
 
 ## Current Phase
 
-**Phase 5 (Observability) completed at 2026-09-01.**
+**Phase 0–8 全部完成；Phase 8 之后的功能扩展与前端已提交（2026-10-12）。**
 
-服务现在能被观测：结构化日志带 `trace_id`/`span_id`，HTTP / PostgreSQL /
-Redis / NATS 全部产生 span 且跨进程连成一条 trace，Prometheus 指标在独立
-内网端口导出，Grafana 仪表盘由测试守护不会静默失效。
-默认 `OTEL_ENABLED=false`——关掉时业务行为完全不变（有实跑验证）。
-**尚无**：容器化与 CI/CD（Phase 6/8）、告警规则、SLO 定义。
+> 以下"Implemented / Not Implemented"等章节按各 Phase 完成时的快照书写，
+> 其中"尚无容器化与 CI/CD"之类的说法已被后续 Phase 取代；最新状态以文末
+> "Phase 8 之后的功能扩展与收尾"一节为准。
+
+当前能力：脚手架核心（认证/RBAC/限流/Outbox 消息/OTel）、容器化与 CI/CD、
+K8s 部署（跨发行版与生产拓扑已验证）、`goscaffold` CLI、组织/邀请/工单/
+通知/安全中心/异常中心后端，以及 React 管理后台（统一暗色主题，最近提交
+`2b435a1`）。没有进行中的阶段。
+**未覆盖**：ticket/org/invite 的 HTTP 层测试、异常中心以外的前端页面测试。
 
 ## Locked Decisions
 
@@ -1728,3 +1732,8 @@ worker。注意:要让 worker 跑消费者、watcher 与 relay,`.env` 需
 - ticket/org/invite 的 HTTP 层仍没有 handler 测试;路由与契约一致性由
   `cmd/api/openapi_test.go` 守着。
 - 前端除异常中心外的页面没有测试(测试基础设施已就位)。
+
+## 前端视觉统一（2026-10-12）
+
+提交 `2b435a1`：统一科技感暗色主题，抽出共享 UI 组件（`frontend/src/components/ui/`），
+全部页面改用之；设计文档 `docs/superpowers/specs/2026-10-12-frontend-visual-unification-design.md`。
