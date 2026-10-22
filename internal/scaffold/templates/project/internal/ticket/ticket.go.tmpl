@@ -504,11 +504,19 @@ func (s *Service) transition(ctx context.Context, in transitionInput) (Ticket, e
 	if err := in.Authorize(before); err != nil {
 		return Ticket{}, err
 	}
+	// Authorization above judged the ticket at before.Version. The write
+	// must be conditioned on that same version, never on a client-supplied
+	// one that could be pre-filled to a later version to carry this
+	// snapshot's authorization past a concurrent change.
+	if in.ExpectedVersion != before.Version {
+		return Ticket{}, apperr.Conflict("TICKET_VERSION_CONFLICT",
+			"the ticket changed since it was loaded; reload it and try again")
+	}
 
 	var after Ticket
 	err = s.tx.WithTx(ctx, func(ctx context.Context) error {
 		var err error
-		after, err = s.repo.Update(ctx, in.TicketID, in.ExpectedVersion, in.Patch)
+		after, err = s.repo.Update(ctx, in.TicketID, before.Version, in.Patch)
 		if err != nil {
 			return err
 		}

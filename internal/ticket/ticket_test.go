@@ -21,6 +21,9 @@ import (
 // against something that actually stores and conditions on state.
 type fakeRepository struct {
 	byID map[string]ticket.Ticket
+	// afterGet, when set, runs once right after a GetByID returns, so a test
+	// can land a concurrent write between the service's read and its update.
+	afterGet func()
 }
 
 func newFakeRepository() *fakeRepository {
@@ -39,6 +42,10 @@ func (f *fakeRepository) GetByID(_ context.Context, id string) (ticket.Ticket, e
 	t, ok := f.byID[id]
 	if !ok {
 		return ticket.Ticket{}, apperr.NotFound("TICKET_NOT_FOUND", "ticket not found")
+	}
+	if hook := f.afterGet; hook != nil {
+		f.afterGet = nil
+		defer hook()
 	}
 	return t, nil
 }
@@ -282,6 +289,32 @@ func TestProcessNoteAllowsTheAssigneeButNotAnUnrelatedMember(t *testing.T) {
 	}
 	if updated.Version != tk.Version+1 {
 		t.Fatalf("version = %d, want %d (note still bumps the optimistic-concurrency token)", updated.Version, tk.Version+1)
+	}
+}
+
+// The old assignee authorizes against the snapshot it read, then a manager
+// reassigns before the write lands. Pre-filling the next version must not
+// let that stale authorization through.
+func TestAPrefilledNextVersionCannotCarryAStaleAuthorizationPastAReassign(t *testing.T) {
+	repo := newFakeRepository()
+	svc, _, _ := newService(repo)
+	tk := createTicket(t, svc, "requester-1")
+	tk, err := svc.Assign(managerContext("manager-1"), tk.ID, "assignee-1", tk.Version)
+	if err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	repo.afterGet = func() {
+		if _, err := svc.Reassign(managerContext("manager-1"), tk.ID, "assignee-2", tk.Version); err != nil {
+			t.Fatalf("concurrent reassign: %v", err)
+		}
+	}
+	_, err = svc.ProcessNote(requesterContext("assignee-1"), tk.ID, "still on it", tk.Version+1)
+	if !apperr.Is(err, apperr.KindConflict) {
+		t.Fatalf("stale assignee's note after a reassign: err = %v, want a conflict", err)
+	}
+	if got := repo.byID[tk.ID]; got.Version != tk.Version+1 {
+		t.Fatalf("version = %d, want %d: the stale write must not have landed", got.Version, tk.Version+1)
 	}
 }
 
