@@ -77,6 +77,17 @@ func (r *Repository) GetByID(ctx context.Context, id user.ID) (user.User, error)
 	return toDomain(row), nil
 }
 
+// GetByIDForUpdate loads a user and locks the row for the rest of the
+// current transaction — see queries/user.sql's GetUserByIDForUpdate for why
+// the guards in Update and Delete depend on the lock, not just a fresh read.
+func (r *Repository) GetByIDForUpdate(ctx context.Context, id user.ID) (user.User, error) {
+	row, err := r.q(ctx).GetUserByIDForUpdate(ctx, id.UUID())
+	if err != nil {
+		return user.User{}, translate(err, "get user by id for update")
+	}
+	return toDomain(row), nil
+}
+
 // GetByEmail loads a user by their normalised email address.
 func (r *Repository) GetByEmail(ctx context.Context, email string) (user.User, error) {
 	row, err := r.q(ctx).GetUserByEmail(ctx, email)

@@ -30,6 +30,10 @@ type fakeRepository struct {
 	byUsername map[string]user.ID
 	order      []user.ID
 	failWith   error
+	// afterGetByID, when set, runs once right after a GetByID returns, so a
+	// test can land a concurrent change between the service's unlocked read
+	// and the write it decides on.
+	afterGetByID func()
 }
 
 func newFakeRepository() *fakeRepository {
@@ -70,7 +74,23 @@ func (f *fakeRepository) GetByID(_ context.Context, id user.ID) (user.User, erro
 	if !ok {
 		return user.User{}, apperr.NotFound("USER_NOT_FOUND", "user not found")
 	}
+	if hook := f.afterGetByID; hook != nil {
+		f.afterGetByID = nil
+		defer hook()
+	}
 	return u, nil
+}
+
+// GetByIDForUpdate models the one property the real row lock gives the
+// caller: a write to this row that races this read either committed before
+// the lock was granted — and is therefore visible here — or waits. So a
+// pending concurrent change lands first, and this read sees it.
+func (f *fakeRepository) GetByIDForUpdate(ctx context.Context, id user.ID) (user.User, error) {
+	if hook := f.afterGetByID; hook != nil {
+		f.afterGetByID = nil
+		hook()
+	}
+	return f.GetByID(ctx, id)
 }
 
 func (f *fakeRepository) GetByEmail(_ context.Context, email string) (user.User, error) {
@@ -935,6 +955,99 @@ func TestMemberAdminCannotActOnAnExistingSystemAdmin(t *testing.T) {
 			t.Error("the account was deleted despite the refusal")
 		}
 	})
+}
+
+// TestAPromotionBetweenTheReadAndTheWriteStillProtectsTheAccount is the
+// regression test for a window a review found: the target's role was read
+// before the write's transaction opened, and both the account-control guard
+// and the last-admin check then used that stale role. A target promoted to
+// system_admin in between could still be disabled by a member_admin, and
+// the last-admin protection never ran. The guards must decide on the role
+// the write itself is about to overwrite.
+func TestAPromotionBetweenTheReadAndTheWriteStillProtectsTheAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("update", func(t *testing.T) {
+		t.Parallel()
+		repo := newFakeRepository()
+		target := seedUser(t, repo, "target@example.com", auth.RoleReadOnly)
+		promoteBetweenReadAndWrite(repo, target.ID)
+
+		disabled := user.StatusDisabled
+		_, err := newService(repo).Update(memberAdminContext(), target.ID, user.Patch{Status: &disabled})
+		if !apperr.Is(err, apperr.KindForbidden) {
+			t.Fatalf("Update() kind = %v, want forbidden", apperr.KindOf(err))
+		}
+		if got := repo.byID[target.ID].Status; got != user.StatusActive {
+			t.Errorf("status = %v, want active: the promoted admin was disabled anyway", got)
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		t.Parallel()
+		repo := newFakeRepository()
+		target := seedUser(t, repo, "target@example.com", auth.RoleReadOnly)
+		promoteBetweenReadAndWrite(repo, target.ID)
+
+		// A system_admin caller, because member_admin holds no user:delete
+		// and would be refused before any of this matters. What must refuse
+		// it here is the last-admin protection, which only runs if the
+		// promoted role is what the guard sees.
+		if err := newService(repo).Delete(adminContext(), target.ID); !apperr.Is(err, apperr.KindConflict) {
+			t.Fatalf("Delete() kind = %v, want conflict", apperr.KindOf(err))
+		}
+		if _, ok := repo.byID[target.ID]; !ok {
+			t.Error("the promoted admin's account was deleted anyway")
+		}
+	})
+
+	t.Run("change password", func(t *testing.T) {
+		t.Parallel()
+		repo := newFakeRepository()
+		target := seedUser(t, repo, "target@example.com", auth.RoleReadOnly)
+		hashBefore := repo.byID[target.ID].PasswordHash
+		promoteBetweenReadAndWrite(repo, target.ID)
+
+		err := newService(repo).ChangePassword(memberAdminContext(), target.ID, "a different password")
+		if !apperr.Is(err, apperr.KindForbidden) {
+			t.Fatalf("ChangePassword() kind = %v, want forbidden", apperr.KindOf(err))
+		}
+		if got := repo.byID[target.ID].PasswordHash; got != hashBefore {
+			t.Error("the promoted admin's password was changed anyway")
+		}
+	})
+
+	t.Run("the last admin guard sees the promotion too", func(t *testing.T) {
+		t.Parallel()
+		repo := newFakeRepository()
+		target := seedUser(t, repo, "target@example.com", auth.RoleReadOnly)
+		promoteBetweenReadAndWrite(repo, target.ID)
+
+		// A system_admin caller passes the account-control guard, so what
+		// is left to refuse this is the last-admin protection — which only
+		// runs if the guard sees the promoted role rather than the stale one.
+		readOnly := auth.RoleReadOnly
+		_, err := newService(repo).Update(adminContext(), target.ID, user.Patch{Role: &readOnly})
+		if !apperr.Is(err, apperr.KindConflict) {
+			t.Fatalf("Update() kind = %v, want conflict", apperr.KindOf(err))
+		}
+		// No stored-role assertion here: the promotion itself is rolled
+		// back with the refused transaction in this fake, so the row reads
+		// read_only either way. The refusal is the observable difference.
+	})
+}
+
+// promoteBetweenReadAndWrite makes id become a system_admin in the window
+// between the service's unlocked read of the row and its locked one — the
+// concurrent promotion this test is about. The stored row is the only
+// active system admin afterwards; the admin principals these tests act as
+// are context-only.
+func promoteBetweenReadAndWrite(repo *fakeRepository, id user.ID) {
+	repo.afterGetByID = func() {
+		u := repo.byID[id]
+		u.Role = auth.RoleSystemAdmin
+		repo.byID[id] = u
+	}
 }
 
 // --- Last-system-admin protection ---

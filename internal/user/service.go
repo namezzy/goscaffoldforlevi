@@ -22,6 +22,12 @@ import (
 type Repository interface {
 	Create(ctx context.Context, u User) (User, error)
 	GetByID(ctx context.Context, id ID) (User, error)
+	// GetByIDForUpdate is GetByID's transactional sibling: called from
+	// inside the write's own transaction, it locks the row so that the
+	// guards deciding whether the write is allowed — GuardActionOnAccount
+	// and the last-system-admin protection — read the role the write is
+	// about to overwrite rather than one that may since have changed.
+	GetByIDForUpdate(ctx context.Context, id ID) (User, error)
 	GetByEmail(ctx context.Context, email string) (User, error)
 	// GetByIdentifier looks up a user by email or username — whichever the
 	// caller's already-normalised identifier matches. Login is the only
@@ -579,32 +585,42 @@ func (s *Service) Update(ctx context.Context, id ID, p Patch) (User, error) {
 		return User{}, v.Err("INVALID_ARGUMENT", "invalid user patch")
 	}
 
-	// Fetched whenever the caller might be reaching into someone else's
+	// Loaded whenever the caller might be reaching into someone else's
 	// account at all — needed for GuardActionOnAccount just below — or
 	// whenever the change could touch the last-system-admin invariant.
 	// Every other patch (a self-service edit of your own name, say) has no
 	// need for it, and loading the row unconditionally would cost every one
 	// of those a query to protect a check that only applies to admin
 	// actions on someone else.
-	var before User
-	if !actingOnSelf || p.ChangesPrivileges() {
-		var err error
-		before, err = s.repo.GetByID(ctx, id)
-		if err != nil {
-			return User{}, err
-		}
-		if !actingOnSelf {
-			if err := auth.GuardActionOnAccount(ctx, id.String(), before.Role); err != nil {
-				return User{}, err
-			}
-		}
-	}
+	//
+	// The load happens inside the transaction, under a row lock, and so do
+	// both guards that depend on it. An unlocked read taken before the
+	// transaction opened is not enough: the target could be promoted to
+	// system_admin in between, and the write would then be authorized
+	// against a role the database no longer holds — a member_admin could
+	// still disable the new administrator, and the last-admin protection
+	// would never run. See Repository.GetByIDForUpdate.
+	needsBefore := !actingOnSelf || p.ChangesPrivileges()
 
 	// Uniqueness is not pre-checked with a SELECT, for the same reason as
 	// Create: the unique index decides, and the repository turns a violation
 	// into EMAIL_ALREADY_EXISTS or USERNAME_ALREADY_EXISTS.
+	var before User
 	var updated User
 	err := s.tx.WithTx(ctx, func(ctx context.Context) error {
+		if needsBefore {
+			var err error
+			before, err = s.repo.GetByIDForUpdate(ctx, id)
+			if err != nil {
+				return err
+			}
+			if !actingOnSelf {
+				if err := auth.GuardActionOnAccount(ctx, id.String(), before.Role); err != nil {
+					return err
+				}
+			}
+		}
+
 		// The last-system-admin check runs here, inside this transaction,
 		// not before it — see guardLastSystemAdminLocked's doc comment for
 		// why a check made before the transaction opens cannot be made safe
@@ -727,19 +743,15 @@ func (s *Service) ChangePassword(ctx context.Context, id ID, newPassword string)
 	if err := auth.AuthorizeSelfOrPermission(ctx, id.String(), auth.PermUserUpdate); err != nil {
 		return err
 	}
-	// A caller acting on someone else's password — not their own — must not
-	// be able to reach a system administrator's account through the
-	// ordinary user:update permission member_admin holds. See
-	// auth.GuardActionOnAccount's doc comment.
-	if principal, ok := auth.PrincipalFrom(ctx); ok && principal.UserID != id.String() {
-		target, err := s.repo.GetByID(ctx, id)
-		if err != nil {
-			return err
-		}
-		if err := auth.GuardActionOnAccount(ctx, id.String(), target.Role); err != nil {
-			return err
-		}
-	}
+	// Whether this is someone else's account decides if the account-control
+	// guard applies; the guard itself runs inside the transaction below.
+	// Password validation therefore now happens first: hashing costs 64 MiB
+	// and tens of milliseconds and must not be done while holding a row
+	// lock, so an invalid password is rejected before any of that — a
+	// caller who is about to be refused learns nothing about the target
+	// from being told their own input was malformed.
+	principal, hasPrincipal := auth.PrincipalFrom(ctx)
+	actingOnSomeoneElse := hasPrincipal && principal.UserID != id.String()
 	if err := auth.ValidatePassword(newPassword); err != nil {
 		return err
 	}
@@ -749,6 +761,22 @@ func (s *Service) ChangePassword(ctx context.Context, id ID, newPassword string)
 		return apperr.Internal(err)
 	}
 	return s.tx.WithTx(ctx, func(ctx context.Context) error {
+		// A caller acting on someone else's password — not their own —
+		// must not be able to reach a system administrator's account
+		// through the ordinary user:update permission member_admin holds
+		// (see auth.GuardActionOnAccount), and must not be able to slip
+		// past that by catching the account mid-promotion: the role the
+		// guard reads is locked by this transaction until it finishes —
+		// see Repository.GetByIDForUpdate.
+		if actingOnSomeoneElse {
+			target, err := s.repo.GetByIDForUpdate(ctx, id)
+			if err != nil {
+				return err
+			}
+			if err := auth.GuardActionOnAccount(ctx, id.String(), target.Role); err != nil {
+				return err
+			}
+		}
 		if _, err := s.repo.Update(ctx, id, Patch{PasswordHash: &hash}); err != nil {
 			return err
 		}
@@ -770,16 +798,17 @@ func (s *Service) Delete(ctx context.Context, id ID) error {
 	if err := auth.Authorize(ctx, auth.PermUserDelete); err != nil {
 		return err
 	}
-	before, err := s.repo.GetByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := auth.GuardActionOnAccount(ctx, id.String(), before.Role); err != nil {
-		return err
-	}
 	return s.tx.WithTx(ctx, func(ctx context.Context) error {
-		// Inside the transaction, not before it — see
+		// Loaded and locked inside the transaction, and both guards below
+		// run under that lock — see Repository.GetByIDForUpdate and
 		// guardLastSystemAdminLocked's doc comment.
+		before, err := s.repo.GetByIDForUpdate(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := auth.GuardActionOnAccount(ctx, id.String(), before.Role); err != nil {
+			return err
+		}
 		if before.Role == auth.RoleSystemAdmin {
 			if err := s.guardLastSystemAdminLocked(ctx); err != nil {
 				return err

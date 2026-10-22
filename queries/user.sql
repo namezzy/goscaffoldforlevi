@@ -19,6 +19,20 @@ SELECT id, email, password_hash, name, status, role, created_at, updated_at, use
 FROM users
 WHERE id = $1;
 
+-- GetUserByIDForUpdate is GetUserByID's transactional sibling: called from
+-- inside the write's own transaction, it locks the row so a concurrent change
+-- to this account — a promotion to system_admin, say — either lands before
+-- this lock is granted and is therefore visible here, or waits for this
+-- transaction to commit. The guards that decide whether the write is allowed
+-- at all (auth.GuardActionOnAccount, the last-system-admin protection) depend
+-- on the role they read being the one the write overwrites, which an unlocked
+-- read taken before the transaction cannot promise.
+-- name: GetUserByIDForUpdate :one
+SELECT id, email, password_hash, name, status, role, created_at, updated_at, username, department_id
+FROM users
+WHERE id = $1
+FOR UPDATE;
+
 -- name: GetUserByEmail :one
 SELECT id, email, password_hash, name, status, role, created_at, updated_at, username, department_id
 FROM users

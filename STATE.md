@@ -1737,3 +1737,42 @@ worker。注意:要让 worker 跑消费者、watcher 与 relay,`.env` 需
 
 提交 `2b435a1`：统一科技感暗色主题，抽出共享 UI 组件（`frontend/src/components/ui/`），
 全部页面改用之；设计文档 `docs/superpowers/specs/2026-10-12-frontend-visual-unification-design.md`。
+
+## 评审提出的两个 P1 并发窗口（2026-10-21）
+
+都是"在事务外读取状态、用这份快照决定授权、再在事务里写入"的同一类缺陷，
+按 TDD 修：先写会失败的测试，再改实现。
+
+**工单授权快照未与写入版本绑定**（`internal/ticket/ticket.go`）
+`transition` 按读到的 `before` 授权，却用客户端传来的 `ExpectedVersion` 做
+条件更新。旧负责人把 `ExpectedVersion` 预填成下一版本，就能在经理改派提交
+之后仍然写入成功——授权看的是改派前的快照。现在要求
+`ExpectedVersion == before.Version`，否则 409 `TICKET_VERSION_CONFLICT`；
+条件更新一律用 `before.Version`。回归测试
+`TestAPrefilledNextVersionCannotCarryAStaleAuthorizationPastAReassign`
+（fake 仓储在 `GetByID` 后插入一次并发改派）。
+
+**用户账户守卫读到的角色可能已过期**（`internal/user/service.go`）
+`Update`、`Delete`、`ChangePassword` 都在事务外 `GetByID` 读角色，再用它跑
+`GuardActionOnAccount` 和最后管理员保护。目标在这个窗口里被提升为
+system_admin 时，member_admin 仍能停用／改密，最后管理员保护也不触发。
+新增查询 `GetUserByIDForUpdate`（`SELECT ... FOR UPDATE`）与仓储方法
+`GetByIDForUpdate`，三处的读取与守卫全部移进各自的写事务、在行锁下进行。
+`ChangePassword` 的密码校验因此排到守卫之前：Argon2 哈希不能在持锁期间做。
+
+回归测试两层：
+- `internal/user/service_test.go` 的
+  `TestAPromotionBetweenTheReadAndTheWriteStillProtectsTheAccount`，
+  覆盖 update / delete / change password / 最后管理员四种路径（fake 的
+  `GetByIDForUpdate` 模拟"并发写先落地、锁再放行"）。
+- `internal/user/userpg/account_guard_lock_integration_test.go` 的
+  `TestAGuardWaitsForAConcurrentPromotionToCommit`：真 PostgreSQL，测试自己
+  开一个事务持有目标行锁并提升角色，确定性地证明 Update 会阻塞在锁上、拿到
+  的是提升后的角色。变异验证：把加锁读改回 `GetByID`，该测试失败。
+
+验证:`go build ./...`、`go vet ./...`、`go test ./...`（含模板漂移）、
+`make sqlc-check`、`go test -tags integration ./internal/user/...` 全部通过。
+
+仍未处理（评审的两个 P2，都需要改表）:异常重放归因只看 `LastSeenAt`，同
+指纹下别的事件失败会误判;死信水位扫描 `failed_at > watermark` 会漏掉晚提交
+的行。

@@ -70,6 +70,12 @@ func (f *fakeRepo) GetByID(_ context.Context, id user.ID) (user.User, error) {
 	return u, nil
 }
 
+// GetByIDForUpdate has no row lock to offer here; the concurrency property
+// the real one carries is covered in the service and userpg tests.
+func (f *fakeRepo) GetByIDForUpdate(ctx context.Context, id user.ID) (user.User, error) {
+	return f.GetByID(ctx, id)
+}
+
 func (f *fakeRepo) GetByEmail(_ context.Context, email string) (user.User, error) {
 	id, ok := f.byEmail[email]
 	if !ok {

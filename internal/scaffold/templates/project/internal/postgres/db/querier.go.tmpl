@@ -182,6 +182,15 @@ type Querier interface {
 	GetTicketByID(ctx context.Context, id uuid.UUID) (Ticket, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
+	// GetUserByIDForUpdate is GetUserByID's transactional sibling: called from
+	// inside the write's own transaction, it locks the row so a concurrent change
+	// to this account — a promotion to system_admin, say — either lands before
+	// this lock is granted and is therefore visible here, or waits for this
+	// transaction to commit. The guards that decide whether the write is allowed
+	// at all (auth.GuardActionOnAccount, the last-system-admin protection) depend
+	// on the role they read being the one the write overwrites, which an unlocked
+	// read taken before the transaction cannot promise.
+	GetUserByIDForUpdate(ctx context.Context, id uuid.UUID) (User, error)
 	// GetUserByIdentifier backs login, which accepts either an email address or a
 	// username in the same field. Both are normalised to lower case before this
 	// runs, so one equality check against each column is enough — there is no
