@@ -1826,3 +1826,26 @@ ON CONFLICT 同时把 `incident_processed_at` 清空，所以每次新的失败�
   `go test -tags integration ./...` 全部通过。
 
 删除:`incidentpg/poll_state_integration_test.go`（它测的表已不存在）。
+
+## 「我的资料」页面重排（2026-10-22）
+
+原页面三块内容全是 `max-w-sm`，挤在 `max-w-6xl` 容器的左边三分之一，右边整
+片空白——信息量不少，观感却很局促。重排为铺满宽度的三段式：
+
+- 顶部 `PageHeader` 补上描述与「安全中心／我的通知」入口。
+- 身份卡:姓名首字母头像（`Array.from` 取首字，避免把 CJK 代理对切坏）、
+  姓名、角色与状态徽章，下面一条四列事实栏——登录邮箱／用户名／部门／加入
+  时间（本地 `Fact`，不用 `DescriptionRow`:后者把标签和值顶到两端，在四分
+  之一页宽里中间会空出一大段）。
+- 下半部 `lg:grid-cols-3`:左侧 2 列「修改资料」（姓名与邮箱并排），右侧 1 列
+  「修改密码」＋「登录与安全」（活跃会话数与安全中心入口）。
+
+部门名和会话数是装饰，不进页面的加载态:取不到就显示「—」，资料本身照常
+渲染。部门列表要 `department:read`，operator／auditor 没有，所以不发这个请求。
+
+表单逻辑一字未改（只提交变化的字段、不允许清空已有用户名）。新增
+`frontend/src/pages/ProfilePage.test.tsx` 五个用例守住:身份信息渲染、无权限
+时不请求部门、装饰失败页面仍可用、只提交变化字段、清空用户名被拦下。
+
+验证:`npx tsc -b`、`npm test`（28 个）、`npm run lint`（ProfilePage 零条）、
+`npm run build` 均通过。
