@@ -34,17 +34,6 @@ func (q *Queries) AcknowledgeIncident(ctx context.Context, arg AcknowledgeIncide
 	return result.RowsAffected(), nil
 }
 
-const advanceIncidentPollState = `-- name: AdvanceIncidentPollState :exec
-UPDATE incident_poll_state SET last_failed_at = $1
-`
-
-// AdvanceIncidentPollState commits that this dead letter (and everything
-// before it) has been turned into or merged into an incident.
-func (q *Queries) AdvanceIncidentPollState(ctx context.Context, lastFailedAt time.Time) error {
-	_, err := q.db.Exec(ctx, advanceIncidentPollState, lastFailedAt)
-	return err
-}
-
 const assignIncidentOwner = `-- name: AssignIncidentOwner :exec
 UPDATE incidents SET owner_id = $2, updated_at = now() WHERE id = $1
 `
@@ -58,6 +47,52 @@ type AssignIncidentOwnerParams struct {
 func (q *Queries) AssignIncidentOwner(ctx context.Context, arg AssignIncidentOwnerParams) error {
 	_, err := q.db.Exec(ctx, assignIncidentOwner, arg.ID, arg.OwnerID)
 	return err
+}
+
+const claimUntriagedDeadLetter = `-- name: ClaimUntriagedDeadLetter :one
+
+SELECT id, event_id, event_type, consumer, last_error, failed_at
+FROM dead_letter_events
+WHERE incident_processed_at IS NULL
+ORDER BY failed_at
+LIMIT 1
+FOR UPDATE SKIP LOCKED
+`
+
+type ClaimUntriagedDeadLetterRow struct {
+	ID        uuid.UUID
+	EventID   uuid.UUID
+	EventType string
+	Consumer  string
+	LastError string
+	FailedAt  time.Time
+}
+
+// Exception/processing center: incidents merged from dead letters, and the
+// poller's claim on the dead letters it has triaged. See the
+// exception_center migration for the fingerprint merge rule and
+// dead_letter_triage_claim for why triage is a per-row claim.
+// ClaimUntriagedDeadLetter takes the oldest dead letter no incident has been
+// opened or merged for yet, and holds it for the rest of the transaction.
+//
+// Per-row rather than against a timestamp checkpoint: a transaction that
+// commits after a later one would leave a row behind a checkpoint that had
+// already moved past its failed_at, skipping it permanently (see the
+// dead_letter_triage_claim migration). FOR UPDATE marks the row as being
+// worked on; SKIP LOCKED lets a second watcher replica take the next one
+// instead of queueing behind the first.
+func (q *Queries) ClaimUntriagedDeadLetter(ctx context.Context) (ClaimUntriagedDeadLetterRow, error) {
+	row := q.db.QueryRow(ctx, claimUntriagedDeadLetter)
+	var i ClaimUntriagedDeadLetterRow
+	err := row.Scan(
+		&i.ID,
+		&i.EventID,
+		&i.EventType,
+		&i.Consumer,
+		&i.LastError,
+		&i.FailedAt,
+	)
+	return i, err
 }
 
 const countIncidentsFiltered = `-- name: CountIncidentsFiltered :one
@@ -134,7 +169,8 @@ INSERT INTO incidents (
 RETURNING id, fingerprint, severity, status, owner_id, dead_letter_id, event_id, event_type,
        consumer, last_error, occurrence_count, first_seen_at, last_seen_at,
        acknowledged_at, acknowledged_by, resolved_at, resolved_by,
-       replay_status, replay_requested_at, replay_result_at, created_at, updated_at
+       replay_status, replay_requested_at, replay_result_at, created_at, updated_at,
+       replay_event_id
 `
 
 type CreateIncidentParams struct {
@@ -185,8 +221,35 @@ func (q *Queries) CreateIncident(ctx context.Context, arg CreateIncidentParams) 
 		&i.ReplayResultAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReplayEventID,
 	)
 	return i, err
+}
+
+const existsDeadLetterSince = `-- name: ExistsDeadLetterSince :one
+SELECT EXISTS(
+    SELECT 1 FROM dead_letter_events
+    WHERE event_id = $1 AND consumer = $2 AND failed_at > $3
+) AS dead_lettered
+`
+
+type ExistsDeadLetterSinceParams struct {
+	EventID  uuid.UUID
+	Consumer string
+	FailedAt time.Time
+}
+
+// ExistsDeadLetterSince is the matching "did the replay fail again" signal.
+// dead_letter_events keeps one row per (event_id, consumer) — a repeat
+// failure updates that row's failed_at (see RecordDeadLetter's ON CONFLICT)
+// — so a failed_at past the replay request means this very event was retried
+// and dead-lettered again, rather than some other event sharing the
+// incident's fingerprint having failed.
+func (q *Queries) ExistsDeadLetterSince(ctx context.Context, arg ExistsDeadLetterSinceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, existsDeadLetterSince, arg.EventID, arg.Consumer, arg.FailedAt)
+	var dead_lettered bool
+	err := row.Scan(&dead_lettered)
+	return dead_lettered, err
 }
 
 const existsProcessedEventSince = `-- name: ExistsProcessedEventSince :one
@@ -218,7 +281,8 @@ const getIncident = `-- name: GetIncident :one
 SELECT id, fingerprint, severity, status, owner_id, dead_letter_id, event_id, event_type,
        consumer, last_error, occurrence_count, first_seen_at, last_seen_at,
        acknowledged_at, acknowledged_by, resolved_at, resolved_by,
-       replay_status, replay_requested_at, replay_result_at, created_at, updated_at
+       replay_status, replay_requested_at, replay_result_at, created_at, updated_at,
+       replay_event_id
 FROM incidents
 WHERE id = $1
 `
@@ -251,6 +315,7 @@ func (q *Queries) GetIncident(ctx context.Context, id uuid.UUID) (Incident, erro
 		&i.ReplayResultAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReplayEventID,
 	)
 	return i, err
 }
@@ -259,7 +324,8 @@ const getIncidentForUpdate = `-- name: GetIncidentForUpdate :one
 SELECT id, fingerprint, severity, status, owner_id, dead_letter_id, event_id, event_type,
        consumer, last_error, occurrence_count, first_seen_at, last_seen_at,
        acknowledged_at, acknowledged_by, resolved_at, resolved_by,
-       replay_status, replay_requested_at, replay_result_at, created_at, updated_at
+       replay_status, replay_requested_at, replay_result_at, created_at, updated_at,
+       replay_event_id
 FROM incidents
 WHERE id = $1
 FOR UPDATE
@@ -292,33 +358,17 @@ func (q *Queries) GetIncidentForUpdate(ctx context.Context, id uuid.UUID) (Incid
 		&i.ReplayResultAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReplayEventID,
 	)
 	return i, err
-}
-
-const getIncidentPollState = `-- name: GetIncidentPollState :one
-
-SELECT last_failed_at FROM incident_poll_state FOR UPDATE
-`
-
-// Exception/processing center: incidents merged from dead letters, and the
-// poller's checkpoint. See the exception_center migration for the schema
-// rationale (fingerprint merge rule, why the poller checkpoints by
-// timestamp rather than a per-row flag).
-// GetIncidentPollState reads the checkpoint. FOR UPDATE so only one poller
-// replica advances it at a time — the row lock is the mutual exclusion.
-func (q *Queries) GetIncidentPollState(ctx context.Context) (time.Time, error) {
-	row := q.db.QueryRow(ctx, getIncidentPollState)
-	var last_failed_at time.Time
-	err := row.Scan(&last_failed_at)
-	return last_failed_at, err
 }
 
 const getOpenIncidentByFingerprint = `-- name: GetOpenIncidentByFingerprint :one
 SELECT id, fingerprint, severity, status, owner_id, dead_letter_id, event_id, event_type,
        consumer, last_error, occurrence_count, first_seen_at, last_seen_at,
        acknowledged_at, acknowledged_by, resolved_at, resolved_by,
-       replay_status, replay_requested_at, replay_result_at, created_at, updated_at
+       replay_status, replay_requested_at, replay_result_at, created_at, updated_at,
+       replay_event_id
 FROM incidents
 WHERE fingerprint = $1 AND status <> 'resolved'
 FOR UPDATE
@@ -354,6 +404,7 @@ func (q *Queries) GetOpenIncidentByFingerprint(ctx context.Context, fingerprint 
 		&i.ReplayResultAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ReplayEventID,
 	)
 	return i, err
 }
@@ -362,7 +413,8 @@ const listIncidentsFiltered = `-- name: ListIncidentsFiltered :many
 SELECT id, fingerprint, severity, status, owner_id, dead_letter_id, event_id, event_type,
        consumer, last_error, occurrence_count, first_seen_at, last_seen_at,
        acknowledged_at, acknowledged_by, resolved_at, resolved_by,
-       replay_status, replay_requested_at, replay_result_at, created_at, updated_at
+       replay_status, replay_requested_at, replay_result_at, created_at, updated_at,
+       replay_event_id
 FROM incidents
 WHERE ($3::text IS NULL OR status = $3::text)
   AND ($4::text IS NULL OR severity = $4::text)
@@ -426,6 +478,7 @@ func (q *Queries) ListIncidentsFiltered(ctx context.Context, arg ListIncidentsFi
 			&i.ReplayResultAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ReplayEventID,
 		); err != nil {
 			return nil, err
 		}
@@ -441,7 +494,8 @@ const listPendingReplayIncidents = `-- name: ListPendingReplayIncidents :many
 SELECT id, fingerprint, severity, status, owner_id, dead_letter_id, event_id, event_type,
        consumer, last_error, occurrence_count, first_seen_at, last_seen_at,
        acknowledged_at, acknowledged_by, resolved_at, resolved_by,
-       replay_status, replay_requested_at, replay_result_at, created_at, updated_at
+       replay_status, replay_requested_at, replay_result_at, created_at, updated_at,
+       replay_event_id
 FROM incidents
 WHERE replay_status = 'pending'
 LIMIT $1
@@ -480,6 +534,7 @@ func (q *Queries) ListPendingReplayIncidents(ctx context.Context, limit int32) (
 			&i.ReplayResultAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ReplayEventID,
 		); err != nil {
 			return nil, err
 		}
@@ -489,6 +544,18 @@ func (q *Queries) ListPendingReplayIncidents(ctx context.Context, limit int32) (
 		return nil, err
 	}
 	return items, nil
+}
+
+const markDeadLetterTriaged = `-- name: MarkDeadLetterTriaged :exec
+UPDATE dead_letter_events SET incident_processed_at = now() WHERE id = $1
+`
+
+// MarkDeadLetterTriaged commits that this dead letter has been turned into
+// or merged into an incident. Runs in the same transaction as that write, so
+// a crash in between re-triages the row rather than dropping it.
+func (q *Queries) MarkDeadLetterTriaged(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markDeadLetterTriaged, id)
+	return err
 }
 
 const mergeIncidentOccurrence = `-- name: MergeIncidentOccurrence :exec
@@ -528,52 +595,24 @@ func (q *Queries) MergeIncidentOccurrence(ctx context.Context, arg MergeIncident
 	return err
 }
 
-const nextUnpolledDeadLetter = `-- name: NextUnpolledDeadLetter :one
-SELECT id, event_id, event_type, consumer, last_error, failed_at
-FROM dead_letter_events
-WHERE failed_at > $1
-ORDER BY failed_at
-LIMIT 1
-`
-
-type NextUnpolledDeadLetterRow struct {
-	ID        uuid.UUID
-	EventID   uuid.UUID
-	EventType string
-	Consumer  string
-	LastError string
-	FailedAt  time.Time
-}
-
-// NextUnpolledDeadLetter returns the oldest dead letter the poller has not
-// yet processed. Ordered by failed_at so the checkpoint always advances
-// monotonically; ties within the same microsecond are the one case this can
-// still skip, an accepted tradeoff at this volume (see ClaimOutboxEvents's
-// "roughly is the honest word" for the same kind of call elsewhere).
-func (q *Queries) NextUnpolledDeadLetter(ctx context.Context, failedAt time.Time) (NextUnpolledDeadLetterRow, error) {
-	row := q.db.QueryRow(ctx, nextUnpolledDeadLetter, failedAt)
-	var i NextUnpolledDeadLetterRow
-	err := row.Scan(
-		&i.ID,
-		&i.EventID,
-		&i.EventType,
-		&i.Consumer,
-		&i.LastError,
-		&i.FailedAt,
-	)
-	return i, err
-}
-
 const requestIncidentReplay = `-- name: RequestIncidentReplay :exec
 UPDATE incidents
-SET replay_status = 'pending', replay_requested_at = now(), replay_result_at = NULL, updated_at = now()
+SET replay_status = 'pending', replay_requested_at = now(), replay_result_at = NULL,
+    replay_event_id = $2, updated_at = now()
 WHERE id = $1
 `
 
+type RequestIncidentReplayParams struct {
+	ID            uuid.UUID
+	ReplayEventID *uuid.UUID
+}
+
 // RequestIncidentReplay records that a replay was submitted — not that it
-// succeeded. See ResolveIncidentReplay for how the real result is learned.
-func (q *Queries) RequestIncidentReplay(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.Exec(ctx, requestIncidentReplay, id)
+// succeeded — together with the event it submitted. See ResolveIncidentReplay
+// for how the real result is learned, and the replay_event_id migration for
+// why the event is stamped here rather than read back off event_id later.
+func (q *Queries) RequestIncidentReplay(ctx context.Context, arg RequestIncidentReplayParams) error {
+	_, err := q.db.Exec(ctx, requestIncidentReplay, arg.ID, arg.ReplayEventID)
 	return err
 }
 

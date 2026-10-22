@@ -603,3 +603,41 @@ func toStringMap(t *testing.T, m map[string]any) map[string]string {
 	}
 	return out
 }
+
+// TestARepeatFailureReopensTriage guards the one thing the per-row triage
+// claim depends on. dead_letter_events keeps a single row per (event_id,
+// consumer), so a retry that fails again overwrites the row the exception
+// center already turned into an incident. If the claim survived that write,
+// every repeat failure of an event that dead-lettered once would never reach
+// triage — see queries/incident.sql's ClaimUntriagedDeadLetter.
+func TestARepeatFailureReopensTriage(t *testing.T) {
+	c := pgtest.Start(t)
+	ctx := context.Background()
+
+	store := messagingpg.NewStore(c.Pool, postgres.NewTxManager(c.Pool))
+	event := newEvent(t, `{"email":"ada@example.com"}`)
+
+	if err := store.RecordDeadLetter(ctx, event, "welcome-email", 5,
+		errors.New("the mail provider rejected the address")); err != nil {
+		t.Fatalf("RecordDeadLetter: %v", err)
+	}
+	if _, err := c.Pool.Exec(ctx,
+		`UPDATE dead_letter_events SET incident_processed_at = now()`); err != nil {
+		t.Fatalf("marking the dead letter triaged: %v", err)
+	}
+
+	if err := store.RecordDeadLetter(ctx, event, "welcome-email", 6,
+		errors.New("the mail provider rejected the address again")); err != nil {
+		t.Fatalf("RecordDeadLetter on retry: %v", err)
+	}
+
+	var untriaged int64
+	if err := c.Pool.QueryRow(ctx,
+		`SELECT count(*) FROM dead_letter_events WHERE incident_processed_at IS NULL`,
+	).Scan(&untriaged); err != nil {
+		t.Fatalf("counting untriaged dead letters: %v", err)
+	}
+	if untriaged != 1 {
+		t.Errorf("untriaged dead letters after a repeat failure = %d, want 1", untriaged)
+	}
+}

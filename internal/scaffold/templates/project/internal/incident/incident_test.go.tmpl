@@ -146,7 +146,7 @@ func (f *fakeRepository) Resolve(_ context.Context, id, actorID string) (inciden
 	return f.put(inc), true, nil
 }
 
-func (f *fakeRepository) RequestReplay(_ context.Context, id string) (incident.Incident, error) {
+func (f *fakeRepository) RequestReplay(_ context.Context, id, replayEventID string) (incident.Incident, error) {
 	inc, ok := f.byID[id]
 	if !ok {
 		return incident.Incident{}, errIncidentNotFound()
@@ -155,6 +155,7 @@ func (f *fakeRepository) RequestReplay(_ context.Context, id string) (incident.I
 	pending := incident.ReplayPending
 	inc.ReplayStatus = &pending
 	inc.ReplayRequestedAt = &now
+	inc.ReplayEventID = &replayEventID
 	inc.ReplayResultAt = nil
 	return f.put(inc), nil
 }

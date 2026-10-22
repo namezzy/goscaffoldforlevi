@@ -99,9 +99,15 @@ type Incident struct {
 	ResolvedBy        *string
 	ReplayStatus      *ReplayStatus
 	ReplayRequestedAt *time.Time
-	ReplayResultAt    *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// ReplayEventID is the event the last replay request actually
+	// submitted. It is remembered separately from EventID because EventID
+	// moves to the newest occurrence on every merge: the replay's outcome
+	// must be judged on the event that was replayed, not on whatever
+	// failed most recently under the same fingerprint.
+	ReplayEventID  *string
+	ReplayResultAt *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // NewID mints a UUIDv7 for a new incident, matching ticket.NewID (ADR-0006).
@@ -168,7 +174,9 @@ type Repository interface {
 	// Service.Acknowledge and Service.Resolve.
 	Acknowledge(ctx context.Context, id, actorID string) (Incident, bool, error)
 	Resolve(ctx context.Context, id, actorID string) (Incident, bool, error)
-	RequestReplay(ctx context.Context, id string) (Incident, error)
+	// RequestReplay stamps the incident pending and records which event
+	// the replay submitted — see Incident.ReplayEventID.
+	RequestReplay(ctx context.Context, id, replayEventID string) (Incident, error)
 }
 
 // TxManager runs a function inside a database transaction, so an incident
@@ -473,7 +481,7 @@ func (s *Service) RequestReplay(ctx context.Context, id string) (Incident, error
 		if err := s.replay.ReplayDeadLetter(ctx, deadLetterID); err != nil {
 			return err
 		}
-		updated, err = s.repo.RequestReplay(ctx, id)
+		updated, err = s.repo.RequestReplay(ctx, id, current.EventID)
 		if err != nil {
 			return err
 		}

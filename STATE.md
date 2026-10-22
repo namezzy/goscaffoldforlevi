@@ -1773,6 +1773,56 @@ system_admin 时，member_admin 仍能停用／改密，最后管理员保护也
 验证:`go build ./...`、`go vet ./...`、`go test ./...`（含模板漂移）、
 `make sqlc-check`、`go test -tags integration ./internal/user/...` 全部通过。
 
-仍未处理（评审的两个 P2，都需要改表）:异常重放归因只看 `LastSeenAt`，同
-指纹下别的事件失败会误判;死信水位扫描 `failed_at > watermark` 会漏掉晚提交
-的行。
+## 异常中心的两个 P2（2026-10-22）
+
+评审剩下的两个缺陷都在 `internal/incident`，都要改表，一起修。同样先写会
+失败的测试。
+
+**重放结果归因到了错的事件**（`watcher.go` 的 `resolveOne`）
+判定一次重放成功与否，原本比较 `incident.LastSeenAt` 与 `ReplayRequestedAt`:
+晚于请求就算又失败了。但 `last_seen_at` 是整个指纹的，同指纹下任何别的事件
+失败都会抬高它，于是一次成功的重放被记成失败;合并还会把 `incident.event_id`
+挪到最新那个事件上，连"成功"那一侧也在问错事件。
+
+改为请求重放时记下被重放的那个事件:`incidents.replay_event_id`（迁移
+`20261022040000000`，把在途的 pending 行回填成 `event_id`）。成功＝
+`processed_events` 里该事件有晚于请求的行;失败＝该事件自己的死信行
+`failed_at` 晚于请求（新查询 `ExistsDeadLetterSince`）;两者都没有就继续
+pending。`last_seen_at` 不再参与判定。回归测试
+`TestResolvePendingReplayIgnoresAnUnrelatedFailureUnderTheSameFingerprint`。
+
+**死信水位扫描会永久漏掉晚提交的行**（`pollOnce`）
+`incident_poll_state.last_failed_at` 记"已处理到哪个 failed_at"，轮询取
+`failed_at > watermark`。提交顺序不等于 `failed_at` 顺序:一个事务盖了时间戳
+之后、比它晚的失败已经把水位推过去了才提交，这行就永远看不见了——而且无声
+无息，因为没人会回头看。
+
+改成逐行认领:`dead_letter_events.incident_processed_at`，轮询用
+`ClaimUntriagedDeadLetter`（`WHERE incident_processed_at IS NULL ORDER BY
+failed_at LIMIT 1 FOR UPDATE SKIP LOCKED`）与 `MarkDeadLetterTriaged`，
+`incident_poll_state` 整张表删除（迁移 `20261022041000000`）。SKIP LOCKED
+让第二个 watcher 副本去拿下一行而不是排队;两个副本同指纹并发 Create 会被
+`incidents_fingerprint_active_idx` 挡回、事务回滚、下轮重试。
+
+当初选时间戳水位而不是逐行标记，理由是 `dead_letter_events` 每个
+(event_id, consumer) 只有一行、重试复用该行，标记会"留在"一次它没见过的
+失败上。这个理由现在在复用的那一处回答掉了:`RecordDeadLetter` 的
+ON CONFLICT 同时把 `incident_processed_at` 清空，所以每次新的失败——不论新
+行还是复用行——都重新进入待分诊。
+
+回填取舍:迁移把 `failed_at <= 旧水位` 的行标成已处理。当年被这个 bug 跳过的
+旧行和正常处理过的行已经无法区分，于是不去追溯;它们要是再失败一次，会照常
+重新分诊。
+
+验证（除单测外都是真 PostgreSQL）:
+- `internal/incident/watcher_test.go`:`TestPollOnceStillPicksUpADeadLetterThatCommittedLate`。
+- `incidentpg/triage_claim_integration_test.go`:晚提交仍被认领、SKIP LOCKED
+  不排队、复用行重新进入分诊三个测试。
+- `messagingpg_integration_test.go` 的 `TestARepeatFailureReopensTriage`:守住
+  上面那条 ON CONFLICT。
+- 变异验证:把认领改回水位语义 → 晚提交测试失败;去掉 ON CONFLICT 里的
+  `incident_processed_at = NULL` → 重复失败测试失败。
+- `make sqlc-check`、`make templates`、`go vet ./...`、`go test ./...`、
+  `go test -tags integration ./...` 全部通过。
+
+删除:`incidentpg/poll_state_integration_test.go`（它测的表已不存在）。

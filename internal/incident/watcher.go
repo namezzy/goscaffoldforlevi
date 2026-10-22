@@ -40,14 +40,16 @@ type NewIncident struct {
 // different, row-locking operations that an operator-facing read/triage API
 // has no business exposing.
 type PollRepository interface {
-	// LockPollState reads the checkpoint FOR UPDATE. Must run inside the
-	// same transaction as AdvancePollState and everything between them, so
-	// only one watcher replica processes a given dead letter.
-	LockPollState(ctx context.Context) (time.Time, error)
-	AdvancePollState(ctx context.Context, lastFailedAt time.Time) error
-	// NextUnpolled returns the oldest dead letter with failed_at after
-	// since, or ok=false if there is none.
-	NextUnpolled(ctx context.Context, since time.Time) (occurrence DeadLetterOccurrence, ok bool, err error)
+	// ClaimUntriaged takes the oldest dead letter no incident has been
+	// opened or merged for yet and holds it for the rest of the
+	// transaction, or reports ok=false if there is none. Must run inside
+	// the same transaction as MarkTriaged and everything between them, so
+	// a crash re-triages the dead letter instead of dropping it and a
+	// second replica works on a different one.
+	ClaimUntriaged(ctx context.Context) (occurrence DeadLetterOccurrence, ok bool, err error)
+	// MarkTriaged records that this dead letter has become, or been merged
+	// into, an incident.
+	MarkTriaged(ctx context.Context, deadLetterID string) error
 	// LockOpenByFingerprint finds the merge target, row-locked so a
 	// concurrent operator action on it (ack/resolve/replay) serializes
 	// with this merge instead of racing it.
@@ -59,6 +61,10 @@ type PollRepository interface {
 	// ExistsProcessedSince is the real "did the replay succeed" signal —
 	// see queries/incident.sql's ExistsProcessedEventSince.
 	ExistsProcessedSince(ctx context.Context, eventID, consumer string, since time.Time) (bool, error)
+	// ExistsDeadLetterSince is the matching "did it fail again" signal,
+	// asked of the replayed event specifically — see
+	// queries/incident.sql's ExistsDeadLetterSince.
+	ExistsDeadLetterSince(ctx context.Context, eventID, consumer string, since time.Time) (bool, error)
 	ResolveReplay(ctx context.Context, id string, result ReplayStatus) (Incident, error)
 }
 
@@ -200,19 +206,15 @@ func (w *Watcher) drainDeadLetters(ctx context.Context) {
 	}
 }
 
-// pollOnce claims the next unprocessed dead letter and either merges it into
+// pollOnce claims the next untriaged dead letter and either merges it into
 // an existing open incident or opens a new one, all inside one transaction
-// with the poll checkpoint advance — a crash between them would otherwise
-// either re-process the same dead letter or silently skip it.
+// with the claim — a crash between them re-triages the same dead letter
+// rather than silently skipping it.
 func (w *Watcher) pollOnce(ctx context.Context) (processed bool, err error) {
 	var opened *Incident
 
 	err = w.tx.WithTx(ctx, func(ctx context.Context) error {
-		watermark, err := w.repo.LockPollState(ctx)
-		if err != nil {
-			return err
-		}
-		occ, ok, err := w.repo.NextUnpolled(ctx, watermark)
+		occ, ok, err := w.repo.ClaimUntriaged(ctx)
 		if err != nil {
 			return err
 		}
@@ -253,7 +255,7 @@ func (w *Watcher) pollOnce(ctx context.Context) (processed bool, err error) {
 			opened = &created
 		}
 
-		return w.repo.AdvancePollState(ctx, occ.FailedAt)
+		return w.repo.MarkTriaged(ctx, occ.ID)
 	})
 	if err != nil {
 		return false, err
@@ -330,34 +332,41 @@ func (w *Watcher) resolvePendingReplays(ctx context.Context) {
 	}
 }
 
-// resolveOne decides one incident's pending replay outcome:
+// resolveOne decides one incident's pending replay outcome. Both signals
+// are asked of the event that was actually replayed (ReplayEventID), never
+// of the incident's current EventID or last_seen_at: those move to the
+// newest occurrence on every merge, so an unrelated event failing under the
+// same fingerprint would otherwise be reported as this replay's failure and
+// would redirect the success check at the wrong event.
 //
-//   - A new occurrence landed after the replay was requested (last_seen_at
-//     advanced) — the retry dead-lettered again, so the replay failed. This
-//     needs no direct check against the dead letter table: pollOnce already
-//     merged that occurrence onto this same incident, bumping last_seen_at,
-//     by the time this runs.
-//   - Otherwise, the dedupe log now has a row for the replayed event and
-//     consumer stamped after the request — the handler ran to completion,
-//     so the replay succeeded (see ExistsProcessedSince's doc comment for
-//     why that row is trustworthy).
+//   - The dedupe log has a row for the replayed event and consumer stamped
+//     after the request — the handler ran to completion, so the replay
+//     succeeded (see ExistsProcessedSince's doc comment for why that row is
+//     trustworthy).
+//   - The replayed event dead-lettered again after the request — the retry
+//     failed. dead_letter_events keeps one row per (event_id, consumer), so
+//     "again" is that row's failed_at moving past the request.
 //   - Otherwise it is still genuinely pending and is left alone; the next
 //     sweep checks again.
 func (w *Watcher) resolveOne(ctx context.Context, inc Incident) error {
-	if inc.ReplayRequestedAt == nil {
+	if inc.ReplayRequestedAt == nil || inc.ReplayEventID == nil {
 		return nil
 	}
-	if inc.LastSeenAt.After(*inc.ReplayRequestedAt) {
-		return w.finishReplay(ctx, inc, ReplayFailed)
-	}
-	succeeded, err := w.repo.ExistsProcessedSince(ctx, inc.EventID, inc.Consumer, *inc.ReplayRequestedAt)
+	succeeded, err := w.repo.ExistsProcessedSince(ctx, *inc.ReplayEventID, inc.Consumer, *inc.ReplayRequestedAt)
 	if err != nil {
 		return err
 	}
-	if !succeeded {
+	if succeeded {
+		return w.finishReplay(ctx, inc, ReplaySucceeded)
+	}
+	failedAgain, err := w.repo.ExistsDeadLetterSince(ctx, *inc.ReplayEventID, inc.Consumer, *inc.ReplayRequestedAt)
+	if err != nil {
+		return err
+	}
+	if !failedAgain {
 		return nil
 	}
-	return w.finishReplay(ctx, inc, ReplaySucceeded)
+	return w.finishReplay(ctx, inc, ReplayFailed)
 }
 
 func (w *Watcher) finishReplay(ctx context.Context, inc Incident, result ReplayStatus) error {

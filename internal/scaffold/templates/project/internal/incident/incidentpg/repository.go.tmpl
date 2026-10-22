@@ -88,6 +88,10 @@ func toDomain(row db.Incident) incident.Incident {
 		rs := incident.ReplayStatus(*row.ReplayStatus)
 		out.ReplayStatus = &rs
 	}
+	if row.ReplayEventID != nil {
+		s := row.ReplayEventID.String()
+		out.ReplayEventID = &s
+	}
 	return out
 }
 
@@ -280,12 +284,18 @@ func (s *Store) Resolve(ctx context.Context, id, actorID string) (incident.Incid
 }
 
 // RequestReplay records that a replay was submitted for this incident.
-func (s *Store) RequestReplay(ctx context.Context, id string) (incident.Incident, error) {
+func (s *Store) RequestReplay(ctx context.Context, id, replayEventID string) (incident.Incident, error) {
 	parsed, err := parseUUID(id)
 	if err != nil {
 		return incident.Incident{}, err
 	}
-	if err := s.q(ctx).RequestIncidentReplay(ctx, parsed); err != nil {
+	eventID, err := uuid.Parse(replayEventID)
+	if err != nil {
+		return incident.Incident{}, apperr.Internal(fmt.Errorf("request incident replay: event id %q: %w", replayEventID, err))
+	}
+	if err := s.q(ctx).RequestIncidentReplay(ctx, db.RequestIncidentReplayParams{
+		ID: parsed, ReplayEventID: &eventID,
+	}); err != nil {
 		return incident.Incident{}, translate(err, "request incident replay")
 	}
 	return s.Get(ctx, id)
@@ -293,39 +303,33 @@ func (s *Store) RequestReplay(ctx context.Context, id string) (incident.Incident
 
 // --- incident.PollRepository (Watcher's port) ---
 
-// LockPollState reads the watcher's checkpoint, row-locked. Must run inside
-// the same transaction as AdvancePollState.
-func (s *Store) LockPollState(ctx context.Context) (time.Time, error) {
-	t, err := s.q(ctx).GetIncidentPollState(ctx)
-	if err != nil {
-		return time.Time{}, translate(err, "lock incident poll state")
-	}
-	return t, nil
-}
-
-// AdvancePollState commits that everything up to and including lastFailedAt
-// has been turned into or merged into an incident.
-func (s *Store) AdvancePollState(ctx context.Context, lastFailedAt time.Time) error {
-	if err := s.q(ctx).AdvanceIncidentPollState(ctx, lastFailedAt); err != nil {
-		return translate(err, "advance incident poll state")
-	}
-	return nil
-}
-
-// NextUnpolled returns the oldest dead letter after since, or ok=false if
-// there is none.
-func (s *Store) NextUnpolled(ctx context.Context, since time.Time) (incident.DeadLetterOccurrence, bool, error) {
-	row, err := s.q(ctx).NextUnpolledDeadLetter(ctx, since)
+// ClaimUntriaged takes the oldest dead letter not yet triaged and holds it
+// for the rest of the transaction, or ok=false if there is none.
+func (s *Store) ClaimUntriaged(ctx context.Context) (incident.DeadLetterOccurrence, bool, error) {
+	row, err := s.q(ctx).ClaimUntriagedDeadLetter(ctx)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return incident.DeadLetterOccurrence{}, false, nil
 		}
-		return incident.DeadLetterOccurrence{}, false, translate(err, "next unpolled dead letter")
+		return incident.DeadLetterOccurrence{}, false, translate(err, "claim untriaged dead letter")
 	}
 	return incident.DeadLetterOccurrence{
 		ID: row.ID.String(), EventID: row.EventID.String(), EventType: row.EventType,
 		Consumer: row.Consumer, LastError: row.LastError, FailedAt: row.FailedAt,
 	}, true, nil
+}
+
+// MarkTriaged records that this dead letter has become, or been merged
+// into, an incident.
+func (s *Store) MarkTriaged(ctx context.Context, deadLetterID string) error {
+	parsed, err := uuid.Parse(deadLetterID)
+	if err != nil {
+		return apperr.Internal(fmt.Errorf("mark dead letter triaged: id %q: %w", deadLetterID, err))
+	}
+	if err := s.q(ctx).MarkDeadLetterTriaged(ctx, parsed); err != nil {
+		return translate(err, "mark dead letter triaged")
+	}
+	return nil
 }
 
 // LockOpenByFingerprint finds the merge target, row-locked, or ok=false if
@@ -412,6 +416,22 @@ func (s *Store) ExistsProcessedSince(ctx context.Context, eventID, consumer stri
 	})
 	if err != nil {
 		return false, translate(err, "exists processed event since")
+	}
+	return ok, nil
+}
+
+// ExistsDeadLetterSince is the matching "did the replay fail again" check —
+// see queries/incident.sql's ExistsDeadLetterSince.
+func (s *Store) ExistsDeadLetterSince(ctx context.Context, eventID, consumer string, since time.Time) (bool, error) {
+	parsed, err := uuid.Parse(eventID)
+	if err != nil {
+		return false, apperr.Internal(fmt.Errorf("event id: %w", err))
+	}
+	ok, err := s.q(ctx).ExistsDeadLetterSince(ctx, db.ExistsDeadLetterSinceParams{
+		EventID: parsed, Consumer: consumer, FailedAt: since,
+	})
+	if err != nil {
+		return false, translate(err, "exists dead letter since")
 	}
 	return ok, nil
 }

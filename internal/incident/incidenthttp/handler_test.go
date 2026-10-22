@@ -122,7 +122,7 @@ func (f *fakeRepo) Resolve(ctx context.Context, id, actorID string) (incident.In
 	return f.put(inc), true, nil
 }
 
-func (f *fakeRepo) RequestReplay(ctx context.Context, id string) (incident.Incident, error) {
+func (f *fakeRepo) RequestReplay(ctx context.Context, id, replayEventID string) (incident.Incident, error) {
 	inc, err := f.Get(ctx, id)
 	if err != nil {
 		return incident.Incident{}, err
@@ -130,6 +130,7 @@ func (f *fakeRepo) RequestReplay(ctx context.Context, id string) (incident.Incid
 	now := time.Now()
 	pending := incident.ReplayPending
 	inc.ReplayStatus, inc.ReplayRequestedAt, inc.ReplayResultAt = &pending, &now, nil
+	inc.ReplayEventID = &replayEventID
 	return f.put(inc), nil
 }
 

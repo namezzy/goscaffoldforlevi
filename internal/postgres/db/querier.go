@@ -16,9 +16,6 @@ type Querier interface {
 	// 0 rows changed when the incident was not open — the caller's signal that
 	// the transition did not apply.
 	AcknowledgeIncident(ctx context.Context, arg AcknowledgeIncidentParams) (int64, error)
-	// AdvanceIncidentPollState commits that this dead letter (and everything
-	// before it) has been turned into or merged into an incident.
-	AdvanceIncidentPollState(ctx context.Context, lastFailedAt time.Time) error
 	// AssignIncidentOwner sets or clears (via NULL) who is handling this.
 	AssignIncidentOwner(ctx context.Context, arg AssignIncidentOwnerParams) error
 	// ClaimEventForConsumer marks an event as handled by one consumer.
@@ -40,6 +37,20 @@ type Querier interface {
 	// different order than they inserted, and no ordering guarantee is offered to
 	// consumers.
 	ClaimOutboxEvents(ctx context.Context, limit int32) ([]ClaimOutboxEventsRow, error)
+	// Exception/processing center: incidents merged from dead letters, and the
+	// poller's claim on the dead letters it has triaged. See the
+	// exception_center migration for the fingerprint merge rule and
+	// dead_letter_triage_claim for why triage is a per-row claim.
+	// ClaimUntriagedDeadLetter takes the oldest dead letter no incident has been
+	// opened or merged for yet, and holds it for the rest of the transaction.
+	//
+	// Per-row rather than against a timestamp checkpoint: a transaction that
+	// commits after a later one would leave a row behind a checkpoint that had
+	// already moved past its failed_at, skipping it permanently (see the
+	// dead_letter_triage_claim migration). FOR UPDATE marks the row as being
+	// worked on; SKIP LOCKED lets a second watcher replica take the next one
+	// instead of queueing behind the first.
+	ClaimUntriagedDeadLetter(ctx context.Context) (ClaimUntriagedDeadLetterRow, error)
 	// CountActiveUsersByRole backs the "protect the last system admin" rule: a
 	// role change or deactivation that would leave zero active holders of
 	// system_admin is refused. Unlike CountUsersByRole it excludes disabled
@@ -130,6 +141,13 @@ type Querier interface {
 	// DeletePublishedOutboxEventsBefore prunes delivered rows.
 	DeletePublishedOutboxEventsBefore(ctx context.Context, cutoff time.Time) (int64, error)
 	DeleteUser(ctx context.Context, id uuid.UUID) (int64, error)
+	// ExistsDeadLetterSince is the matching "did the replay fail again" signal.
+	// dead_letter_events keeps one row per (event_id, consumer) — a repeat
+	// failure updates that row's failed_at (see RecordDeadLetter's ON CONFLICT)
+	// — so a failed_at past the replay request means this very event was retried
+	// and dead-lettered again, rather than some other event sharing the
+	// incident's fingerprint having failed.
+	ExistsDeadLetterSince(ctx context.Context, arg ExistsDeadLetterSinceParams) (bool, error)
 	// ExistsProcessedEventSince is the real "did the replay actually succeed"
 	// signal: the dedupe log only gains a row for (event_id, consumer) once the
 	// consumer's handler has actually run to completion (see
@@ -138,20 +156,13 @@ type Querier interface {
 	ExistsProcessedEventSince(ctx context.Context, arg ExistsProcessedEventSinceParams) (bool, error)
 	GetAuditEventByID(ctx context.Context, id uuid.UUID) (AuditEvent, error)
 	// GetDeadLetter fetches one parked message for replay.
-	GetDeadLetter(ctx context.Context, id uuid.UUID) (DeadLetterEvent, error)
+	GetDeadLetter(ctx context.Context, id uuid.UUID) (GetDeadLetterRow, error)
 	GetDepartmentByID(ctx context.Context, id uuid.UUID) (Department, error)
 	// GetIncident fetches one incident for detail/actions. FOR UPDATE variant is
 	// GetIncidentForUpdate below; this one is for read-only access.
 	GetIncident(ctx context.Context, id uuid.UUID) (Incident, error)
 	// GetIncidentForUpdate is GetIncident, row-locked for a mutating action.
 	GetIncidentForUpdate(ctx context.Context, id uuid.UUID) (Incident, error)
-	// Exception/processing center: incidents merged from dead letters, and the
-	// poller's checkpoint. See the exception_center migration for the schema
-	// rationale (fingerprint merge rule, why the poller checkpoints by
-	// timestamp rather than a per-row flag).
-	// GetIncidentPollState reads the checkpoint. FOR UPDATE so only one poller
-	// replica advances it at a time — the row lock is the mutual exclusion.
-	GetIncidentPollState(ctx context.Context) (time.Time, error)
 	GetInvitationByID(ctx context.Context, id uuid.UUID) (GetInvitationByIDRow, error)
 	// GetInvitationByTokenHash takes a row lock: Accept always follows it with a
 	// conditional update, and two concurrent accepts of the same token must not
@@ -232,7 +243,7 @@ type Querier interface {
 	// "hand-write it" case.
 	ListAuditEventsFiltered(ctx context.Context, arg ListAuditEventsFilteredParams) ([]AuditEvent, error)
 	// ListDeadLetters is the triage query behind `make dlq-list`.
-	ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]DeadLetterEvent, error)
+	ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]ListDeadLettersRow, error)
 	// ListDepartments returns the whole tree. The department count in a
 	// single-tenant deployment is small enough (dozens, not thousands) that
 	// paging it would be solving a problem this phase does not have; the client
@@ -315,6 +326,10 @@ type Querier interface {
 	MarkAllNotificationsRead(ctx context.Context, userID uuid.UUID) (int64, error)
 	// MarkDeadLetterReplayed records that a parked message was put back.
 	MarkDeadLetterReplayed(ctx context.Context, id uuid.UUID) (int64, error)
+	// MarkDeadLetterTriaged commits that this dead letter has been turned into
+	// or merged into an incident. Runs in the same transaction as that write, so
+	// a crash in between re-triages the row rather than dropping it.
+	MarkDeadLetterTriaged(ctx context.Context, id uuid.UUID) error
 	// MarkInvitationAccepted is the one-time-use guard: the WHERE clause only
 	// matches a still-pending row, so a second concurrent accept (or a replay of
 	// an old link) updates zero rows instead of racing the first one to
@@ -340,12 +355,6 @@ type Querier interface {
 	// event_id, and leaving it pointed at a stale occurrence would make that
 	// check answer the wrong question.
 	MergeIncidentOccurrence(ctx context.Context, arg MergeIncidentOccurrenceParams) error
-	// NextUnpolledDeadLetter returns the oldest dead letter the poller has not
-	// yet processed. Ordered by failed_at so the checkpoint always advances
-	// monotonically; ties within the same microsecond are the one case this can
-	// still skip, an accepted tradeoff at this volume (see ClaimOutboxEvents's
-	// "roughly is the honest word" for the same kind of call elsewhere).
-	NextUnpolledDeadLetter(ctx context.Context, failedAt time.Time) (NextUnpolledDeadLetterRow, error)
 	// OutboxSummary is the admin API's view of the outbox: the same four numbers
 	// `make outbox-status` prints, behind an endpoint rather than a raw SQL
 	// connection. worst_attempts is coalesced to 0 because max() over an empty
@@ -372,8 +381,10 @@ type Querier interface {
 	// is a broker problem, and dropping it would turn an outage into data loss.
 	RecordOutboxEventFailure(ctx context.Context, arg RecordOutboxEventFailureParams) error
 	// RequestIncidentReplay records that a replay was submitted — not that it
-	// succeeded. See ResolveIncidentReplay for how the real result is learned.
-	RequestIncidentReplay(ctx context.Context, id uuid.UUID) error
+	// succeeded — together with the event it submitted. See ResolveIncidentReplay
+	// for how the real result is learned, and the replay_event_id migration for
+	// why the event is stamped here rather than read back off event_id later.
+	RequestIncidentReplay(ctx context.Context, arg RequestIncidentReplayParams) error
 	// RequeueOutboxEvent puts a dead-lettered event back into the outbox under
 	// its original ID. The delivered row is usually still there (it is kept for
 	// the published-retention window), so a plain insert collides with it; this

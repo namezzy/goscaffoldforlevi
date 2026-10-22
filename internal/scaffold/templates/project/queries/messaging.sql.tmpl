@@ -112,7 +112,12 @@ ON CONFLICT (event_id, consumer) DO UPDATE
 SET attempts    = EXCLUDED.attempts,
     last_error  = EXCLUDED.last_error,
     failed_at   = now(),
-    replayed_at = NULL;
+    replayed_at = NULL,
+    -- The reused row describes a failure the exception center has not seen,
+    -- so it goes back into triage. Leaving the old claim would hide every
+    -- repeat failure of an event that already dead-lettered once — see
+    -- queries/incident.sql's ClaimUntriagedDeadLetter.
+    incident_processed_at = NULL;
 
 -- ListDeadLetters is the triage query behind `make dlq-list`.
 -- name: ListDeadLetters :many

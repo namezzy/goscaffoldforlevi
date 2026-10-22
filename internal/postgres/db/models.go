@@ -25,16 +25,17 @@ type AuditEvent struct {
 }
 
 type DeadLetterEvent struct {
-	ID          uuid.UUID
-	EventID     uuid.UUID
-	EventType   string
-	Payload     []byte
-	Traceparent *string
-	Consumer    string
-	Attempts    int32
-	LastError   string
-	FailedAt    time.Time
-	ReplayedAt  *time.Time
+	ID                  uuid.UUID
+	EventID             uuid.UUID
+	EventType           string
+	Payload             []byte
+	Traceparent         *string
+	Consumer            string
+	Attempts            int32
+	LastError           string
+	FailedAt            time.Time
+	ReplayedAt          *time.Time
+	IncidentProcessedAt *time.Time
 }
 
 type Department struct {
@@ -68,11 +69,7 @@ type Incident struct {
 	ReplayResultAt    *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
-}
-
-type IncidentPollState struct {
-	ID           bool
-	LastFailedAt time.Time
+	ReplayEventID     *uuid.UUID
 }
 
 type Invitation struct {

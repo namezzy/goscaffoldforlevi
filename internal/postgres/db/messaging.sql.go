@@ -164,10 +164,23 @@ FROM dead_letter_events
 WHERE id = $1
 `
 
+type GetDeadLetterRow struct {
+	ID          uuid.UUID
+	EventID     uuid.UUID
+	EventType   string
+	Payload     []byte
+	Traceparent *string
+	Consumer    string
+	Attempts    int32
+	LastError   string
+	FailedAt    time.Time
+	ReplayedAt  *time.Time
+}
+
 // GetDeadLetter fetches one parked message for replay.
-func (q *Queries) GetDeadLetter(ctx context.Context, id uuid.UUID) (DeadLetterEvent, error) {
+func (q *Queries) GetDeadLetter(ctx context.Context, id uuid.UUID) (GetDeadLetterRow, error) {
 	row := q.db.QueryRow(ctx, getDeadLetter, id)
-	var i DeadLetterEvent
+	var i GetDeadLetterRow
 	err := row.Scan(
 		&i.ID,
 		&i.EventID,
@@ -227,16 +240,29 @@ type ListDeadLettersParams struct {
 	EventType *string
 }
 
+type ListDeadLettersRow struct {
+	ID          uuid.UUID
+	EventID     uuid.UUID
+	EventType   string
+	Payload     []byte
+	Traceparent *string
+	Consumer    string
+	Attempts    int32
+	LastError   string
+	FailedAt    time.Time
+	ReplayedAt  *time.Time
+}
+
 // ListDeadLetters is the triage query behind `make dlq-list`.
-func (q *Queries) ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]DeadLetterEvent, error) {
+func (q *Queries) ListDeadLetters(ctx context.Context, arg ListDeadLettersParams) ([]ListDeadLettersRow, error) {
 	rows, err := q.db.Query(ctx, listDeadLetters, arg.Limit, arg.EventType)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DeadLetterEvent{}
+	items := []ListDeadLettersRow{}
 	for rows.Next() {
-		var i DeadLetterEvent
+		var i ListDeadLettersRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.EventID,
@@ -327,7 +353,12 @@ ON CONFLICT (event_id, consumer) DO UPDATE
 SET attempts    = EXCLUDED.attempts,
     last_error  = EXCLUDED.last_error,
     failed_at   = now(),
-    replayed_at = NULL
+    replayed_at = NULL,
+    -- The reused row describes a failure the exception center has not seen,
+    -- so it goes back into triage. Leaving the old claim would hide every
+    -- repeat failure of an event that already dead-lettered once — see
+    -- queries/incident.sql's ClaimUntriagedDeadLetter.
+    incident_processed_at = NULL
 `
 
 type RecordDeadLetterParams struct {

@@ -19,31 +19,33 @@ import (
 // interfaces for separate consumers.
 type fakePollStore struct {
 	byID        map[string]incident.Incident
-	watermark   time.Time
 	deadLetters []incident.DeadLetterOccurrence
+	triaged     map[string]bool      // dead letter id -> already turned into/merged into an incident
 	processed   map[string]time.Time // "eventID:consumer" -> processedAt
 }
 
 func newFakePollStore() *fakePollStore {
-	return &fakePollStore{byID: map[string]incident.Incident{}, processed: map[string]time.Time{}}
+	return &fakePollStore{
+		byID:      map[string]incident.Incident{},
+		triaged:   map[string]bool{},
+		processed: map[string]time.Time{},
+	}
 }
 
-func (f *fakePollStore) LockPollState(context.Context) (time.Time, error) { return f.watermark, nil }
-
-func (f *fakePollStore) AdvancePollState(_ context.Context, t time.Time) error {
-	f.watermark = t
-	return nil
-}
-
-func (f *fakePollStore) NextUnpolled(_ context.Context, since time.Time) (incident.DeadLetterOccurrence, bool, error) {
+func (f *fakePollStore) ClaimUntriaged(context.Context) (incident.DeadLetterOccurrence, bool, error) {
 	sorted := append([]incident.DeadLetterOccurrence(nil), f.deadLetters...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].FailedAt.Before(sorted[j].FailedAt) })
 	for _, occ := range sorted {
-		if occ.FailedAt.After(since) {
+		if !f.triaged[occ.ID] {
 			return occ, true, nil
 		}
 	}
 	return incident.DeadLetterOccurrence{}, false, nil
+}
+
+func (f *fakePollStore) MarkTriaged(_ context.Context, deadLetterID string) error {
+	f.triaged[deadLetterID] = true
+	return nil
 }
 
 func (f *fakePollStore) LockOpenByFingerprint(_ context.Context, fingerprint string) (incident.Incident, bool, error) {
@@ -90,6 +92,15 @@ func (f *fakePollStore) ListPendingReplay(context.Context, int32) ([]incident.In
 func (f *fakePollStore) ExistsProcessedSince(_ context.Context, eventID, consumer string, since time.Time) (bool, error) {
 	at, ok := f.processed[eventID+":"+consumer]
 	return ok && at.After(since), nil
+}
+
+func (f *fakePollStore) ExistsDeadLetterSince(_ context.Context, eventID, consumer string, since time.Time) (bool, error) {
+	for _, occ := range f.deadLetters {
+		if occ.EventID == eventID && occ.Consumer == consumer && occ.FailedAt.After(since) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakePollStore) ResolveReplay(_ context.Context, id string, result incident.ReplayStatus) (incident.Incident, error) {
@@ -248,6 +259,34 @@ func TestPollOnceOpensAFreshIncidentAfterTheEarlierOneWasResolved(t *testing.T) 
 	}
 }
 
+// TestPollOnceStillPicksUpADeadLetterThatCommittedLate is the regression
+// test for a gap a review found in the timestamp checkpoint: the poller
+// asked for dead letters with failed_at after a watermark it had already
+// advanced, so a row whose transaction committed after a later one — its
+// failed_at stamped before the watermark moved — was skipped, permanently
+// and silently. Nothing about a dead letter's visibility order is
+// guaranteed to match its timestamp order, so "have I processed this row"
+// has to be a property of the row.
+func TestPollOnceStillPicksUpADeadLetterThatCommittedLate(t *testing.T) {
+	t.Parallel()
+	store := newFakePollStore()
+	first := occurrence("worker", "user.created.v1", "boom", time.Now())
+	store.deadLetters = append(store.deadLetters, first)
+	w, _, _ := newWatcher(store)
+	drainOnce(t, w)
+
+	// Becomes visible only now, but was stamped before the one already
+	// processed — a transaction that started earlier and committed later.
+	late := occurrence("worker", "user.created.v1", "boom", first.FailedAt.Add(-time.Second))
+	store.deadLetters = append(store.deadLetters, late)
+	drainOnce(t, w)
+
+	inc := onlyIncident(t, store)
+	if inc.OccurrenceCount != 2 {
+		t.Fatalf("occurrence_count = %d, want 2 — the late-committing dead letter was never triaged", inc.OccurrenceCount)
+	}
+}
+
 func drainOnce(t *testing.T, w *incident.Watcher) {
 	t.Helper()
 	// pollOnce is unexported; exercised through the same mechanism Run
@@ -265,15 +304,9 @@ func TestResolvePendingReplayMarksSucceededWhenTheEventWasProcessed(t *testing.T
 	w, _, _ := newWatcher(store)
 	drainOnce(t, w)
 
-	var inc incident.Incident
-	for _, v := range store.byID {
-		inc = v
-	}
+	inc := onlyIncident(t, store)
 	requestedAt := time.Now()
-	pending := incident.ReplayPending
-	inc.ReplayStatus = &pending
-	inc.ReplayRequestedAt = &requestedAt
-	store.byID[inc.ID] = inc
+	markReplayPending(store, inc, requestedAt)
 	store.processed[inc.EventID+":"+inc.Consumer] = requestedAt.Add(time.Second)
 
 	incident.ResolvePendingReplaysForTest(w, context.Background())
@@ -292,20 +325,14 @@ func TestResolvePendingReplayMarksFailedWhenTheRetryDeadLetteredAgain(t *testing
 	w, _, _ := newWatcher(store)
 	drainOnce(t, w)
 
-	var inc incident.Incident
-	for _, v := range store.byID {
-		inc = v
-	}
+	inc := onlyIncident(t, store)
 	requestedAt := time.Now()
-	pending := incident.ReplayPending
-	inc.ReplayStatus = &pending
-	inc.ReplayRequestedAt = &requestedAt
-	store.byID[inc.ID] = inc
+	markReplayPending(store, inc, requestedAt)
 
-	// The retry failed and re-dead-lettered: a new occurrence of the same
-	// fingerprint lands after the replay was requested.
-	retryFailure := occurrence("worker", "user.created.v1", "boom", requestedAt.Add(time.Second))
-	store.deadLetters = append(store.deadLetters, retryFailure)
+	// The replayed event failed again. dead_letter_events keeps one row per
+	// (event_id, consumer), so this is the same row with a later failed_at,
+	// not a new one — see RecordDeadLetter's ON CONFLICT.
+	refail(store, occ.ID, requestedAt.Add(time.Second), "boom again")
 	drainOnce(t, w)
 
 	incident.ResolvePendingReplaysForTest(w, context.Background())
@@ -313,6 +340,89 @@ func TestResolvePendingReplayMarksFailedWhenTheRetryDeadLetteredAgain(t *testing
 	got := store.byID[inc.ID]
 	if got.ReplayStatus == nil || *got.ReplayStatus != incident.ReplayFailed {
 		t.Fatalf("replay status = %v, want failed", got.ReplayStatus)
+	}
+}
+
+// TestResolvePendingReplayIgnoresAnUnrelatedFailureUnderTheSameFingerprint
+// is the regression test for a misattribution a review found: the outcome
+// was read off last_seen_at, which any dead letter sharing the incident's
+// fingerprint bumps. A different event failing for its own reasons would
+// therefore be reported as "your replay failed" — and, because a merge also
+// moves the incident's event_id to that newer event, the success check then
+// watched the wrong event too. The outcome must be judged on the event that
+// was actually replayed.
+func TestResolvePendingReplayIgnoresAnUnrelatedFailureUnderTheSameFingerprint(t *testing.T) {
+	t.Parallel()
+	store := newFakePollStore()
+	replayed := occurrence("worker", "user.created.v1", "boom", time.Now())
+	store.deadLetters = append(store.deadLetters, replayed)
+	w, _, _ := newWatcher(store)
+	drainOnce(t, w)
+
+	inc := onlyIncident(t, store)
+	requestedAt := time.Now()
+	markReplayPending(store, inc, requestedAt)
+
+	// A different event of the same consumer and type fails after the
+	// replay was requested. It merges onto this incident — that is the
+	// merge rule working — but says nothing about the replayed event.
+	other := occurrence("worker", "user.created.v1", "a different message", requestedAt.Add(time.Second))
+	store.deadLetters = append(store.deadLetters, other)
+	drainOnce(t, w)
+
+	incident.ResolvePendingReplaysForTest(w, context.Background())
+
+	got := store.byID[inc.ID]
+	if got.ReplayStatus == nil || *got.ReplayStatus != incident.ReplayPending {
+		t.Fatalf("replay status = %v, want still pending — an unrelated failure was attributed to the replay", got.ReplayStatus)
+	}
+
+	// The replayed event then goes through: the success signal must still
+	// be read for it, not for the newer event the merge pointed at.
+	store.processed[replayed.EventID+":"+replayed.Consumer] = requestedAt.Add(2 * time.Second)
+	incident.ResolvePendingReplaysForTest(w, context.Background())
+
+	if got := store.byID[inc.ID]; got.ReplayStatus == nil || *got.ReplayStatus != incident.ReplaySucceeded {
+		t.Fatalf("replay status = %v, want succeeded", got.ReplayStatus)
+	}
+}
+
+// onlyIncident returns the single incident the store holds.
+func onlyIncident(t *testing.T, store *fakePollStore) incident.Incident {
+	t.Helper()
+	if len(store.byID) != 1 {
+		t.Fatalf("incidents = %d, want exactly 1", len(store.byID))
+	}
+	for _, inc := range store.byID {
+		return inc
+	}
+	return incident.Incident{}
+}
+
+// markReplayPending puts the incident in the state Service.RequestReplay
+// leaves it in: pending, stamped, and remembering which event was submitted.
+func markReplayPending(store *fakePollStore, inc incident.Incident, requestedAt time.Time) {
+	pending := incident.ReplayPending
+	eventID := inc.EventID
+	inc.ReplayStatus = &pending
+	inc.ReplayRequestedAt = &requestedAt
+	inc.ReplayEventID = &eventID
+	store.byID[inc.ID] = inc
+}
+
+// refail models RecordDeadLetter's ON CONFLICT: the same dead letter row,
+// with a later failed_at and a fresh error, rather than a second row — and
+// untriaged again, because the row now describes a failure the exception
+// center has not seen.
+func refail(store *fakePollStore, deadLetterID string, failedAt time.Time, lastError string) {
+	for i, occ := range store.deadLetters {
+		if occ.ID == deadLetterID {
+			occ.FailedAt = failedAt
+			occ.LastError = lastError
+			store.deadLetters[i] = occ
+			delete(store.triaged, deadLetterID)
+			return
+		}
 	}
 }
 
@@ -324,15 +434,8 @@ func TestResolvePendingReplayLeavesAGenuinelyUndecidedReplayPending(t *testing.T
 	w, _, _ := newWatcher(store)
 	drainOnce(t, w)
 
-	var inc incident.Incident
-	for _, v := range store.byID {
-		inc = v
-	}
-	requestedAt := time.Now()
-	pending := incident.ReplayPending
-	inc.ReplayStatus = &pending
-	inc.ReplayRequestedAt = &requestedAt
-	store.byID[inc.ID] = inc
+	inc := onlyIncident(t, store)
+	markReplayPending(store, inc, time.Now())
 
 	incident.ResolvePendingReplaysForTest(w, context.Background())
 
