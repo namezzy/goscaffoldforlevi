@@ -370,7 +370,9 @@ func (s *Store) Create(ctx context.Context, in incident.NewIncident) (incident.I
 }
 
 // MergeOccurrence records a repeat failure onto an existing incident.
-func (s *Store) MergeOccurrence(ctx context.Context, id string, lastSeenAt time.Time, deadLetterID, eventID, lastError string) error {
+// occurredAt is this occurrence's own failed_at, not necessarily the newest
+// one: the query decides which occurrence the incident ends up describing.
+func (s *Store) MergeOccurrence(ctx context.Context, id string, occurredAt time.Time, deadLetterID, eventID, lastError string) error {
 	parsedID, err := uuid.Parse(id)
 	if err != nil {
 		return apperr.Internal(fmt.Errorf("incident id: %w", err))
@@ -384,7 +386,7 @@ func (s *Store) MergeOccurrence(ctx context.Context, id string, lastSeenAt time.
 		return apperr.Internal(fmt.Errorf("event id: %w", err))
 	}
 	if err := s.q(ctx).MergeIncidentOccurrence(ctx, db.MergeIncidentOccurrenceParams{
-		ID: parsedID, LastSeenAt: lastSeenAt, DeadLetterID: parsedDeadLetterID, EventID: parsedEventID, LastError: lastError,
+		ID: parsedID, OccurredAt: occurredAt, DeadLetterID: parsedDeadLetterID, EventID: parsedEventID, LastError: lastError,
 	}); err != nil {
 		return translate(err, "merge incident occurrence")
 	}

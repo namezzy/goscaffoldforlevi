@@ -56,21 +56,30 @@ RETURNING id, fingerprint, severity, status, owner_id, dead_letter_id, event_id,
        replay_event_id;
 
 -- MergeIncidentOccurrence records a repeat failure onto an existing
--- incident: bump the count, move the pointer to the newest dead letter and
--- its event, and refresh the error text so the list shows what is failing
--- right now rather than what failed first. event_id must move together with
--- dead_letter_id — the replay-result resolver checks processed_events by
--- event_id, and leaving it pointed at a stale occurrence would make that
--- check answer the wrong question.
+-- incident: bump the count, widen the seen-at window, and point the incident
+-- at the newest dead letter, its event and its error text, so the list shows
+-- what is failing right now rather than what failed first. event_id must
+-- move together with dead_letter_id — the replay-result resolver checks
+-- processed_events by event_id, and leaving it pointed at a stale occurrence
+-- would make that check answer the wrong question.
+--
+-- "Newest" is decided here rather than by the caller because dead letters are
+-- triaged per row and therefore not in failed_at order: a transaction can
+-- stamp an older failed_at and commit after a newer failure was already
+-- merged. Such an occurrence still counts and still widens first_seen_at, but
+-- it must not drag last_seen_at backwards or make the incident describe a
+-- failure that has since been superseded. Every right-hand reference below
+-- sees the pre-update row, so the CASEs all test the same old last_seen_at.
 -- name: MergeIncidentOccurrence :exec
 UPDATE incidents
 SET occurrence_count = occurrence_count + 1,
-    last_seen_at      = $2,
-    dead_letter_id    = $3,
-    event_id          = $4,
-    last_error        = $5,
+    first_seen_at     = LEAST(first_seen_at, sqlc.arg(occurred_at)),
+    last_seen_at      = GREATEST(last_seen_at, sqlc.arg(occurred_at)),
+    dead_letter_id    = CASE WHEN sqlc.arg(occurred_at) >= last_seen_at THEN sqlc.arg(dead_letter_id) ELSE dead_letter_id END,
+    event_id          = CASE WHEN sqlc.arg(occurred_at) >= last_seen_at THEN sqlc.arg(event_id) ELSE event_id END,
+    last_error        = CASE WHEN sqlc.arg(occurred_at) >= last_seen_at THEN sqlc.arg(last_error) ELSE last_error END,
     updated_at        = now()
-WHERE id = $1;
+WHERE id = sqlc.arg(id);
 
 -- GetIncident fetches one incident for detail/actions. FOR UPDATE variant is
 -- GetIncidentForUpdate below; this one is for read-only access.

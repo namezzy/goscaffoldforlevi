@@ -1849,3 +1849,34 @@ ON CONFLICT 同时把 `incident_processed_at` 清空，所以每次新的失败�
 
 验证:`npx tsc -b`、`npm test`（28 个）、`npm run lint`（ProfilePage 零条）、
 `npm run build` 均通过。
+
+## 乱序分诊把最近一次失败的指针拨回了（2026-10-22）
+
+重新打包后在真 PG + NATS 上跑新二进制冒烟，发现 API 返回的 incident 里
+`last_seen_at` 比 `first_seen_at` 还早十分钟。
+
+根因是上一节自己引入的:死信改成逐行认领之后，分诊顺序不再跟着 `failed_at`
+走——一条 `failed_at` 更早、却更晚提交的死信会在后面被认领，而
+`MergeIncidentOccurrence` 当时无条件把 `last_seen_at`、`dead_letter_id`、
+`event_id`、`last_error` 覆盖成这一次的值。于是「最近一次失败」被拨回到了一
+条更旧的记录上，重放归因也会去问一个已经被取代的 event。
+
+改法是在 SQL 里判定谁更新:`first_seen_at = LEAST(...)`、
+`last_seen_at = GREATEST(...)`，另外三列各加一个
+`CASE WHEN sqlc.arg(occurred_at) >= last_seen_at`。单条 UPDATE 里右侧引用看到
+的都是行的旧值，所以这三个 CASE 判的是同一个旧 `last_seen_at`，不会互相打架。
+参数同时从位置参数改成 `sqlc.arg()` 命名——`$2` 在 `LEAST(first_seen_at, $2)`
+里首次出现，sqlc 会把字段命名成 `FirstSeenAt`，语义正好是反的。
+
+回归测试 `TestMergingAnOlderOccurrenceKeepsTheNewestPointer`（incidentpg 集成
+测试）先合一条新的、再合一条旧的，断言四个指针都还指着新的那条，计数仍加到
+2，`first_seen_at` 被前推。`watcher_test.go` 的 `fakePollStore.MergeOccurrence`
+同步镜像这个语义，否则单测只是在测 fake。
+
+冒烟复验:一次性库跑 `bin/worker`，先插一条当前时间的死信、再插一条
+`failed_at` 早十分钟的，incident 的 `occurrence_count=2`、`last_error` 仍是新
+那条、`first_seen_at < last_seen_at`、零条未分诊。
+
+验证:`make sqlc-check`、`make templates`（二次零漂移）、`go vet ./...`、
+`go test ./...`、`go test -tags integration ./internal/incident/...
+./internal/messaging/...` 全通过。

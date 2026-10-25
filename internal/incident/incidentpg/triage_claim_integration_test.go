@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/namezzy/goscaffoldforlevi/internal/incident"
 	"github.com/namezzy/goscaffoldforlevi/internal/incident/incidentpg"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres"
 	"github.com/namezzy/goscaffoldforlevi/internal/postgres/pgtest"
@@ -137,5 +138,62 @@ func claimAndMark(t *testing.T, store *incidentpg.Store, id string) {
 	}
 	if err := store.MarkTriaged(ctx, id); err != nil {
 		t.Fatalf("MarkTriaged(%s) = %v, want nil", id, err)
+	}
+}
+
+// TestMergingAnOlderOccurrenceKeepsTheNewestPointer covers the consequence of
+// triaging per row: dead letters no longer arrive in failed_at order, so a
+// merge can carry an occurrence older than the one the incident already
+// points at. "Last seen" must not travel backwards, and the dead letter,
+// event and error the incident points at must stay the most recent ones —
+// the list is meant to show what is failing now, and the replay resolver
+// asks processed_events about whichever event_id is recorded here.
+func TestMergingAnOlderOccurrenceKeepsTheNewestPointer(t *testing.T) {
+	pg := pgtest.Start(t)
+	ctx := context.Background()
+	store := incidentpg.New(pg.Pool)
+
+	newest := time.Now().UTC().Truncate(time.Microsecond)
+	newestDeadLetter := insertDeadLetter(t, pg.Pool, newest)
+	olderDeadLetter := insertDeadLetter(t, pg.Pool, newest.Add(-10*time.Minute))
+
+	created, err := store.Create(ctx, incident.NewIncident{
+		ID:           uuid.Must(uuid.NewV7()).String(),
+		Fingerprint:  "welcome-email:user.created.v1",
+		DeadLetterID: newestDeadLetter,
+		EventID:      uuid.Must(uuid.NewV7()).String(),
+		EventType:    "user.created.v1",
+		Consumer:     "welcome-email",
+		LastError:    "the newest failure",
+		FirstSeenAt:  newest,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	olderEvent := uuid.Must(uuid.NewV7()).String()
+	if err := store.MergeOccurrence(ctx, created.ID, newest.Add(-10*time.Minute),
+		olderDeadLetter, olderEvent, "an older failure"); err != nil {
+		t.Fatalf("MergeOccurrence: %v", err)
+	}
+
+	got, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.OccurrenceCount != 2 {
+		t.Errorf("OccurrenceCount = %d, want 2", got.OccurrenceCount)
+	}
+	if !got.LastSeenAt.Equal(newest) {
+		t.Errorf("LastSeenAt = %v, want it to stay at the newest failure %v", got.LastSeenAt, newest)
+	}
+	if !got.FirstSeenAt.Equal(newest.Add(-10 * time.Minute)) {
+		t.Errorf("FirstSeenAt = %v, want it moved back to the older failure", got.FirstSeenAt)
+	}
+	if got.DeadLetterID != newestDeadLetter || got.EventID == olderEvent {
+		t.Errorf("incident points at dead letter %s / event %s, want the newest %s", got.DeadLetterID, got.EventID, newestDeadLetter)
+	}
+	if got.LastError != "the newest failure" {
+		t.Errorf("LastError = %q, want the newest failure's text", got.LastError)
 	}
 }

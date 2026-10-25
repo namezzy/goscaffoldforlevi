@@ -348,12 +348,20 @@ type Querier interface {
 	// and a zero row count is how the caller notices a race already consumed it.
 	MarkPasswordResetTokenUsed(ctx context.Context, id uuid.UUID) (int64, error)
 	// MergeIncidentOccurrence records a repeat failure onto an existing
-	// incident: bump the count, move the pointer to the newest dead letter and
-	// its event, and refresh the error text so the list shows what is failing
-	// right now rather than what failed first. event_id must move together with
-	// dead_letter_id — the replay-result resolver checks processed_events by
-	// event_id, and leaving it pointed at a stale occurrence would make that
-	// check answer the wrong question.
+	// incident: bump the count, widen the seen-at window, and point the incident
+	// at the newest dead letter, its event and its error text, so the list shows
+	// what is failing right now rather than what failed first. event_id must
+	// move together with dead_letter_id — the replay-result resolver checks
+	// processed_events by event_id, and leaving it pointed at a stale occurrence
+	// would make that check answer the wrong question.
+	//
+	// "Newest" is decided here rather than by the caller because dead letters are
+	// triaged per row and therefore not in failed_at order: a transaction can
+	// stamp an older failed_at and commit after a newer failure was already
+	// merged. Such an occurrence still counts and still widens first_seen_at, but
+	// it must not drag last_seen_at backwards or make the incident describe a
+	// failure that has since been superseded. Every right-hand reference below
+	// sees the pre-update row, so the CASEs all test the same old last_seen_at.
 	MergeIncidentOccurrence(ctx context.Context, arg MergeIncidentOccurrenceParams) error
 	// OutboxSummary is the admin API's view of the outbox: the same four numbers
 	// `make outbox-status` prints, behind an endpoint rather than a raw SQL

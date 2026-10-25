@@ -68,13 +68,21 @@ func (f *fakePollStore) Create(_ context.Context, in incident.NewIncident) (inci
 	return inc, nil
 }
 
-func (f *fakePollStore) MergeOccurrence(_ context.Context, id string, lastSeenAt time.Time, deadLetterID, eventID, lastError string) error {
+// Mirrors MergeIncidentOccurrence: an occurrence older than the one the
+// incident already describes still counts and still widens the window, but
+// does not drag the newest-failure pointer backwards.
+func (f *fakePollStore) MergeOccurrence(_ context.Context, id string, occurredAt time.Time, deadLetterID, eventID, lastError string) error {
 	inc := f.byID[id]
 	inc.OccurrenceCount++
-	inc.LastSeenAt = lastSeenAt
-	inc.DeadLetterID = deadLetterID
-	inc.EventID = eventID
-	inc.LastError = lastError
+	if occurredAt.Before(inc.FirstSeenAt) {
+		inc.FirstSeenAt = occurredAt
+	}
+	if !occurredAt.Before(inc.LastSeenAt) {
+		inc.LastSeenAt = occurredAt
+		inc.DeadLetterID = deadLetterID
+		inc.EventID = eventID
+		inc.LastError = lastError
+	}
 	f.byID[id] = inc
 	return nil
 }

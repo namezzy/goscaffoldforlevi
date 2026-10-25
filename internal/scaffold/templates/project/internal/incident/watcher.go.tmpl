@@ -55,7 +55,12 @@ type PollRepository interface {
 	// with this merge instead of racing it.
 	LockOpenByFingerprint(ctx context.Context, fingerprint string) (incident Incident, ok bool, err error)
 	Create(ctx context.Context, in NewIncident) (Incident, error)
-	MergeOccurrence(ctx context.Context, id string, lastSeenAt time.Time, deadLetterID, eventID, lastError string) error
+	// MergeOccurrence folds another occurrence into an existing incident.
+	// occurredAt is that occurrence's failed_at; because dead letters are
+	// triaged per row rather than in failed_at order, it may be older than
+	// the incident's last_seen_at, and the implementation — not the caller
+	// — decides which occurrence the incident then describes.
+	MergeOccurrence(ctx context.Context, id string, occurredAt time.Time, deadLetterID, eventID, lastError string) error
 
 	ListPendingReplay(ctx context.Context, limit int32) ([]Incident, error)
 	// ExistsProcessedSince is the real "did the replay succeed" signal —
