@@ -146,7 +146,7 @@ export function IncidentDetailPage() {
           {incident.last_error || '—'}
         </pre>
 
-        <dl className="mt-4 grid gap-x-8 sm:grid-cols-2">
+        <dl className="mt-4 grid gap-x-8 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
           <DescriptionRow label="消费者" value={incident.consumer} />
           <DescriptionRow label="累计发生" value={`${incident.occurrence_count} 次`} />
           <DescriptionRow label="首次发生" value={fmt(incident.first_seen_at)} />

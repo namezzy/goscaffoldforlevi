@@ -118,7 +118,7 @@ export function TicketDetailPage() {
       <Card>
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-300">{ticket.description}</p>
 
-        <dl className="mt-5 grid gap-x-8 border-t border-white/[0.06] pt-3 text-sm sm:grid-cols-2">
+        <dl className="mt-5 grid gap-x-8 border-t border-white/[0.06] pt-3 text-sm sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
           <RequesterRow label="申请人" userId={ticket.requester_id} />
           <RequesterRow label="负责人" userId={ticket.assignee_id} placeholder="未分配" />
           <Row label="创建时间" value={new Date(ticket.created_at).toLocaleString('zh-CN')} mono />

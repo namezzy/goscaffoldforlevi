@@ -1,95 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { getRecentRequests, streamRequests } from '../api/requests'
+import { useMemo } from 'react'
 import type { RequestEvent } from '../api/types'
+import { normalizePath } from './requestPathTree'
+import { MAX_ITEMS, RATE_WINDOW_MS, type ConnectionStatus, type RequestFeed } from './useRequestFeed'
 import { Badge, cardClass } from './ui'
 
-const MAX_ITEMS = 300
-const RECONNECT_DELAY_MS = 1500
-// A request/s rate computed over a window this short is noisy on a quiet
-// dashboard; long enough smooths it without making the number feel stale.
-const RATE_WINDOW_MS = 10_000
-
-type ConnectionStatus = 'connecting' | 'live' | 'reconnecting'
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function useRequestFeed() {
-  const [items, setItems] = useState<RequestEvent[]>([])
-  const [status, setStatus] = useState<ConnectionStatus>('connecting')
-
-  // The rate is tracked from its own uncapped list of timestamps, not by
-  // counting inside `items`. `items` is capped at MAX_ITEMS for display, so
-  // under real traffic (more than MAX_ITEMS arriving inside RATE_WINDOW_MS)
-  // counting there silently ceilinged the displayed rate at MAX_ITEMS /
-  // (RATE_WINDOW_MS / 1000) — about 30 req/s at these constants — no matter
-  // how much traffic was actually arriving.
-  const timestampsRef = useRef<number[]>([])
-  const [rateCount, setRateCount] = useState(0)
-
-  const pruneAndCountRate = useCallback(() => {
-    const cutoff = Date.now() - RATE_WINDOW_MS
-    timestampsRef.current = timestampsRef.current.filter((t) => t > cutoff)
-    setRateCount(timestampsRef.current.length)
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    const controller = new AbortController()
-
-    async function loop() {
-      try {
-        const page = await getRecentRequests()
-        if (cancelled) return
-        setItems(page.items.slice(-MAX_ITEMS).reverse())
-        const cutoff = Date.now() - RATE_WINDOW_MS
-        timestampsRef.current = page.items
-          .map((e) => new Date(e.time).getTime())
-          .filter((t) => t > cutoff)
-        setRateCount(timestampsRef.current.length)
-      } catch {
-        // The live stream below still gets a chance to connect.
-      }
-
-      while (!cancelled) {
-        try {
-          await streamRequests((e) => {
-            if (cancelled) return
-            setStatus('live')
-            setItems((prev) => [e, ...prev].slice(0, MAX_ITEMS))
-            timestampsRef.current.push(new Date(e.time).getTime())
-            pruneAndCountRate()
-          }, controller.signal)
-        } catch {
-          // Aborted (unmount) or a genuine network failure — either way the
-          // reconnect loop below is the single place that decides what
-          // happens next.
-        }
-        if (cancelled) return
-        setStatus('reconnecting')
-        await sleep(RECONNECT_DELAY_MS)
-      }
-    }
-
-    void loop()
-    // The rate must keep decaying even while nothing new arrives — without
-    // its own tick, a burst that stopped ten seconds ago would still read
-    // as "3.0 req/s" forever, because nothing else re-evaluates the window.
-    const rateTimer = setInterval(pruneAndCountRate, 1000)
-    return () => {
-      cancelled = true
-      controller.abort()
-      clearInterval(rateTimer)
-    }
-  }, [pruneAndCountRate])
-
-  return { items, status, rateCount }
-}
-
-export function LiveRequestFeed() {
-  const { items, status, rateCount } = useRequestFeed()
+export function LiveRequestFeed({
+  feed,
+  pathFilter,
+  onClearFilter,
+}: {
+  feed: RequestFeed
+  /** Normalized path prefix selected on the map; undefined shows everything. */
+  pathFilter?: string
+  onClearFilter?: () => void
+}) {
+  const { status, rateCount } = feed
   const rate = rateCount / (RATE_WINDOW_MS / 1000)
+
+  const items = useMemo(
+    () =>
+      pathFilter
+        ? feed.items.filter((e) => {
+            const p = normalizePath(e.path)
+            return p === pathFilter || p.startsWith(`${pathFilter}/`)
+          })
+        : feed.items,
+    [feed.items, pathFilter],
+  )
 
   const buckets = { '2xx': 0, '3xx': 0, '4xx': 0, '5xx': 0 }
   for (const e of items) {
@@ -103,6 +40,19 @@ export function LiveRequestFeed() {
         <div className="flex items-center gap-2">
           <ConnectionDot status={status} />
           <h2 className="text-sm font-semibold text-slate-100">实时请求流</h2>
+          {pathFilter && (
+            <button
+              type="button"
+              onClick={onClearFilter}
+              className="flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2 py-0.5 font-mono text-[11px] text-cyan-200 transition hover:border-cyan-300/50 hover:bg-cyan-400/20"
+              title="点击取消筛选"
+            >
+              {pathFilter}
+              <span aria-hidden className="text-cyan-400/70">
+                ✕
+              </span>
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-4 font-mono text-xs tabular-nums text-slate-400">
           <span title={`最近 ${RATE_WINDOW_MS / 1000} 秒内收到的请求数 ÷ ${RATE_WINDOW_MS / 1000}`}>
@@ -125,7 +75,7 @@ export function LiveRequestFeed() {
       <div className="max-h-96 overflow-y-auto font-mono text-xs tabular-nums">
         {items.length === 0 ? (
           <p className="px-4 py-8 text-center text-slate-500">
-            {status === 'connecting' ? '连接中…' : '等待请求…'}
+            {pathFilter ? '该路径下还没有请求' : status === 'connecting' ? '连接中…' : '等待请求…'}
           </p>
         ) : (
           <table className="w-full border-collapse">

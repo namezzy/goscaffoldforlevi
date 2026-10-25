@@ -29,7 +29,7 @@ export function RolesPage() {
         title="角色权限"
         description="第一阶段提供 5 个固定角色，权限点在后端独立校验；下方仅供查阅，不支持自定义角色或可视化编辑权限规则。"
       />
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {ROLE_INFO.map((r) => (
           <section key={r.role} className={`${cardClass} space-y-3 p-5`}>
             <div>

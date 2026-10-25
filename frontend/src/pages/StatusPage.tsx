@@ -3,6 +3,8 @@ import { getHealth, getReadiness } from '../api/system'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { LiveRequestFeed } from '../components/LiveRequestFeed'
 import { MessagingStatus } from '../components/MessagingStatus'
+import { RequestPathMap } from '../components/RequestPathMap'
+import { useRequestFeed } from '../components/useRequestFeed'
 import { Button, Loading, PageHeader, cardClass, toneClass, toneDotClass } from '../components/ui'
 import { can } from '../auth/permissions'
 import { useAuth } from '../auth/useAuth'
@@ -45,6 +47,7 @@ export function StatusPage() {
     return () => clearInterval(timer)
   }, [poll])
 
+  const canSeeRequests = can(user?.role, 'requests:read')
   const ready = readiness?.status === 'ok'
   // Stale, not just "errored": there is a previous reading on screen that
   // the most recent check could not refresh, so it may no longer be true.
@@ -80,7 +83,9 @@ export function StatusPage() {
       ) : null}
 
       {health && readiness && (
-        <div className={`grid grid-cols-2 gap-4 sm:grid-cols-4 ${stale ? 'opacity-50' : ''}`}>
+        <div
+          className={`grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 ${stale ? 'opacity-50' : ''}`}
+        >
           <HealthCard
             label="服务状态"
             value={ready ? 'READY' : (readiness.status || 'DOWN').toUpperCase()}
@@ -113,7 +118,7 @@ export function StatusPage() {
       {!health && !error && <Loading label="检查中…" />}
 
       {can(user?.role, 'messaging:read') && <MessagingStatus />}
-      {can(user?.role, 'requests:read') && <LiveRequestFeed />}
+      {canSeeRequests && <RequestTraffic />}
     </div>
   )
 }
@@ -133,6 +138,25 @@ function HealthCard({ label, value, tone }: { label: string; value: string; tone
         <span className={`h-1.5 w-1.5 rounded-full ${styles.dot} shadow-[0_0_8px_currentColor]`} />
       </div>
       <p className={`mt-2 font-mono text-xl font-semibold tracking-wide ${styles.text}`}>{value}</p>
+    </div>
+  )
+}
+
+// Owns the one request-stream subscription the map and the feed share, plus
+// the route selected on the map — the feed below is the detail view for it,
+// so the selection cannot live inside either child.
+function RequestTraffic() {
+  const feed = useRequestFeed()
+  const [selectedPath, setSelectedPath] = useState<string | undefined>(undefined)
+
+  return (
+    <div className="space-y-4">
+      <RequestPathMap feed={feed} selected={selectedPath} onSelect={setSelectedPath} />
+      <LiveRequestFeed
+        feed={feed}
+        pathFilter={selectedPath}
+        onClearFilter={() => setSelectedPath(undefined)}
+      />
     </div>
   )
 }

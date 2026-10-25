@@ -1880,3 +1880,42 @@ ON CONFLICT 同时把 `incident_processed_at` 清空，所以每次新的失败�
 验证:`make sqlc-check`、`make templates`（二次零漂移）、`go vet ./...`、
 `go test ./...`、`go test -tags integration ./internal/incident/...
 ./internal/messaging/...` 全通过。
+
+## 监控台的请求路径地图，页面放宽（2026-10-26）
+
+两件事:页面太窄、监控台看不出流量打在哪。
+
+**放宽布局。** `Layout` 的 `max-w-6xl`（1152px）在 1600 以上的屏上左右各空
+一大条。改成 `w-full max-w-[1800px]` 配递进的左右留白
+（`px-4 / sm:px-6 / lg:px-10 / 2xl:px-14`）——不是彻底不封顶:正文和表格行
+铺满 2560px 会长到一行读不完。顺带把几处在宽屏下纯拉伸的栅格加了断点:监控
+台健康卡 `xl:grid-cols-6`、异常与工单详情的事实栏 `xl:3 / 2xl:4~5`、角色页
+卡片 `xl:grid-cols-3`。
+
+**请求路径地图。** 监控台原本只有一张实时请求流水表，三百行滚动，看不出哪
+个接口在被打。新增 `RequestPathMap`:把路径按 `/` 拆成前缀树，画成冰柱图
+（icicle）——一层一行，每段宽度是它占的请求量，颜色是错误率（有 5xx 转红、
+4xx 超两成转黄）。点任一段会筛选下方的实时流，再点一次取消;被选中那条链路
+上的祖先不变暗，drill-down 路径读起来是连续的一条。
+
+聚合逻辑单独放在 `requestPathTree.ts`:
+- `normalizePath` 把 UUID、纯数字、长 hex 折成 `{id}`，否则每个实体 id 都是
+  一片叶子，树会散成几千根毛刺。但 `v1`、`oauth2` 这种含数字的词不折——折了
+  会把所有 API 版本并成一个节点。
+- 子节点宽度按**父节点**的计数分，不按全局总数。这样「请求停在父节点上」会
+  留出可见的空隙，而不是把子节点拉伸填满。
+
+`useRequestFeed` 从 `LiveRequestFeed` 里提了出来:地图和流水表必须读同一条
+SSE 订阅，各开一条会让两边对「收到了什么」各执一词，速率也会翻倍。
+`LiveRequestFeed` 随之改成纯展示组件，由 `StatusPage` 里的 `RequestTraffic`
+持有订阅与选中路径。
+
+测试 27 个:`requestPathTree.test.ts` 15 个（归一化、前缀合并、按流量排序、
+错误分级上卷、布局偏移对齐）、`RequestPathMap.test.tsx` 8 个（宽度即份额、
+id 折叠、点击上抛与反选、选中摘要）、`StatusPage.test.tsx` 4 个（只开一条
+订阅、点地图筛选流水、芯片取消筛选、无 `requests:read` 不开订阅）。把
+`pathFilter` 改成恒 false 做变异，后两个筛选用例如期转红。
+
+验证:`npx tsc -b`、`npm test`（55 个）、`npm run build`、`npm run lint`（新
+文件零条）均通过。前端不在 `internal/scaffold/templates` 里，不需要
+`make templates`。
